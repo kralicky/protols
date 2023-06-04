@@ -3,12 +3,12 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/bufbuild/protocompile/ast"
 	protocol "go.lsp.dev/protocol"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -24,11 +24,6 @@ func findNodeAtSourcePos(file *ast.FileNode, pos ast.SourcePos) []ast.Node {
 		if locationIsWithinNode(pos, info) {
 			if _, ok := n.(ast.TerminalNode); ok {
 				path = tracker.Path()
-				if _, ok := n.(*ast.IdentNode); ok {
-					if _, ok := path[len(path)-2].(*ast.CompoundIdentNode); ok {
-						path = path[:len(path)-2]
-					}
-				}
 				return sentinel
 			}
 		}
@@ -50,10 +45,10 @@ func locationIsWithinNode(location ast.SourcePos, nodeInfo ast.NodeInfo) bool {
 	return location.Line >= start.Line && location.Line <= end.Line && location.Col >= start.Col && location.Col < end.Col
 }
 
-func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParams, cache *Cache, lg *zap.Logger) (protoreflect.Descriptor, error) {
-	fd, err := cache.FindFileByPath(params.TextDocument.URI.Filename())
+func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParams, snap *Snapshot, lg *zap.Logger) (protoreflect.Descriptor, *protocol.Range, error) {
+	fd, err := snap.FindFileByPath(params.TextDocument.URI.Filename())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sourcePos := ast.SourcePos{
 		Filename: params.TextDocument.URI.Filename(),
@@ -65,8 +60,19 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 	// find the node in the ast at the given position
 	path := findNodeAtSourcePos(fileNode, sourcePos)
 	if len(path) == 0 {
-		return nil, errors.New("no node found at position")
+		return nil, nil, errors.New("no node found at position")
 	}
+	// squash compound identifiers at the end of the path
+	// if len(path) > 1 {
+	// 	if ident, ok := path[len(path)-1].(*ast.IdentNode); ok {
+	// 		if compoundIdent, ok := path[len(path)-2].(*ast.CompoundIdentNode); ok {
+	// 			if compoundIdent.Components[len(compoundIdent.Components)-1].Val == ident.Val {
+	// 				lg.Debug("squashing compound identifier")
+	// 				path = path[:len(path)-1]
+	// 			}
+	// 		}
+	// 	}
+	// }
 
 	closestIdentifiableIndex := -1
 	var descriptor proto.Message
@@ -89,7 +95,7 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 	}
 
 	if closestIdentifiableIndex == -1 {
-		return nil, errors.New("no identifiable node found at position")
+		return nil, nil, errors.New("no identifiable node found at position")
 	}
 	var definitionFullName protoreflect.FullName
 	if closestIdentifiableIndex == len(path)-1 {
@@ -110,53 +116,162 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 		switch descriptor := descriptor.(type) {
 		// 1. Imports, which resolve to ambiguous file descriptors
 		case *descriptorpb.FileDescriptorProto:
-			fileNode := path[closestIdentifiableIndex+1]
-			var filename string
-			switch fileNode := fileNode.(type) {
-			case *ast.ImportNode:
-				filename = fileNode.Name.AsString()
-			case *ast.FileNode:
-				filename = fileNode.Name()
-			case *ast.PackageNode:
-				return nil, fmt.Errorf("no descriptor available for package node")
-			default:
-				return nil, fmt.Errorf("unexpected node type %T", fileNode)
-			}
-			f, err := cache.files.AsResolver().FindFileByPath(filename)
-			if err != nil {
-				f, err = protoregistry.GlobalFiles.FindFileByPath(filename)
-				if err != nil {
-					return nil, fmt.Errorf("could not find file %q: %w", filename, err)
+			if lit, ok := path[len(path)-1].(*ast.StringLiteralNode); ok {
+				if importNode, ok := path[len(path)-2].(*ast.ImportNode); ok {
+					lg.Debug("special case: hovering over import")
+					filename := importNode.Name.AsString()
+					f, err := snap.Files.AsResolver().FindFileByPath(filename)
+					if err != nil {
+						f, err = protoregistry.GlobalFiles.FindFileByPath(filename)
+						if err != nil {
+							return nil, nil, fmt.Errorf("could not find file %q: %w", filename, err)
+						}
+					}
+					rng := toRange(fileNode.NodeInfo(lit))
+					return f, &rng, nil
 				}
 			}
-			descriptor = protodesc.ToFileDescriptorProto(f)
-		// 2. Self references
+
+		// 2. Synthetic map fields
 		case *descriptorpb.DescriptorProto:
-			return fd.Messages().ByName(protoreflect.Name(descriptor.GetName())), nil
-		case *descriptorpb.EnumDescriptorProto:
-			return fd.Enums().ByName(protoreflect.Name(descriptor.GetName())), nil
-		case *descriptorpb.ServiceDescriptorProto:
-			return fd.Services().ByName(protoreflect.Name(descriptor.GetName())), nil
-		case *descriptorpb.MethodDescriptorProto:
-			// go up one more level
-			rpcNode := path[closestIdentifiableIndex-1]
-			if svcNode, ok := rpcNode.(*ast.ServiceNode); ok {
-				return fd.Services().ByName(protoreflect.Name(svcNode.Name.AsIdentifier())).Methods().ByName(protoreflect.Name(descriptor.GetName())), nil
+			switch field := path[closestIdentifiableIndex].(type) {
+			case *ast.MapFieldNode:
+				switch ident := path[len(path)-1].(type) {
+				case *ast.MapTypeNode:
+					// hovering over one of the map types
+					lg.Debug("special case: hovering over map type")
+				case *ast.IdentNode:
+					switch ident.Val {
+					case field.Name.Val:
+						// hovering over the map field name, so return the field
+						lg.Debug("special case: hovering over map field name")
+						// go up one more level
+						mapNode := path[closestIdentifiableIndex-1]
+						if msgNode, ok := mapNode.(*ast.MessageNode); ok {
+							lg.Debug("special case: hovering over map field name, and map node is a message node")
+							return fd.Messages().ByName(protoreflect.Name(msgNode.Name.Val)).Fields().ByName(protoreflect.Name(field.Name.Val)), nil, nil
+						}
+					case field.MapType.KeyType.Val:
+						// hovering over the map key type - do nothing, this is not a special case
+						lg.Debug("special case: hovering over map key type")
+					case string(field.MapType.ValueType.AsIdentifier()):
+						// hovering over the map value type, so return the value type
+						lg.Debug("special case: hovering over map value type: " + string(field.MapType.ValueType.AsIdentifier()) + " / " + descriptor.Field[1].GetTypeName())
+						definitionFullName = protoreflect.FullName(descriptor.Field[1].GetTypeName())
+					}
+				case *ast.CompoundIdentNode:
+					switch ident.Val {
+					case field.Name.Val:
+						// ???
+						lg.Debug("special case: ???")
+					case field.MapType.KeyType.Val:
+						// hovering over the map key type - do nothing, this is not a special case
+						lg.Debug("special case: hovering over compound map key type")
+					case string(field.MapType.ValueType.AsIdentifier()):
+						// hovering over the map value type, so return the value type
+						definitionFullName = protoreflect.FullName(field.MapType.ValueType.AsIdentifier())
+						lg.Debug("special case: hovering over compound map value type: " + string(definitionFullName))
+					default:
+						return nil, nil, fmt.Errorf("unexpected compound map field node type %T", ident)
+					}
+				default:
+					return nil, nil, fmt.Errorf("unexpected map field node type %T", ident)
+				}
+			case *ast.MessageNode:
+				return fd.Messages().ByName(protoreflect.Name(descriptor.GetName())), nil, nil
 			}
-		// 3. Fields (cursor is over the field name, not the type)
+		case *descriptorpb.EnumDescriptorProto:
+			return fd.Enums().ByName(protoreflect.Name(descriptor.GetName())), nil, nil
+		case *descriptorpb.EnumValueDescriptorProto:
+			// go up one more level
+			enumNode := path[closestIdentifiableIndex-1]
+			if enumNode, ok := enumNode.(*ast.EnumNode); ok {
+				return fd.Enums().ByName(protoreflect.Name(enumNode.Name.Val)).Values().ByName(protoreflect.Name(descriptor.GetName())), nil, nil
+			}
+		case *descriptorpb.ServiceDescriptorProto:
+			return fd.Services().ByName(protoreflect.Name(descriptor.GetName())), nil, nil
+		case *descriptorpb.MethodDescriptorProto:
+			// case 1: [Compound]Ident <- *ast.RPCNode = hovering over the method
+			// case 2: [Compound]Ident <- *ast.RPCTypeNode <- *ast.RPCNode = hovering over the input or output type
+			rpcNode, ok := path[closestIdentifiableIndex].(*ast.RPCNode)
+			if !ok {
+				break // ???
+			}
+			switch path[closestIdentifiableIndex+1].(type) {
+			case *ast.RPCTypeNode:
+				// case 2
+				var val string
+				switch ident := path[closestIdentifiableIndex+2].(type) {
+				case *ast.IdentNode:
+					val = ident.Val
+				case *ast.CompoundIdentNode:
+					val = ident.Val
+				}
+
+				if string(rpcNode.Input.MessageType.AsIdentifier()) == val {
+					definitionFullName = protoreflect.FullName(descriptor.GetInputType())
+				} else if string(rpcNode.Output.MessageType.AsIdentifier()) == val {
+					definitionFullName = protoreflect.FullName(descriptor.GetOutputType())
+				}
+			case *ast.IdentNode, *ast.CompoundIdentNode:
+				// case 1
+				rpcNode := path[closestIdentifiableIndex-1]
+				if svcNode, ok := rpcNode.(*ast.ServiceNode); ok {
+					rng := toRange(fileNode.NodeInfo(svcNode.Name))
+					return fd.Services().ByName(protoreflect.Name(svcNode.Name.AsIdentifier())).Methods().ByName(protoreflect.Name(descriptor.GetName())), &rng, nil
+				}
+			}
+
+		// 3. Fields
 		case *descriptorpb.FieldDescriptorProto:
-			if ident, ok := path[len(path)-1].(*ast.IdentNode); ok {
-				if ident.Val == descriptor.GetName() {
-					// go up one more level
-					msgNode := path[closestIdentifiableIndex-1]
-					switch msgNode := msgNode.(type) {
-					case *ast.MessageNode:
-						if field := fd.Messages().ByName(protoreflect.Name(msgNode.Name.AsIdentifier())).Fields().ByName(protoreflect.Name(descriptor.GetName())); field != nil {
-							return field, nil
+			// 3.1:  cursor is over the field name, not the type
+			lg.Debug("special case: hovering over field name")
+			var val string
+			switch ident := path[len(path)-1].(type) {
+			case *ast.IdentNode:
+				val = ident.Val
+			}
+			if val == descriptor.GetName() {
+				lg.Debug("special case: hovering over field name; field name matches")
+				// go up one more level
+				msgNode := path[closestIdentifiableIndex-1]
+				switch msgNode := msgNode.(type) {
+				case *ast.MessageNode:
+					lg.Debug("special case: hovering over field name; field name matches; msgNode is *ast.MessageNode")
+					if field := fd.Messages().ByName(protoreflect.Name(msgNode.Name.AsIdentifier())).Fields().ByName(protoreflect.Name(descriptor.GetName())); field != nil {
+						lg.Debug("special case: hovering over field name; field name matches; msgNode is *ast.MessageNode; field is not nil")
+						return field, nil, nil
+					}
+				}
+			}
+			lg.Debug("special case: hovering over field name; field name does not match")
+
+			// 3.2: the field type is compound, and the cursor is over the package segment, not the message type name
+			if compound, ok := path[len(path)-2].(*ast.CompoundIdentNode); ok {
+				components := compound.Components
+				if val != components[len(components)-1].Val {
+					lg.Debug("special case: hovering over field type package segment")
+					// assume the package name is all the parts except the last one
+					pkgNameSegments := []string{}
+					for _, component := range components[:len(components)-1] {
+						pkgNameSegments = append(pkgNameSegments, component.Val)
+					}
+					pkgName := strings.Join(pkgNameSegments, ".")
+					// find the import that matches the package name
+					imports := fd.Imports()
+					for i := 0; i < imports.Len(); i++ {
+						imp := imports.Get(i)
+						if imp.Package() == protoreflect.FullName(pkgName) {
+							lg.Debug("special case: hovering over field type package segment; package name matches; import found")
+							start := fileNode.NodeInfo(components[0])
+							end := fileNode.NodeInfo(components[len(components)-2])
+							rng := positionsToRange(start.Start(), end.End())
+							return imp, &rng, nil
 						}
 					}
 				}
 			}
+			lg.Debug("special case: hovering over field type package segment; package name does not match")
 		}
 	}
 
@@ -165,7 +280,7 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 		if dotPrefixedFqn := desc.GetTypeName(); len(dotPrefixedFqn) > 0 && dotPrefixedFqn[0] == '.' {
 			fqn := protoreflect.FullName(dotPrefixedFqn[1:])
 			if !fqn.IsValid() {
-				return nil, fmt.Errorf("%q is not a valid full name", fqn)
+				return nil, nil, fmt.Errorf("%q is not a valid full name", fqn)
 			}
 			definitionFullName = fqn
 		}
@@ -186,53 +301,53 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 					fqn = fqn[1:]
 				}
 				if !protoreflect.FullName(fqn).IsValid() {
-					return nil, fmt.Errorf("%q is not a valid full name", fqn)
+					return nil, nil, fmt.Errorf("%q is not a valid full name", fqn)
 				}
 				definitionFullName = protoreflect.FullName(fqn)
 			default:
-				return nil, fmt.Errorf("unexpected node type %T", rpcTypeNode)
+				return nil, nil, fmt.Errorf("unexpected node type %T", rpcTypeNode)
 			}
 		default:
-			return nil, fmt.Errorf("unexpected node type %T", rpcNode)
+			return nil, nil, fmt.Errorf("unexpected node type %T", rpcNode)
 		}
 	case *descriptorpb.FileDescriptorProto:
-		fd, err := cache.files.AsResolver().FindFileByPath(desc.GetName())
+		fd, err := snap.Files.AsResolver().FindFileByPath(desc.GetName())
 		if err != nil || fd == nil {
-			return nil, fmt.Errorf("failed to find file by path %q: %w", desc.GetName(), err)
+			return nil, nil, fmt.Errorf("failed to find file by path %q: %w", desc.GetName(), err)
 		}
-		return fd, nil
+		return fd, nil, nil
 	case *descriptorpb.UninterpretedOption_NamePart:
 		namePart := desc.GetNamePart()
 		if len(namePart) > 0 && namePart[0] == '.' {
 			fqn := protoreflect.FullName(namePart[1:])
 			if !fqn.IsValid() {
-				return nil, fmt.Errorf("%q is not a valid full name", fqn)
+				return nil, nil, fmt.Errorf("%q is not a valid full name", fqn)
 			}
 			definitionFullName = fqn
 		}
 		if desc.GetIsExtension() {
-			extType, err := cache.files.AsResolver().FindExtensionByName(definitionFullName)
+			extType, err := snap.Files.AsResolver().FindExtensionByName(definitionFullName)
 			if err != nil {
-				return nil, fmt.Errorf("failed to find extension by name %q: %w", definitionFullName, err)
+				return nil, nil, fmt.Errorf("failed to find extension by name %q: %w", definitionFullName, err)
 			}
 			definitionFullName = extType.TypeDescriptor().FullName()
 		}
 	case *descriptorpb.UninterpretedOption:
 		for _, part := range desc.GetName() {
 			if part.GetIsExtension() {
-				extType, err := cache.files.AsResolver().FindExtensionByName(protoreflect.FullName(part.GetNamePart()[1:]))
+				extType, err := snap.Files.AsResolver().FindExtensionByName(protoreflect.FullName(part.GetNamePart()[1:]))
 				if err != nil {
-					return nil, fmt.Errorf("failed to find extension by name %q: %w", definitionFullName, err)
+					return nil, nil, fmt.Errorf("failed to find extension by name %q: %w", definitionFullName, err)
 				}
 				definitionFullName = extType.TypeDescriptor().FullName()
 				break
 			}
 		}
-	default:
-		return nil, fmt.Errorf("unimplemented descriptor type %T", desc)
+		// default:
+		// 	return nil, fmt.Errorf("unimplemented descriptor type %T", desc)
 	}
 
-	desc, err := cache.files.AsResolver().FindDescriptorByName(definitionFullName)
+	desc, err := snap.Files.AsResolver().FindDescriptorByName(definitionFullName)
 	if err != nil {
 		if msg, err := protoregistry.GlobalTypes.FindMessageByName(definitionFullName); err == nil {
 			desc = msg.Descriptor()
@@ -241,9 +356,9 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 		} else if msg, err := protoregistry.GlobalTypes.FindExtensionByName(definitionFullName); err == nil {
 			desc = msg.TypeDescriptor()
 		} else {
-			return nil, fmt.Errorf("failed to find descriptor for %q: %w", definitionFullName, err)
+			return nil, nil, fmt.Errorf("failed to find descriptor for %q: %w", definitionFullName, err)
 		}
 	}
 
-	return desc, nil
+	return desc, nil, nil
 }

@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/bufbuild/protocompile/ast"
-	"github.com/bufbuild/protocompile/linker"
 	"github.com/bufbuild/protocompile/protoutil"
 	"github.com/jhump/protoreflect/desc"
 	"github.com/jhump/protoreflect/desc/protoprint"
@@ -24,13 +23,13 @@ type Server struct {
 	c  *Cache
 
 	openedDocumentsMu sync.Mutex
-	openedDocuments   map[protocol.DocumentURI]linker.Result
+	openedDocuments   map[protocol.DocumentURI]struct{}
 }
 
 func NewServer(lg *zap.Logger) *Server {
 	return &Server{
 		lg:              lg,
-		openedDocuments: map[protocol.DocumentURI]linker.Result{},
+		openedDocuments: map[protocol.DocumentURI]struct{}{},
 	}
 }
 
@@ -55,12 +54,15 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.InitializePara
 			DeclarationProvider:    true,
 			TypeDefinitionProvider: true,
 			// ReferencesProvider: true,
-			// WorkspaceSymbolProvider: true,
+			WorkspaceSymbolProvider: true,
 			CompletionProvider: &protocol.CompletionOptions{
 				TriggerCharacters: []string{"."},
 			},
-			DefinitionProvider: true,
-			// DocumentSymbolProvider: true,
+			DefinitionProvider:     true,
+			SemanticTokensProvider: &protocol.SemanticTokensOptions{},
+			DocumentSymbolProvider: &protocol.DocumentSymbolOptions{
+				Label: "protols",
+			},
 		},
 
 		ServerInfo: &protocol.ServerInfo{
@@ -75,13 +77,13 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.InitializePara
 func (s *Server) DidOpen(ctx context.Context, params *protocol.DidOpenTextDocumentParams) (err error) {
 	s.lg.Debug("DidOpen", zap.String("uri", params.TextDocument.URI.Filename()))
 
-	res, err := s.c.FindFileByPath(params.TextDocument.URI.Filename())
-	if err != nil {
-		return fmt.Errorf("could not find file %q: %w", params.TextDocument.URI.Filename(), err)
-	}
+	// _, err = s.c.FindFileByPath(params.TextDocument.URI.Filename())
+	// if err != nil {
+	// 	return fmt.Errorf("could not find file %q: %w", params.TextDocument.URI.Filename(), err)
+	// }
 
 	s.openedDocumentsMu.Lock()
-	s.openedDocuments[params.TextDocument.URI] = res
+	s.openedDocuments[params.TextDocument.URI] = struct{}{}
 	s.openedDocumentsMu.Unlock()
 
 	return nil
@@ -147,7 +149,8 @@ func (s *Server) Declaration(ctx context.Context, params *protocol.DeclarationPa
 func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionParams) (result []protocol.Location, err error) {
 	// return nil, jsonrpc2.ErrMethodNotFound
 	s.lg.Debug("Definition Request", zap.String("uri", params.TextDocument.URI.Filename()), zap.Int("line", int(params.Position.Line)), zap.Int("col", int(params.Position.Character)))
-	desc, err := findRelevantDescriptorAtLocation(&params.TextDocumentPositionParams, s.c, s.lg)
+	snap := s.c.Snapshot()
+	desc, _, err := findRelevantDescriptorAtLocation(&params.TextDocumentPositionParams, snap, s.lg)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +158,7 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 	if parentFile == nil {
 		return nil, errors.New("no parent file found for descriptor")
 	}
-	containingFileResolver, err := s.c.FindFileByPath(parentFile.Path())
+	containingFileResolver, err := snap.FindFileByPath(parentFile.Path())
 	if err != nil {
 		return nil, fmt.Errorf("failed to find containing file for %q: %w", parentFile.Path(), err)
 	}
@@ -177,6 +180,7 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 		node = containingFileResolver.OneofNode(protoutil.ProtoFromOneofDescriptor(desc))
 	case protoreflect.FileDescriptor:
 		node = containingFileResolver.FileNode()
+		s.lg.Debug("definition is an import: ", zap.String("import", containingFileResolver.Path()))
 	default:
 		return nil, fmt.Errorf("unexpected descriptor type %T", desc)
 	}
@@ -184,7 +188,7 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 	info := containingFileResolver.AST().NodeInfo(node)
 	return []protocol.Location{
 		{
-			URI: uri.File(s.c.sourcePackages[containingFileResolver.Path()]),
+			URI: uri.File(snap.SourcePackages[containingFileResolver.Path()]),
 			Range: protocol.Range{
 				Start: protocol.Position{
 					Line:      uint32(info.Start().Line - 1),
@@ -202,10 +206,23 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 // Hover implements protocol.Server.
 func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (result *protocol.Hover, err error) {
 	s.lg.Debug("Hover Request", zap.String("uri", params.TextDocument.URI.Filename()), zap.Int("line", int(params.Position.Line)), zap.Int("col", int(params.Position.Character)))
-	d, err := findRelevantDescriptorAtLocation(&params.TextDocumentPositionParams, s.c, s.lg)
+	snap := s.c.Snapshot()
+	d, rng, err := findRelevantDescriptorAtLocation(&params.TextDocumentPositionParams, snap, s.lg)
 	if err != nil {
 		return nil, err
 	}
+
+	// special case: hovers for file imports
+	if fd, ok := d.(protoreflect.FileImport); ok {
+		return &protocol.Hover{
+			Range: rng,
+			Contents: protocol.MarkupContent{
+				Kind:  protocol.Markdown,
+				Value: fmt.Sprintf("```protobuf\nimport %q;\n```", fd.Path()),
+			},
+		}, nil
+	}
+
 	wrap, err := desc.WrapDescriptor(d)
 	if err != nil {
 		return nil, err
@@ -219,17 +236,83 @@ func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (resul
 	if err != nil {
 		return nil, err
 	}
+
 	return &protocol.Hover{
+		Range: rng,
 		Contents: protocol.MarkupContent{
 			Kind:  protocol.Markdown,
-			Value: fmt.Sprintf("```proto\n%s\n```", str),
+			Value: fmt.Sprintf("```protobuf\n%s\n```", str),
 		},
 	}, nil
 }
 
 // DidChange implements protocol.Server.
 func (s *Server) DidChange(ctx context.Context, params *protocol.DidChangeTextDocumentParams) (err error) {
-	return jsonrpc2.ErrMethodNotFound
+	// todo: this is uhhh not exactly efficient
+	s.openedDocumentsMu.Lock()
+	defer s.openedDocumentsMu.Unlock()
+	_, isOpen := s.openedDocuments[params.TextDocument.URI]
+	if !isOpen {
+		return s.c.Reindex(ctx)
+	}
+	return nil
+}
+
+// DidCreateFiles implements protocol.Server.
+func (s *Server) DidCreateFiles(ctx context.Context, params *protocol.CreateFilesParams) (err error) {
+	return s.c.Reindex(ctx)
+}
+
+// DidDeleteFiles implements protocol.Server.
+func (s *Server) DidDeleteFiles(ctx context.Context, params *protocol.DeleteFilesParams) (err error) {
+	return s.c.Reindex(ctx)
+}
+
+// DidRenameFiles implements protocol.Server.
+func (s *Server) DidRenameFiles(ctx context.Context, params *protocol.RenameFilesParams) (err error) {
+	return s.c.Reindex(ctx)
+}
+
+// DidSave implements protocol.Server.
+func (s *Server) DidSave(ctx context.Context, params *protocol.DidSaveTextDocumentParams) (err error) {
+	return s.c.Reindex(ctx)
+}
+
+// SemanticTokensFull implements protocol.Server.
+func (s *Server) SemanticTokensFull(ctx context.Context, params *protocol.SemanticTokensParams) (result *protocol.SemanticTokens, err error) {
+	snap := s.c.Snapshot()
+	tokens, err := snap.ComputeSemanticTokens(params.TextDocument)
+	if err != nil {
+		return nil, err
+	}
+	return &protocol.SemanticTokens{
+		Data: tokens,
+	}, nil
+}
+
+// SemanticTokensFullDelta implements protocol.Server.
+func (s *Server) SemanticTokensFullDelta(ctx context.Context, params *protocol.SemanticTokensDeltaParams) (result interface{}, err error) {
+	return nil, nil
+}
+
+// SemanticTokensRange implements protocol.Server.
+func (s *Server) SemanticTokensRange(ctx context.Context, params *protocol.SemanticTokensRangeParams) (result *protocol.SemanticTokens, err error) {
+	return nil, nil
+}
+
+// SemanticTokensRefresh implements protocol.Server.
+func (s *Server) SemanticTokensRefresh(ctx context.Context) (err error) {
+	return nil
+}
+
+// DocumentSymbol implements protocol.Server.
+func (s *Server) DocumentSymbol(ctx context.Context, params *protocol.DocumentSymbolParams) (result []interface{}, err error) {
+	snap := s.c.Snapshot()
+	symbols, err := snap.DocumentSymbolsForFile(params.TextDocument)
+	if err != nil {
+		return nil, err
+	}
+	return symbols, nil
 }
 
 // DidChangeConfiguration implements protocol.Server.
@@ -244,26 +327,6 @@ func (s *Server) DidChangeWatchedFiles(ctx context.Context, params *protocol.Did
 
 // DidChangeWorkspaceFolders implements protocol.Server.
 func (s *Server) DidChangeWorkspaceFolders(ctx context.Context, params *protocol.DidChangeWorkspaceFoldersParams) (err error) {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// DidCreateFiles implements protocol.Server.
-func (s *Server) DidCreateFiles(ctx context.Context, params *protocol.CreateFilesParams) (err error) {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// DidDeleteFiles implements protocol.Server.
-func (s *Server) DidDeleteFiles(ctx context.Context, params *protocol.DeleteFilesParams) (err error) {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// DidRenameFiles implements protocol.Server.
-func (s *Server) DidRenameFiles(ctx context.Context, params *protocol.RenameFilesParams) (err error) {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// DidSave implements protocol.Server.
-func (s *Server) DidSave(ctx context.Context, params *protocol.DidSaveTextDocumentParams) (err error) {
 	return jsonrpc2.ErrMethodNotFound
 }
 
@@ -284,11 +347,6 @@ func (s *Server) DocumentLink(ctx context.Context, params *protocol.DocumentLink
 
 // DocumentLinkResolve implements protocol.Server.
 func (s *Server) DocumentLinkResolve(ctx context.Context, params *protocol.DocumentLink) (result *protocol.DocumentLink, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// DocumentSymbol implements protocol.Server.
-func (s *Server) DocumentSymbol(ctx context.Context, params *protocol.DocumentSymbolParams) (result []interface{}, err error) {
 	return nil, jsonrpc2.ErrMethodNotFound
 }
 
@@ -375,26 +433,6 @@ func (s *Server) Rename(ctx context.Context, params *protocol.RenameParams) (res
 // Request implements protocol.Server.
 func (s *Server) Request(ctx context.Context, method string, params interface{}) (result interface{}, err error) {
 	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// SemanticTokensFull implements protocol.Server.
-func (s *Server) SemanticTokensFull(ctx context.Context, params *protocol.SemanticTokensParams) (result *protocol.SemanticTokens, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// SemanticTokensFullDelta implements protocol.Server.
-func (s *Server) SemanticTokensFullDelta(ctx context.Context, params *protocol.SemanticTokensDeltaParams) (result interface{}, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// SemanticTokensRange implements protocol.Server.
-func (s *Server) SemanticTokensRange(ctx context.Context, params *protocol.SemanticTokensRangeParams) (result *protocol.SemanticTokens, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// SemanticTokensRefresh implements protocol.Server.
-func (s *Server) SemanticTokensRefresh(ctx context.Context) (err error) {
-	return jsonrpc2.ErrMethodNotFound
 }
 
 // SetTrace implements protocol.Server.

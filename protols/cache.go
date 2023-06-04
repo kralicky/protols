@@ -62,7 +62,7 @@ func (c *Cache) Reindex(ctx context.Context) error {
 		c.sourceFilenames[source] = path.Join(goPkg, path.Base(source))
 	}
 	accessor := ragu.SourceAccessor(c.sourcePackages)
-	res := ragu.NewResolver(accessor)
+	res := protocompile.WithStandardImports(ragu.NewResolver(accessor))
 	compiler := protocompile.Compiler{
 		Resolver:       res,
 		MaxParallelism: -1,

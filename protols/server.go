@@ -221,8 +221,8 @@ func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (resul
 	}
 	return &protocol.Hover{
 		Contents: protocol.MarkupContent{
-			Kind:  protocol.PlainText,
-			Value: str,
+			Kind:  protocol.Markdown,
+			Value: fmt.Sprintf("```proto\n%s\n```", str),
 		},
 	}, nil
 }

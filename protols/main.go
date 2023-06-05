@@ -6,9 +6,9 @@ import (
 	"net"
 	"os"
 
+	protocol "github.com/kralicky/ragu/cmd/protols/protocol"
 	flag "github.com/spf13/pflag"
 	"go.lsp.dev/jsonrpc2"
-	protocol "go.lsp.dev/protocol"
 	"go.uber.org/zap"
 )
 
@@ -22,7 +22,6 @@ func main() {
 
 	lg, _ := zap.NewDevelopment()
 	ctx := context.Background()
-	ctx = protocol.WithLogger(ctx, lg)
 
 	server := NewServer(lg)
 

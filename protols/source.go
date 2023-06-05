@@ -6,7 +6,8 @@ import (
 	"strings"
 
 	"github.com/bufbuild/protocompile/ast"
-	protocol "go.lsp.dev/protocol"
+	protocol "github.com/kralicky/ragu/cmd/protols/protocol"
+	"go.lsp.dev/uri"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -45,13 +46,18 @@ func locationIsWithinNode(location ast.SourcePos, nodeInfo ast.NodeInfo) bool {
 	return location.Line >= start.Line && location.Line <= end.Line && location.Col >= start.Col && location.Col < end.Col
 }
 
-func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParams, snap *Snapshot, lg *zap.Logger) (protoreflect.Descriptor, *protocol.Range, error) {
-	fd, err := snap.FindFileByPath(params.TextDocument.URI.Filename())
+func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParams, snap *Snapshot, lg *zap.Logger) (protoreflect.Descriptor, protocol.Range, error) {
+	u, err := uri.Parse(string(params.TextDocument.URI))
 	if err != nil {
-		return nil, nil, err
+		return nil, protocol.Range{}, err
+	}
+
+	fd, err := snap.FindFileByPath(u.Filename())
+	if err != nil {
+		return nil, protocol.Range{}, err
 	}
 	sourcePos := ast.SourcePos{
-		Filename: params.TextDocument.URI.Filename(),
+		Filename: string(params.TextDocument.URI),
 		Line:     int(params.Position.Line) + 1,
 		Col:      int(params.Position.Character) + 1,
 	}
@@ -60,19 +66,8 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 	// find the node in the ast at the given position
 	path := findNodeAtSourcePos(fileNode, sourcePos)
 	if len(path) == 0 {
-		return nil, nil, errors.New("no node found at position")
+		return nil, protocol.Range{}, errors.New("no node found at position")
 	}
-	// squash compound identifiers at the end of the path
-	// if len(path) > 1 {
-	// 	if ident, ok := path[len(path)-1].(*ast.IdentNode); ok {
-	// 		if compoundIdent, ok := path[len(path)-2].(*ast.CompoundIdentNode); ok {
-	// 			if compoundIdent.Components[len(compoundIdent.Components)-1].Val == ident.Val {
-	// 				lg.Debug("squashing compound identifier")
-	// 				path = path[:len(path)-1]
-	// 			}
-	// 		}
-	// 	}
-	// }
 
 	closestIdentifiableIndex := -1
 	var descriptor proto.Message
@@ -95,7 +90,7 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 	}
 
 	if closestIdentifiableIndex == -1 {
-		return nil, nil, errors.New("no identifiable node found at position")
+		return nil, protocol.Range{}, errors.New("no identifiable node found at position")
 	}
 	var definitionFullName protoreflect.FullName
 	if closestIdentifiableIndex == len(path)-1 {
@@ -124,11 +119,11 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 					if err != nil {
 						f, err = protoregistry.GlobalFiles.FindFileByPath(filename)
 						if err != nil {
-							return nil, nil, fmt.Errorf("could not find file %q: %w", filename, err)
+							return nil, protocol.Range{}, fmt.Errorf("could not find file %q: %w", filename, err)
 						}
 					}
 					rng := toRange(fileNode.NodeInfo(lit))
-					return f, &rng, nil
+					return f, rng, nil
 				}
 			}
 
@@ -149,7 +144,7 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 						mapNode := path[closestIdentifiableIndex-1]
 						if msgNode, ok := mapNode.(*ast.MessageNode); ok {
 							lg.Debug("special case: hovering over map field name, and map node is a message node")
-							return fd.Messages().ByName(protoreflect.Name(msgNode.Name.Val)).Fields().ByName(protoreflect.Name(field.Name.Val)), nil, nil
+							return fd.Messages().ByName(protoreflect.Name(msgNode.Name.Val)).Fields().ByName(protoreflect.Name(field.Name.Val)), protocol.Range{}, nil
 						}
 					case field.MapType.KeyType.Val:
 						// hovering over the map key type - do nothing, this is not a special case
@@ -172,24 +167,25 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 						definitionFullName = protoreflect.FullName(field.MapType.ValueType.AsIdentifier())
 						lg.Debug("special case: hovering over compound map value type: " + string(definitionFullName))
 					default:
-						return nil, nil, fmt.Errorf("unexpected compound map field node type %T", ident)
+						return nil, protocol.Range{}, fmt.Errorf("unexpected compound map field node type %T", ident)
 					}
 				default:
-					return nil, nil, fmt.Errorf("unexpected map field node type %T", ident)
+					return nil, protocol.Range{}, fmt.Errorf("unexpected map field node type %T", ident)
 				}
 			case *ast.MessageNode:
-				return fd.Messages().ByName(protoreflect.Name(descriptor.GetName())), nil, nil
+				lg.Debug("special case: hovering over message node")
+				return fd.Messages().ByName(protoreflect.Name(descriptor.GetName())), protocol.Range{}, nil
 			}
 		case *descriptorpb.EnumDescriptorProto:
-			return fd.Enums().ByName(protoreflect.Name(descriptor.GetName())), nil, nil
+			return fd.Enums().ByName(protoreflect.Name(descriptor.GetName())), protocol.Range{}, nil
 		case *descriptorpb.EnumValueDescriptorProto:
 			// go up one more level
 			enumNode := path[closestIdentifiableIndex-1]
 			if enumNode, ok := enumNode.(*ast.EnumNode); ok {
-				return fd.Enums().ByName(protoreflect.Name(enumNode.Name.Val)).Values().ByName(protoreflect.Name(descriptor.GetName())), nil, nil
+				return fd.Enums().ByName(protoreflect.Name(enumNode.Name.Val)).Values().ByName(protoreflect.Name(descriptor.GetName())), protocol.Range{}, nil
 			}
 		case *descriptorpb.ServiceDescriptorProto:
-			return fd.Services().ByName(protoreflect.Name(descriptor.GetName())), nil, nil
+			return fd.Services().ByName(protoreflect.Name(descriptor.GetName())), protocol.Range{}, nil
 		case *descriptorpb.MethodDescriptorProto:
 			// case 1: [Compound]Ident <- *ast.RPCNode = hovering over the method
 			// case 2: [Compound]Ident <- *ast.RPCTypeNode <- *ast.RPCNode = hovering over the input or output type
@@ -218,7 +214,7 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 				rpcNode := path[closestIdentifiableIndex-1]
 				if svcNode, ok := rpcNode.(*ast.ServiceNode); ok {
 					rng := toRange(fileNode.NodeInfo(svcNode.Name))
-					return fd.Services().ByName(protoreflect.Name(svcNode.Name.AsIdentifier())).Methods().ByName(protoreflect.Name(descriptor.GetName())), &rng, nil
+					return fd.Services().ByName(protoreflect.Name(svcNode.Name.AsIdentifier())).Methods().ByName(protoreflect.Name(descriptor.GetName())), rng, nil
 				}
 			}
 
@@ -240,7 +236,7 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 					lg.Debug("special case: hovering over field name; field name matches; msgNode is *ast.MessageNode")
 					if field := fd.Messages().ByName(protoreflect.Name(msgNode.Name.AsIdentifier())).Fields().ByName(protoreflect.Name(descriptor.GetName())); field != nil {
 						lg.Debug("special case: hovering over field name; field name matches; msgNode is *ast.MessageNode; field is not nil")
-						return field, nil, nil
+						return field, protocol.Range{}, nil
 					}
 				}
 			}
@@ -266,7 +262,7 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 							start := fileNode.NodeInfo(components[0])
 							end := fileNode.NodeInfo(components[len(components)-2])
 							rng := positionsToRange(start.Start(), end.End())
-							return imp, &rng, nil
+							return imp, rng, nil
 						}
 					}
 				}
@@ -280,7 +276,7 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 		if dotPrefixedFqn := desc.GetTypeName(); len(dotPrefixedFqn) > 0 && dotPrefixedFqn[0] == '.' {
 			fqn := protoreflect.FullName(dotPrefixedFqn[1:])
 			if !fqn.IsValid() {
-				return nil, nil, fmt.Errorf("%q is not a valid full name", fqn)
+				return nil, protocol.Range{}, fmt.Errorf("%q is not a valid full name", fqn)
 			}
 			definitionFullName = fqn
 		}
@@ -301,34 +297,34 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 					fqn = fqn[1:]
 				}
 				if !protoreflect.FullName(fqn).IsValid() {
-					return nil, nil, fmt.Errorf("%q is not a valid full name", fqn)
+					return nil, protocol.Range{}, fmt.Errorf("%q is not a valid full name", fqn)
 				}
 				definitionFullName = protoreflect.FullName(fqn)
 			default:
-				return nil, nil, fmt.Errorf("unexpected node type %T", rpcTypeNode)
+				return nil, protocol.Range{}, fmt.Errorf("unexpected node type %T", rpcTypeNode)
 			}
 		default:
-			return nil, nil, fmt.Errorf("unexpected node type %T", rpcNode)
+			return nil, protocol.Range{}, fmt.Errorf("unexpected node type %T", rpcNode)
 		}
 	case *descriptorpb.FileDescriptorProto:
 		fd, err := snap.Files.AsResolver().FindFileByPath(desc.GetName())
 		if err != nil || fd == nil {
-			return nil, nil, fmt.Errorf("failed to find file by path %q: %w", desc.GetName(), err)
+			return nil, protocol.Range{}, fmt.Errorf("failed to find file by path %q: %w", desc.GetName(), err)
 		}
-		return fd, nil, nil
+		return fd, protocol.Range{}, nil
 	case *descriptorpb.UninterpretedOption_NamePart:
 		namePart := desc.GetNamePart()
 		if len(namePart) > 0 && namePart[0] == '.' {
 			fqn := protoreflect.FullName(namePart[1:])
 			if !fqn.IsValid() {
-				return nil, nil, fmt.Errorf("%q is not a valid full name", fqn)
+				return nil, protocol.Range{}, fmt.Errorf("%q is not a valid full name", fqn)
 			}
 			definitionFullName = fqn
 		}
 		if desc.GetIsExtension() {
 			extType, err := snap.Files.AsResolver().FindExtensionByName(definitionFullName)
 			if err != nil {
-				return nil, nil, fmt.Errorf("failed to find extension by name %q: %w", definitionFullName, err)
+				return nil, protocol.Range{}, fmt.Errorf("failed to find extension by name %q: %w", definitionFullName, err)
 			}
 			definitionFullName = extType.TypeDescriptor().FullName()
 		}
@@ -337,14 +333,14 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 			if part.GetIsExtension() {
 				extType, err := snap.Files.AsResolver().FindExtensionByName(protoreflect.FullName(part.GetNamePart()[1:]))
 				if err != nil {
-					return nil, nil, fmt.Errorf("failed to find extension by name %q: %w", definitionFullName, err)
+					return nil, protocol.Range{}, fmt.Errorf("failed to find extension by name %q: %w", definitionFullName, err)
 				}
 				definitionFullName = extType.TypeDescriptor().FullName()
 				break
 			}
 		}
-		// default:
-		// 	return nil, fmt.Errorf("unimplemented descriptor type %T", desc)
+	default:
+		return nil, protocol.Range{}, fmt.Errorf("unimplemented descriptor type %T", desc)
 	}
 
 	desc, err := snap.Files.AsResolver().FindDescriptorByName(definitionFullName)
@@ -356,9 +352,9 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 		} else if msg, err := protoregistry.GlobalTypes.FindExtensionByName(definitionFullName); err == nil {
 			desc = msg.TypeDescriptor()
 		} else {
-			return nil, nil, fmt.Errorf("failed to find descriptor for %q: %w", definitionFullName, err)
+			return nil, protocol.Range{}, fmt.Errorf("failed to find descriptor for %q: %w", definitionFullName, err)
 		}
 	}
 
-	return desc, nil, nil
+	return desc, protocol.Range{}, nil
 }

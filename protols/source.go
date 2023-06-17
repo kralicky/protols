@@ -6,9 +6,8 @@ import (
 	"strings"
 
 	"github.com/bufbuild/protocompile/ast"
-	protocol "github.com/kralicky/ragu/cmd/protols/protocol"
-	"go.lsp.dev/uri"
 	"go.uber.org/zap"
+	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
@@ -46,13 +45,42 @@ func locationIsWithinNode(location ast.SourcePos, nodeInfo ast.NodeInfo) bool {
 	return location.Line >= start.Line && location.Line <= end.Line && location.Col >= start.Col && location.Col < end.Col
 }
 
-func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParams, snap *Snapshot, lg *zap.Logger) (protoreflect.Descriptor, protocol.Range, error) {
-	u, err := uri.Parse(string(params.TextDocument.URI))
-	if err != nil {
-		return nil, protocol.Range{}, err
-	}
+type ranger interface {
+	Start() ast.SourcePos
+	End() ast.SourcePos
+}
 
-	fd, err := snap.FindFileByPath(u.Filename())
+func toRange[T ranger](t T) protocol.Range {
+	return positionsToRange(t.Start(), t.End())
+}
+
+func positionsToRange(start, end ast.SourcePos) protocol.Range {
+	return protocol.Range{
+		Start: protocol.Position{
+			Line:      uint32(start.Line - 1),
+			Character: uint32(start.Col - 1),
+		},
+		End: protocol.Position{
+			Line:      uint32(end.Line - 1),
+			Character: uint32(end.Col - 1),
+		},
+	}
+}
+
+func rangeToSourcePositions(rng protocol.Range) (start, end ast.SourcePos) {
+	start = ast.SourcePos{
+		Line: int(rng.Start.Line) + 1,
+		Col:  int(rng.Start.Character) + 1,
+	}
+	end = ast.SourcePos{
+		Line: int(rng.End.Line) + 1,
+		Col:  int(rng.End.Character) + 1,
+	}
+	return
+}
+
+func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParams, cache *Cache, lg *zap.Logger) (protoreflect.Descriptor, protocol.Range, error) {
+	fd, err := cache.FindResultByPath(params.TextDocument.URI.SpanURI().Filename())
 	if err != nil {
 		return nil, protocol.Range{}, err
 	}
@@ -115,13 +143,13 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 				if importNode, ok := path[len(path)-2].(*ast.ImportNode); ok {
 					lg.Debug("special case: hovering over import")
 					filename := importNode.Name.AsString()
-					f, err := snap.Files.AsResolver().FindFileByPath(filename)
+					f, err := cache.FindFileByPath(filename)
+					// if err != nil {
+					// 	f, err = protoregistry.GlobalFiles.FindFileByPath(filename)
 					if err != nil {
-						f, err = protoregistry.GlobalFiles.FindFileByPath(filename)
-						if err != nil {
-							return nil, protocol.Range{}, fmt.Errorf("could not find file %q: %w", filename, err)
-						}
+						return nil, protocol.Range{}, fmt.Errorf("could not find file %q: %w", filename, err)
 					}
+					// }
 					rng := toRange(fileNode.NodeInfo(lit))
 					return f, rng, nil
 				}
@@ -307,7 +335,7 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 			return nil, protocol.Range{}, fmt.Errorf("unexpected node type %T", rpcNode)
 		}
 	case *descriptorpb.FileDescriptorProto:
-		fd, err := snap.Files.AsResolver().FindFileByPath(desc.GetName())
+		fd, err := cache.FindFileByPath(desc.GetName())
 		if err != nil || fd == nil {
 			return nil, protocol.Range{}, fmt.Errorf("failed to find file by path %q: %w", desc.GetName(), err)
 		}
@@ -322,7 +350,7 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 			definitionFullName = fqn
 		}
 		if desc.GetIsExtension() {
-			extType, err := snap.Files.AsResolver().FindExtensionByName(definitionFullName)
+			extType, err := cache.FindExtensionByName(definitionFullName)
 			if err != nil {
 				return nil, protocol.Range{}, fmt.Errorf("failed to find extension by name %q: %w", definitionFullName, err)
 			}
@@ -331,7 +359,7 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 	case *descriptorpb.UninterpretedOption:
 		for _, part := range desc.GetName() {
 			if part.GetIsExtension() {
-				extType, err := snap.Files.AsResolver().FindExtensionByName(protoreflect.FullName(part.GetNamePart()[1:]))
+				extType, err := cache.FindExtensionByName(protoreflect.FullName(part.GetNamePart()[1:]))
 				if err != nil {
 					return nil, protocol.Range{}, fmt.Errorf("failed to find extension by name %q: %w", definitionFullName, err)
 				}
@@ -343,7 +371,7 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 		return nil, protocol.Range{}, fmt.Errorf("unimplemented descriptor type %T", desc)
 	}
 
-	desc, err := snap.Files.AsResolver().FindDescriptorByName(definitionFullName)
+	desc, err := cache.FindDescriptorByName(definitionFullName)
 	if err != nil {
 		if msg, err := protoregistry.GlobalTypes.FindMessageByName(definitionFullName); err == nil {
 			desc = msg.Descriptor()

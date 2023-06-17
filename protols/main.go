@@ -6,18 +6,25 @@ import (
 	"net"
 	"os"
 
-	protocol "github.com/kralicky/ragu/cmd/protols/protocol"
 	flag "github.com/spf13/pflag"
-	"go.lsp.dev/jsonrpc2"
 	"go.uber.org/zap"
+	"golang.org/x/tools/gopls/pkg/lsp/protocol"
+
+	"golang.org/x/tools/pkg/jsonrpc2"
+
+	_ "google.golang.org/genproto/googleapis/api/annotations"
+	_ "google.golang.org/genproto/googleapis/rpc/code"
+	_ "google.golang.org/genproto/googleapis/rpc/context"
+	_ "google.golang.org/genproto/googleapis/rpc/context/attribute_context"
+	_ "google.golang.org/genproto/googleapis/rpc/errdetails"
+	_ "google.golang.org/genproto/googleapis/rpc/http"
+	_ "google.golang.org/genproto/googleapis/rpc/status"
 )
 
 func main() {
 	fmt.Println(os.Args)
-	var sourcePatterns []string
 	var pipe string
 	flag.StringVar(&pipe, "pipe", "", "socket name to listen on")
-	flag.StringSliceVar(&sourcePatterns, "source-patterns", nil, "source file patterns to watch")
 	flag.Parse()
 
 	lg, _ := zap.NewDevelopment()
@@ -30,14 +37,19 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %s\n", err.Error())
 		os.Exit(1)
 	}
-
-	stream := jsonrpc2.NewStream(cc)
+	stream := jsonrpc2.NewHeaderStream(cc)
+	stream = protocol.LoggingStream(stream, os.Stdout)
 	conn := jsonrpc2.NewConn(stream)
+	client := protocol.ClientDispatcher(conn)
+	ctx = protocol.WithClient(ctx, client)
+	conn.Go(ctx,
+		protocol.Handlers(
+			protocol.ServerHandler(server,
+				jsonrpc2.MethodNotFound)))
 
-	ss := jsonrpc2.HandlerServer(protocol.ServerHandler(server, jsonrpc2.MethodNotFoundHandler))
-	err = ss.ServeStream(ctx, conn)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %s\n", err.Error())
+	<-conn.Done()
+	if err := conn.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "server exited with error: %s\n", err.Error())
 		os.Exit(1)
 	}
 }

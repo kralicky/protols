@@ -4,79 +4,70 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/bufbuild/protocompile/ast"
 	"github.com/bufbuild/protocompile/protoutil"
 	"github.com/jhump/protoreflect/desc"
 	"github.com/jhump/protoreflect/desc/protoprint"
-	"google.golang.org/protobuf/reflect/protoreflect"
-
-	protocol "github.com/kralicky/ragu/cmd/protols/protocol"
-	"go.lsp.dev/jsonrpc2"
-	"go.lsp.dev/uri"
 	"go.uber.org/zap"
+	"golang.org/x/tools/gopls/pkg/lsp/protocol"
+	"golang.org/x/tools/pkg/jsonrpc2"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 type Server struct {
 	lg *zap.Logger
 	c  *Cache
-
-	openedDocumentsMu sync.Mutex
-	openedDocuments   map[protocol.DocumentURI]struct{}
 }
 
 func NewServer(lg *zap.Logger) *Server {
 	return &Server{
-		lg:              lg,
-		openedDocuments: map[protocol.DocumentURI]struct{}{},
+		lg: lg,
 	}
 }
 
 // Initialize implements protocol.Server.
 func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitialize) (result *protocol.InitializeResult, err error) {
-	sources := []string{}
-	for _, ws := range params.WorkspaceFolders {
-		wsUri := ws.URI
-		u, _ := uri.Parse(wsUri)
-		sources = append(sources, u.Filename()+"/**/*.proto")
-	}
-	s.c = NewCache(sources, s.lg.Named("cache"))
-	if err := s.c.Reindex(ctx); err != nil {
-		return nil, fmt.Errorf("indexing failed: %w", err)
+	folders := params.WorkspaceFolders
+	if len(folders) != 1 {
+		return nil, errors.New("multi-folder workspaces are not supported yet") // TODO
 	}
 
-	s.lg.Debug("Initialize", zap.Strings("sources", sources), zap.Any("initOpts", params.InitializationOptions))
+	s.c = NewCache(params.RootURI.SpanURI().Filename(), s.lg.Named("cache"))
+	// if err := s.c.Reindex(ctx); err != nil {
+	// 	return nil, fmt.Errorf("indexing failed: %w", err)
+	// }
+
+	s.lg.Debug("Initialize", zap.String("workdir", params.RootURI.SpanURI().Filename()), zap.Any("initOpts", params.InitializationOptions))
 	return &protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
 			TextDocumentSync: protocol.TextDocumentSyncOptions{
-				OpenClose:         true,
-				Change:            protocol.Full,
-				WillSave:          false,
-				WillSaveWaitUntil: false,
-				Save:              protocol.SaveOptions{IncludeText: false},
+				OpenClose: true,
+				Change:    protocol.Incremental,
+				Save:      &protocol.SaveOptions{IncludeText: true},
 			},
-			HoverProvider:          true,
-			DeclarationProvider:    true,
-			TypeDefinitionProvider: true,
+			HoverProvider: &protocol.Or_ServerCapabilities_hoverProvider{Value: true},
+
+			// DeclarationProvider: &protocol.Or_ServerCapabilities_declarationProvider{Value: true},
+			// TypeDefinitionProvider: true,
 			// ReferencesProvider: true,
-			WorkspaceSymbolProvider: true,
-			CompletionProvider: protocol.CompletionOptions{
-				TriggerCharacters: []string{"."},
-			},
-			DefinitionProvider: true,
+			// WorkspaceSymbolProvider: &protocol.Or_ServerCapabilities_workspaceSymbolProvider{Value: true},
+			// CompletionProvider: protocol.CompletionOptions{
+			// 	TriggerCharacters: []string{"."},
+			// },
+			// DefinitionProvider: &protocol.Or_ServerCapabilities_definitionProvider{Value: true},
 			SemanticTokensProvider: &protocol.SemanticTokensOptions{
 				Legend: protocol.SemanticTokensLegend{
 					TokenTypes:     semanticTokenTypes,
 					TokenModifiers: semanticTokenModifiers,
 				},
-				Full:  true,
-				Range: false,
+				Full:  &protocol.Or_SemanticTokensOptions_full{Value: true},
+				Range: &protocol.Or_SemanticTokensOptions_range{Value: true},
 			},
-			DocumentSymbolProvider: true,
+			// DocumentSymbolProvider: &protocol.Or_ServerCapabilities_documentSymbolProvider{Value: true},
 		},
 
-		ServerInfo: protocol.PServerInfoMsg_initialize{
+		ServerInfo: &protocol.PServerInfoMsg_initialize{
 			Name:    "protols",
 			Version: "0.0.1",
 		},
@@ -86,27 +77,13 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 
 // DidOpen implements protocol.Server.
 func (s *Server) DidOpen(ctx context.Context, params *protocol.DidOpenTextDocumentParams) (err error) {
-	s.lg.Debug("DidOpen", zap.String("uri", string(params.TextDocument.URI)))
-
-	// _, err = s.c.FindFileByPath(params.TextDocument.URI.Filename())
-	// if err != nil {
-	// 	return fmt.Errorf("could not find file %q: %w", params.TextDocument.URI.Filename(), err)
-	// }
-
-	s.openedDocumentsMu.Lock()
-	s.openedDocuments[params.TextDocument.URI] = struct{}{}
-	s.openedDocumentsMu.Unlock()
-
+	s.c.OnFileOpened(params.TextDocument)
 	return nil
 }
 
 // DidClose implements protocol.Server.
 func (s *Server) DidClose(ctx context.Context, params *protocol.DidCloseTextDocumentParams) (err error) {
-	s.lg.Debug("DidClose", zap.String("uri", string(params.TextDocument.URI)))
-	s.openedDocumentsMu.Lock()
-	delete(s.openedDocuments, params.TextDocument.URI)
-	s.openedDocumentsMu.Unlock()
-
+	s.c.OnFileClosed(params.TextDocument)
 	return nil
 }
 
@@ -155,8 +132,7 @@ func (s *Server) CompletionResolve(ctx context.Context, params *protocol.Complet
 func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionParams) (result []protocol.Location, err error) {
 	// return nil, jsonrpc2.ErrMethodNotFound
 	s.lg.Debug("Definition Request", zap.String("uri", string(params.TextDocument.URI)), zap.Int("line", int(params.Position.Line)), zap.Int("col", int(params.Position.Character)))
-	snap := s.c.Snapshot()
-	desc, _, err := findRelevantDescriptorAtLocation(&params.TextDocumentPositionParams, snap, s.lg)
+	desc, _, err := findRelevantDescriptorAtLocation(&params.TextDocumentPositionParams, s.c, s.lg)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +140,7 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 	if parentFile == nil {
 		return nil, errors.New("no parent file found for descriptor")
 	}
-	containingFileResolver, err := snap.FindFileByPath(parentFile.Path())
+	containingFileResolver, err := s.c.FindResultByPath(parentFile.Path())
 	if err != nil {
 		return nil, fmt.Errorf("failed to find containing file for %q: %w", parentFile.Path(), err)
 	}
@@ -194,7 +170,7 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 	info := containingFileResolver.AST().NodeInfo(node)
 	return []protocol.Location{
 		{
-			URI: protocol.DocumentURI(uri.File(snap.SourcePackages[containingFileResolver.Path()]).Filename()),
+			URI: protocol.DocumentURI(containingFileResolver.Path()),
 			Range: protocol.Range{
 				Start: protocol.Position{
 					Line:      uint32(info.Start().Line - 1),
@@ -212,8 +188,7 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 // Hover implements protocol.Server.
 func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (result *protocol.Hover, err error) {
 	s.lg.Debug("Hover Request", zap.String("uri", string(params.TextDocument.URI)), zap.Int("line", int(params.Position.Line)), zap.Int("col", int(params.Position.Character)))
-	snap := s.c.Snapshot()
-	d, rng, err := findRelevantDescriptorAtLocation(&params.TextDocumentPositionParams, snap, s.lg)
+	d, rng, err := findRelevantDescriptorAtLocation(&params.TextDocumentPositionParams, s.c, s.lg)
 	if err != nil {
 		return nil, err
 	}
@@ -254,40 +229,45 @@ func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (resul
 
 // DidChange implements protocol.Server.
 func (s *Server) DidChange(ctx context.Context, params *protocol.DidChangeTextDocumentParams) (err error) {
-	// todo: this is uhhh not exactly efficient
-	s.openedDocumentsMu.Lock()
-	defer s.openedDocumentsMu.Unlock()
-	_, isOpen := s.openedDocuments[params.TextDocument.URI]
-	if !isOpen {
-		return s.c.Reindex(ctx)
-	}
-	return nil
+	return s.c.OnFileModified(params.TextDocument, params.ContentChanges)
 }
 
 // DidCreateFiles implements protocol.Server.
 func (s *Server) DidCreateFiles(ctx context.Context, params *protocol.CreateFilesParams) (err error) {
-	return s.c.Reindex(ctx)
+	for _, f := range params.Files {
+		if err := s.c.OnFileCreated(f); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DidDeleteFiles implements protocol.Server.
 func (s *Server) DidDeleteFiles(ctx context.Context, params *protocol.DeleteFilesParams) (err error) {
-	return s.c.Reindex(ctx)
+	for _, f := range params.Files {
+		if err := s.c.OnFileDeleted(f); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DidRenameFiles implements protocol.Server.
 func (s *Server) DidRenameFiles(ctx context.Context, params *protocol.RenameFilesParams) (err error) {
-	return s.c.Reindex(ctx)
+	return fmt.Errorf("not implemented")
+	// for _, f := range params.Files {
+	// 	s.c.OnFileRenamed(f)
+	// }
 }
 
 // DidSave implements protocol.Server.
 func (s *Server) DidSave(ctx context.Context, params *protocol.DidSaveTextDocumentParams) (err error) {
-	return s.c.Reindex(ctx)
+	return s.c.OnFileSaved(params)
 }
 
 // SemanticTokensFull implements protocol.Server.
 func (s *Server) SemanticTokensFull(ctx context.Context, params *protocol.SemanticTokensParams) (result *protocol.SemanticTokens, err error) {
-	snap := s.c.Snapshot()
-	tokens, err := snap.ComputeSemanticTokens(params.TextDocument)
+	tokens, err := s.c.ComputeSemanticTokens(params.TextDocument)
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +283,13 @@ func (s *Server) SemanticTokensFullDelta(ctx context.Context, params *protocol.S
 
 // SemanticTokensRange implements protocol.Server.
 func (s *Server) SemanticTokensRange(ctx context.Context, params *protocol.SemanticTokensRangeParams) (result *protocol.SemanticTokens, err error) {
-	return nil, nil
+	tokens, err := s.c.ComputeSemanticTokensRange(params.TextDocument, params.Range)
+	if err != nil {
+		return nil, err
+	}
+	return &protocol.SemanticTokens{
+		Data: tokens,
+	}, nil
 }
 
 // SemanticTokensRefresh implements protocol.Server.
@@ -313,12 +299,12 @@ func (s *Server) SemanticTokensRefresh(ctx context.Context) (err error) {
 
 // DocumentSymbol implements protocol.Server.
 func (s *Server) DocumentSymbol(ctx context.Context, params *protocol.DocumentSymbolParams) (result []interface{}, err error) {
-	snap := s.c.Snapshot()
-	symbols, err := snap.DocumentSymbolsForFile(params.TextDocument)
-	if err != nil {
-		return nil, err
-	}
-	return symbols, nil
+	return nil, nil
+	// symbols, err := s.c.DocumentSymbolsForFile(params.TextDocument)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// return symbols, nil
 }
 
 var _ protocol.Server = &Server{}
@@ -419,17 +405,17 @@ func (*Server) DidSaveNotebookDocument(context.Context, *protocol.DidSaveNoteboo
 
 // DocumentColor implements protocol.Server.
 func (*Server) DocumentColor(context.Context, *protocol.DocumentColorParams) ([]protocol.ColorInformation, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, nil
 }
 
 // DocumentHighlight implements protocol.Server.
 func (*Server) DocumentHighlight(context.Context, *protocol.DocumentHighlightParams) ([]protocol.DocumentHighlight, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, nil
 }
 
 // DocumentLink implements protocol.Server.
 func (*Server) DocumentLink(context.Context, *protocol.DocumentLinkParams) ([]protocol.DocumentLink, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, nil
 }
 
 // ExecuteCommand implements protocol.Server.

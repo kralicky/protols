@@ -1,604 +1,399 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
-	"sync/atomic"
+	"sync"
 
+	"github.com/bmatcuk/doublestar"
 	"github.com/bufbuild/protocompile"
-	"github.com/bufbuild/protocompile/ast"
 	"github.com/bufbuild/protocompile/linker"
 	"github.com/bufbuild/protocompile/reporter"
+	"github.com/jhump/protoreflect/desc"
 	"github.com/kralicky/ragu"
-	protocol "github.com/kralicky/ragu/cmd/protols/protocol"
-	"github.com/samber/lo"
-	"go.lsp.dev/uri"
 	"go.uber.org/zap"
-	"golang.org/x/sync/singleflight"
-	"google.golang.org/protobuf/types/descriptorpb"
+	"golang.org/x/exp/maps"
+	"golang.org/x/tools/gopls/pkg/lsp/protocol"
+	"golang.org/x/tools/gopls/pkg/lsp/source"
+	"golang.org/x/tools/gopls/pkg/span"
+	"golang.org/x/tools/pkg/diff"
+	"golang.org/x/tools/pkg/jsonrpc2"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // Cache is responsible for keeping track of all the known proto source files
 // and definitions.
 type Cache struct {
-	lg      *zap.Logger
-	sources []string
-
-	sf   singleflight.Group
-	snap atomic.Pointer[Snapshot]
+	lg                 *zap.Logger
+	compiler           *Compiler
+	resultsMu          sync.RWMutex
+	results            linker.Files
+	indexMu            sync.RWMutex
+	indexedDirsByGoPkg map[string]string   // go package name -> directory
+	indexedGoPkgsByDir map[string]string   // directory -> go package name
+	filePathsByURI     map[span.URI]string // URI -> canonical file path (go package + file name)
 }
 
-type Snapshot struct {
-	lg              *zap.Logger
-	Files           linker.Files
-	SourcePackages  map[string]string
-	SourcePkgDirs   map[string]string
-	SourceFilenames map[string]string
+// FindDescriptorByName implements linker.Resolver.
+func (c *Cache) FindDescriptorByName(name protoreflect.FullName) (protoreflect.Descriptor, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	return c.results.AsResolver().FindDescriptorByName(name)
 }
 
-// NewCache creates a new cache.
-func NewCache(sources []string, lg *zap.Logger) *Cache {
-	return &Cache{
-		lg:      lg,
-		sources: sources,
+// FindExtensionByName implements linker.Resolver.
+func (c *Cache) FindExtensionByName(field protoreflect.FullName) (protoreflect.ExtensionType, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	return c.results.AsResolver().FindExtensionByName(field)
+}
+
+// FindExtensionByNumber implements linker.Resolver.
+func (c *Cache) FindExtensionByNumber(message protoreflect.FullName, field protowire.Number) (protoreflect.ExtensionType, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	return c.results.AsResolver().FindExtensionByNumber(message, field)
+}
+
+func (c *Cache) FindResultByPath(path string) (linker.Result, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	if c.results == nil {
+		return nil, fmt.Errorf("no results exist")
 	}
-}
-
-func (c *Cache) Reindex(ctx context.Context) error {
-	c.sf.Do("reindex", func() (interface{}, error) {
-		snap := &Snapshot{
-			lg:              c.lg,
-			SourcePackages:  map[string]string{},
-			SourcePkgDirs:   map[string]string{},
-			SourceFilenames: map[string]string{},
-		}
-
-		resolved, err := ragu.ResolvePatterns(c.sources)
-		if err != nil {
-			return nil, err
-		}
-		c.lg.With(
-			zap.Strings("sources", c.sources),
-			zap.Strings("files", resolved),
-		).Debug("sources resolved")
-
-		for _, source := range resolved {
-			goPkg, err := ragu.FastLookupGoModule(source)
-			if err != nil {
-				c.lg.With(
-					zap.String("source", source),
-					zap.Error(err),
-				).Debug("failed to lookup go module")
-				continue
-			}
-			snap.SourcePkgDirs[goPkg] = filepath.Dir(source)
-			snap.SourcePackages[path.Join(goPkg, path.Base(source))] = source
-			snap.SourceFilenames[source] = path.Join(goPkg, path.Base(source))
-		}
-		accessor := ragu.SourceAccessor(snap.SourcePackages)
-		res := protocompile.WithStandardImports(ragu.NewResolver(accessor))
-		compiler := protocompile.Compiler{
-			Resolver:       res,
-			MaxParallelism: -1,
-			SourceInfoMode: protocompile.SourceInfoExtraComments | protocompile.SourceInfoExtraOptionLocations,
-			Reporter:       reporter.NewReporter(nil, nil),
-			RetainASTs:     true,
-		}
-		snap.Files, err = compiler.Compile(ctx, lo.Keys(snap.SourcePackages)...)
-		if err != nil {
-			c.lg.With(
-				zap.Strings("sources", c.sources),
-				zap.Error(err),
-			).Debug("failed to compile")
-			return nil, err
-		}
-		c.snap.Store(snap)
-		return nil, nil
-	})
-	return nil
-}
-
-func (c *Cache) Snapshot() *Snapshot {
-	return c.snap.Load()
-}
-
-func (s *Snapshot) FindFileByPath(path string) (linker.Result, error) {
-	if f, ok := s.SourceFilenames[path]; ok {
-		path = f
-	}
-	f := s.Files.FindFileByPath(path)
+	f := c.results.FindFileByPath(path)
 	if f == nil {
-		return nil, os.ErrNotExist
+		fmt.Printf("%v\n", c.filePathsByURI)
+		return nil, fmt.Errorf("package not found: %q", path)
 	}
 	return f.(linker.Result), nil
 }
 
-func (s *Snapshot) ComputeSemanticTokens(doc protocol.TextDocumentIdentifier) ([]uint32, error) {
-	u, err := uri.Parse(string(doc.URI))
+func (c *Cache) FindResultByURI(uri span.URI) (linker.Result, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	if c.results == nil {
+		return nil, fmt.Errorf("no results exist")
+	}
+	path, ok := c.filePathsByURI[uri]
+	if !ok {
+		return nil, fmt.Errorf("no file found for URI %q", uri)
+	}
+	f := c.results.FindFileByPath(path)
+	if f == nil {
+		fmt.Printf("%v\n", c.filePathsByURI)
+		return nil, fmt.Errorf("package not found: %q", path)
+	}
+	return f.(linker.Result), nil
+}
+
+// FindFileByPath implements linker.Resolver.
+func (c *Cache) FindFileByPath(path string) (protoreflect.FileDescriptor, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	return c.results.AsResolver().FindFileByPath(path)
+}
+
+func (c *Cache) FindFileByURI(uri span.URI) (protoreflect.FileDescriptor, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	path, ok := c.filePathsByURI[uri]
+	if !ok {
+		return nil, fmt.Errorf("no file found for URI %q", uri)
+	}
+	return c.results.AsResolver().FindFileByPath(path)
+}
+
+// FindMessageByName implements linker.Resolver.
+func (c *Cache) FindMessageByName(name protoreflect.FullName) (protoreflect.MessageType, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	return c.results.AsResolver().FindMessageByName(name)
+}
+
+// FindMessageByURL implements linker.Resolver.
+func (c *Cache) FindMessageByURL(url string) (protoreflect.MessageType, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	return c.results.AsResolver().FindMessageByURL(url)
+}
+
+func (c *Cache) filePathToGoPackage(path string) string {
+	dir, name := filepath.Split(path)
+	dir = filepath.Clean(dir)
+	pkg, ok := c.indexedGoPkgsByDir[dir]
+	if !ok {
+		c.lg.Debug("no go package found for directory", zap.String("dir", dir))
+		return path
+	}
+	return filepath.Join(pkg, name)
+}
+
+var _ linker.Resolver = (*Cache)(nil)
+
+type Compiler struct {
+	*protocompile.Compiler
+	workdir string
+	overlay *Overlay
+}
+
+func NewCompiler(workdir string) *Compiler {
+	accessor := ragu.SourceAccessor(nil)
+	overlay := &Overlay{
+		baseAccessor: accessor,
+		sources:      map[string]*protocol.Mapper{},
+	}
+	resolver := protocompile.CompositeResolver{
+		&protocompile.SourceResolver{
+			Accessor: overlay.Accessor,
+		},
+		&protocompile.SourceResolver{
+			Accessor: accessor,
+		},
+		protocompile.ResolverFunc(func(path string) (protocompile.SearchResult, error) {
+			fd, err := desc.LoadFileDescriptor(path)
+			if err != nil {
+				return protocompile.SearchResult{}, err
+			}
+			return protocompile.SearchResult{Desc: fd.UnwrapFile()}, nil
+		}),
+	}
+	return &Compiler{
+		Compiler: &protocompile.Compiler{
+			Resolver:       resolver,
+			MaxParallelism: -1,
+			Reporter:       reporter.NewReporter(nil, nil),
+			SourceInfoMode: protocompile.SourceInfoExtraComments | protocompile.SourceInfoExtraOptionLocations,
+			RetainResults:  true,
+			RetainASTs:     true,
+		},
+		workdir: workdir,
+		overlay: overlay,
+	}
+}
+
+type Overlay struct {
+	baseAccessor func(path string) (io.ReadCloser, error)
+	sourcesMu    sync.Mutex
+	sources      map[string]*protocol.Mapper
+}
+
+func (o *Overlay) Create(uri span.URI, path string, contents []byte) error {
+	o.sourcesMu.Lock()
+	defer o.sourcesMu.Unlock()
+	if _, ok := o.sources[path]; ok {
+		return fmt.Errorf("%w: file already exists", jsonrpc2.ErrInternal)
+	}
+	o.sources[path] = protocol.NewMapper(uri, contents)
+	return nil
+}
+
+func (o *Overlay) Update(uri span.URI, path string, contentChanges []protocol.TextDocumentContentChangeEvent) error {
+	if len(contentChanges) == 0 {
+		return fmt.Errorf("%w: no content changes provided", jsonrpc2.ErrInternal)
+	}
+
+	o.sourcesMu.Lock()
+	defer o.sourcesMu.Unlock()
+	if _, ok := o.sources[path]; !ok {
+		baseReader, err := o.baseAccessor(path)
+		if err != nil {
+			return err
+		}
+		defer baseReader.Close()
+		baseContent, _ := io.ReadAll(baseReader)
+		o.sources[path] = protocol.NewMapper(uri, baseContent)
+	}
+	source := o.sources[path]
+	newSrc, err := applyChanges(source, contentChanges)
+	if err != nil {
+		return err
+	}
+
+	o.sources[path] = protocol.NewMapper(uri, newSrc)
+	return nil
+}
+
+// requires sourcesMu to be held
+func applyChanges(m *protocol.Mapper, changes []protocol.TextDocumentContentChangeEvent) ([]byte, error) {
+	if len(changes) == 0 {
+		return nil, fmt.Errorf("%w: no content changes provided", jsonrpc2.ErrInternal)
+	}
+
+	// Check if the client sent the full content of the file.
+	// We accept a full content change even if the server expected incremental changes.
+	if len(changes) == 1 && changes[0].Range == nil && changes[0].RangeLength == 0 {
+		return []byte(changes[0].Text), nil
+	}
+
+	diffs, err := contentChangeEventsToDiffEdits(m, changes)
 	if err != nil {
 		return nil, err
 	}
-	file, err := s.FindFileByPath(u.Filename())
+	return diff.ApplyBytes(m.Content, diffs)
+}
+
+func contentChangeEventsToDiffEdits(mapper *protocol.Mapper, changes []protocol.TextDocumentContentChangeEvent) ([]diff.Edit, error) {
+	var edits []protocol.TextEdit
+	for _, change := range changes {
+		edits = append(edits, protocol.TextEdit{
+			Range:   *change.Range,
+			NewText: change.Text,
+		})
+	}
+
+	return source.FromProtocolEdits(mapper, edits)
+}
+
+func (o *Overlay) Delete(path string) {
+	o.sourcesMu.Lock()
+	defer o.sourcesMu.Unlock()
+	delete(o.sources, path)
+}
+
+func (o *Overlay) Accessor(path string) (io.ReadCloser, error) {
+	o.sourcesMu.Lock()
+	defer o.sourcesMu.Unlock()
+	if source, ok := o.sources[path]; ok {
+		return io.NopCloser(bytes.NewReader(source.Content)), nil
+	}
+	return nil, os.ErrNotExist
+}
+func (o *Overlay) Get(path string) (*protocol.Mapper, error) {
+	o.sourcesMu.Lock()
+	defer o.sourcesMu.Unlock()
+	if source, ok := o.sources[path]; ok {
+		return source, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+// NewCache creates a new cache.
+func NewCache(workdir string, lg *zap.Logger) *Cache {
+	cache := &Cache{
+		lg:                 lg,
+		compiler:           NewCompiler(workdir),
+		indexedDirsByGoPkg: map[string]string{},
+		indexedGoPkgsByDir: map[string]string{},
+		filePathsByURI:     map[span.URI]string{},
+	}
+	cache.Reindex()
+	return cache
+}
+
+func (c *Cache) Reindex() {
+	c.lg.Debug("reindexing")
+	c.indexMu.Lock()
+	defer c.indexMu.Unlock()
+
+	maps.Clear(c.indexedDirsByGoPkg)
+	maps.Clear(c.indexedGoPkgsByDir)
+	maps.Clear(c.filePathsByURI)
+	allProtos, _ := doublestar.Glob(path.Join(c.compiler.workdir, "**/*.proto"))
+	c.lg.Debug("found protos", zap.Strings("protos", allProtos))
+	var resolved []string
+	for _, proto := range allProtos {
+		goPkg, err := ragu.FastLookupGoModule(proto)
+		if err != nil {
+			c.lg.With(
+				zap.String("proto", proto),
+				zap.Error(err),
+			).Debug("failed to lookup go module")
+			continue
+		}
+		c.indexedDirsByGoPkg[goPkg] = filepath.Dir(proto)
+		c.indexedGoPkgsByDir[filepath.Dir(proto)] = goPkg
+		canonicalName := filepath.Join(goPkg, filepath.Base(proto))
+		c.filePathsByURI[span.URIFromPath(proto)] = canonicalName
+		resolved = append(resolved, canonicalName)
+	}
+	c.Compile(resolved...)
+}
+
+func (c *Cache) Compile(protos ...string) {
+	c.resultsMu.Lock()
+	defer c.resultsMu.Unlock()
+	c.lg.Info("compiling", zap.Int("protos", len(protos)))
+	res, err := c.compiler.Compile(context.TODO(), protos...)
+	if err != nil {
+		c.lg.With(zap.Error(err)).Error("failed to compile")
+		return
+	}
+	c.results = res
+	c.lg.Info("reindexed", zap.Int("protos", len(protos)))
+}
+
+func (s *Cache) OnFileOpened(doc protocol.TextDocumentItem) {
+	s.lg.With(
+		zap.String("file", string(doc.URI)),
+		zap.String("path", s.filePathsByURI[doc.URI.SpanURI()]),
+	).Debug("file opened")
+	s.compiler.overlay.Create(doc.URI.SpanURI(), s.filePathsByURI[doc.URI.SpanURI()], []byte(doc.Text))
+}
+
+func (s *Cache) OnFileClosed(doc protocol.TextDocumentIdentifier) {
+	s.lg.With(
+		zap.String("file", string(doc.URI)),
+	).Debug("file closed")
+	s.compiler.overlay.Delete(s.filePathsByURI[doc.URI.SpanURI()])
+}
+
+func (s *Cache) OnFileModified(f protocol.VersionedTextDocumentIdentifier, contentChanges []protocol.TextDocumentContentChangeEvent) error {
+	s.lg.With(
+		zap.String("file", string(f.URI)),
+	).Debug("file modified")
+
+	if err := s.compiler.overlay.Update(f.URI.SpanURI(), s.filePathsByURI[f.URI.SpanURI()], contentChanges); err != nil {
+		return err
+	}
+	s.Compile(s.filePathsByURI[f.URI.SpanURI()])
+	return nil
+}
+
+func (s *Cache) OnFileDeleted(f protocol.FileDelete) error {
+	return nil // TODO
+}
+
+func (s *Cache) OnFileCreated(f protocol.FileCreate) error {
+	return nil // TODO
+}
+
+func (s *Cache) OnFileSaved(f *protocol.DidSaveTextDocumentParams) error {
+	s.lg.With(
+		zap.String("file", string(f.TextDocument.URI)),
+	).Debug("file modified")
+
+	if err := s.compiler.overlay.Update(f.TextDocument.URI.SpanURI(), s.filePathsByURI[f.TextDocument.URI.SpanURI()], []protocol.Msg_TextDocumentContentChangeEvent{
+		{Text: *f.Text},
+	}); err != nil {
+		return err
+	}
+	s.Compile(s.filePathsByURI[f.TextDocument.URI.SpanURI()])
+	return nil
+}
+
+func (c *Cache) ComputeSemanticTokens(doc protocol.TextDocumentIdentifier) ([]uint32, error) {
+	result, err := semanticTokensFull(c, doc)
 	if err != nil {
 		return nil, err
 	}
-	return s.computeSemanticTokensForFile(file)
+	return result.Data, nil
 }
 
-type tokenType uint32
-
-const (
-	semanticTypeNamespace tokenType = iota
-	semanticTypeType
-	semanticTypeClass
-	semanticTypeEnum
-	semanticTypeInterface
-	semanticTypeStruct
-	semanticTypeTypeParameter
-	semanticTypeParameter
-	semanticTypeVariable
-	semanticTypeProperty
-	semanticTypeEnumMember
-	semanticTypeEvent
-	semanticTypeFunction
-	semanticTypeMethod
-	semanticTypeMacro
-	semanticTypeKeyword
-	semanticTypeModifier
-	semanticTypeComment
-	semanticTypeString
-	semanticTypeNumber
-	semanticTypeRegexp
-	semanticTypeOperator
-)
-
-type tokenModifier uint32
-
-const (
-	semanticModifierDeclaration tokenModifier = 1 << iota
-	semanticModifierDefinition
-	semanticModifierReadonly
-	semanticModifierStatic
-	semanticModifierDeprecated
-	semanticModifierAbstract
-	semanticModifierAsync
-	semanticModifierModification
-	semanticModifierDocumentation
-	semanticModifierDefaultLibrary
-)
-
-type semanticToken struct {
-	line, start uint32
-	len         uint32
-	tokenType   tokenType
-	mods        tokenModifier
-}
-
-func (s *Snapshot) computeSemanticTokensForFile(file linker.Result) ([]uint32, error) {
-	var tokens []semanticToken
-
-	fn := file.AST()
-
-	mktokens := func(node ast.Node, tt tokenType, mods ...tokenModifier) []semanticToken {
-		info := fn.NodeInfo(node)
-		rng := toRange(info)
-		if len(mods) == 0 {
-			mods = append(mods, 0)
-		}
-		tks := []semanticToken{
-			{
-				line:      rng.Start.Line,
-				start:     rng.Start.Character,
-				len:       rng.End.Character - rng.Start.Character,
-				tokenType: tt,
-				mods:      mods[0],
-			},
-		}
-		for i := 0; i < info.LeadingComments().Len(); i++ {
-			comment := info.LeadingComments().Index(i)
-			rng := toRange(comment)
-			tks = append(tks, semanticToken{
-				line:  rng.Start.Line,
-				start: rng.Start.Character,
-				// no idea why but comments need an extra character lol
-				len:       rng.End.Character - rng.Start.Character + 1,
-				tokenType: semanticTypeComment,
-			})
-		}
-		return tks
-	}
-
-	var tracker ast.AncestorTracker
-	ast.Walk(fn, &ast.SimpleVisitor{
-		DoVisitStringLiteralNode: func(node *ast.StringLiteralNode) error {
-			tokens = append(tokens, mktokens(node, semanticTypeString)...)
-			return nil
-		},
-		DoVisitUintLiteralNode: func(node *ast.UintLiteralNode) error {
-			tokens = append(tokens, mktokens(node, semanticTypeNumber)...)
-			return nil
-		},
-		DoVisitFloatLiteralNode: func(node *ast.FloatLiteralNode) error {
-			tokens = append(tokens, mktokens(node, semanticTypeNumber)...)
-			return nil
-		},
-		DoVisitSpecialFloatLiteralNode: func(node *ast.SpecialFloatLiteralNode) error {
-			tokens = append(tokens, mktokens(node, semanticTypeNumber)...)
-			return nil
-		},
-		DoVisitKeywordNode: func(node *ast.KeywordNode) error {
-			tokens = append(tokens, mktokens(node, semanticTypeKeyword)...)
-			return nil
-		},
-		DoVisitRuneNode: func(node *ast.RuneNode) error {
-			tks := mktokens(node, semanticTypeOperator)
-			switch node.Rune {
-			case '{', '}', ';', '.':
-				tks = tks[1:] // skip some tokens we don't care to highlight
-			}
-			tokens = append(tokens, tks...)
-			return nil
-		},
-		DoVisitIdentNode: func(node *ast.IdentNode) error {
-			// first check for primitive types
-			switch node.Val {
-			case "double", "float",
-				"int32", "int64",
-				"uint32", "uint64",
-				"sint32", "sint64",
-				"fixed32", "fixed64",
-				"sfixed32", "sfixed64",
-				"bool", "string", "bytes":
-				tokens = append(tokens, mktokens(node, semanticTypeType, semanticModifierDefaultLibrary)...)
-				return nil
-			}
-
-			path := tracker.Path()
-			switch parentNode := path[len(path)-2].(type) {
-			case *ast.MessageNode:
-				s.lg.Debug("ident > message", zap.String("ident", node.Val), zap.String("message", parentNode.Name.Val))
-				tokens = append(tokens, mktokens(node, semanticTypeClass)...)
-			case *ast.FieldNode:
-				s.lg.Debug("ident > field", zap.String("ident", node.Val), zap.String("field", parentNode.Name.Val))
-				// need to check the descriptors to disambiguate field nodes.
-				// from here we need to use the descriptorpb types.
-				desc := file.Descriptor(parentNode)
-				if desc == nil {
-					s.lg.Debug("no descriptor for field", zap.String("field", parentNode.Name.Val))
-					break
-				}
-				switch desc.(type) {
-				case *descriptorpb.FieldDescriptorProto:
-					s.lg.Debug("ident > field > field descriptor", zap.String("field", parentNode.Name.Val))
-					// one of several tokens within a field
-					if node.Val == parentNode.Name.Val {
-						// field name
-						s.lg.Debug("ident > field > field descriptor > name", zap.String("field", parentNode.Name.Val))
-						tokens = append(tokens, mktokens(node, semanticTypeProperty)...)
-					} else {
-						// field type?
-						s.lg.Debug("ident > field > field descriptor > type", zap.String("field", parentNode.Name.Val))
-						tokens = append(tokens, mktokens(node, semanticTypeType)...)
-					}
-
-				case *descriptorpb.DescriptorProto:
-					s.lg.Debug("ident > field > message descriptor", zap.String("field", parentNode.Name.Val))
-					tokens = append(tokens, mktokens(node, semanticTypeType)...)
-				case *descriptorpb.EnumDescriptorProto:
-					s.lg.Debug("ident > field > enum descriptor", zap.String("field", parentNode.Name.Val))
-					tokens = append(tokens, mktokens(node, semanticTypeEnum)...)
-				default:
-					s.lg.Debug("unknown descriptor type", zap.String("type", fmt.Sprintf("%T", desc)))
-				}
-			case *ast.RPCTypeNode:
-				s.lg.Debug("ident > rpc type", zap.String("ident", node.Val))
-				tokens = append(tokens, mktokens(node, semanticTypeType)...)
-			case *ast.RPCNode:
-				s.lg.Debug("ident > rpc", zap.String("ident", node.Val))
-				tokens = append(tokens, mktokens(node, semanticTypeMethod)...)
-			case *ast.ServiceNode:
-				s.lg.Debug("ident > service", zap.String("ident", node.Val))
-				tokens = append(tokens, mktokens(node, semanticTypeInterface, semanticModifierDeclaration)...)
-			case *ast.CompoundIdentNode:
-				switch path[len(path)-3].(type) {
-				case *ast.FieldNode, *ast.RPCTypeNode:
-					// one of several tokens within a field
-					if node.Val == parentNode.Components[len(parentNode.Components)-1].Val {
-						// last component of a compound ident, which is the type
-						tokens = append(tokens, mktokens(node, semanticTypeType)...)
-					} else {
-						// not the last component, package qualifier
-						tokens = append(tokens, mktokens(node, semanticTypeNamespace)...)
-					}
-				case *ast.FieldReferenceNode:
-					tokens = append(tokens, mktokens(node, semanticTypeProperty)...)
-				// case *ast.MapTypeNode:
-				// 	switch node.Val {
-				// 	case grandparentNode.KeyType.Val:
-				// 		// key type
-				// 		tokens = append(tokens, mktokens(node, semanticTypeType)...)
-				// 	case string(grandparentNode.ValueType.AsIdentifier()):
-				// 		// value type
-				// 		if node.Val == parentNode.Components[len(parentNode.Components)-1].Val {
-				// 			// last component of a compound ident, which is the type
-				// 			tokens = append(tokens, mktokens(node, semanticTypeType)...)
-				// 		} else {
-				// 			// not the last component, package qualifier
-				// 			tokens = append(tokens, mktokens(node, semanticTypeProperty)...)
-				// 		}
-				// 	}
-				default:
-					s.lg.Warn("unknown compound ident ancestor", zap.String("type", fmt.Sprintf("%T", path[len(path)-3])))
-				}
-			// case *ast.MapFieldNode:
-			// 	switch grandparentNode := path[len(path)-3].(type) {
-			// 	case *ast.MapTypeNode:
-			// 		switch node.Val {
-			// 		case grandparentNode.KeyType.Val:
-			// 			// key type
-			// 			tokens = append(tokens, mktokens(node, semanticTypeType)...)
-			// 		case string(grandparentNode.ValueType.AsIdentifier()):
-			// 			// value type
-			// 			tokens = append(tokens, mktokens(node, semanticTypeType)...)
-			// 		default:
-			// 			// field name
-			// 			tokens = append(tokens, mktokens(node, semanticTypeProperty)...)
-			// 		}
-			// 	case *ast.IdentNode:
-			// 		switch node.Val {
-			// 		case parentNode.Name.Val:
-			// 			// field name
-			// 			tokens = append(tokens, mktokens(node, semanticTypeProperty)...)
-			// 		case parentNode.MapType.KeyType.Val:
-			// 			// key type
-			// 			tokens = append(tokens, mktokens(node, semanticTypeType)...)
-			// 		case string(parentNode.MapType.ValueType.AsIdentifier()):
-			// 			// value type
-			// 			tokens = append(tokens, mktokens(node, semanticTypeType)...)
-			// 		}
-			// 	case *ast.CompoundIdentNode:
-			// 		switch node.Val {
-			// 		case string(parentNode.MapType.ValueType.AsIdentifier()):
-			// 			// compound map value type
-			// 			// if the last component of the compound ident is the value type, highlight it
-			// 			if node.Val == grandparentNode.Components[len(grandparentNode.Components)-1].Val {
-			// 				tokens = append(tokens, mktokens(node, semanticTypeType)...)
-			// 			} else {
-			// 				tokens = append(tokens, mktokens(node, semanticTypeNamespace)...)
-			// 			}
-			// 		}
-			// 	case *ast.MessageNode:
-			// 		grandparentNode.MessageBody.Decls
-			// 		s.lg.Debug("map field > message", zap.String("field", parentNode.Name.Val))
-			// 	default:
-			// 		s.lg.With(
-			// 			zap.String("node", fmt.Sprintf("%T", node)),
-			// 			zap.String("parent", fmt.Sprintf("%T", parentNode)),
-			// 			zap.String("grandparent", fmt.Sprintf("%T", grandparentNode)),
-			// 		).Warn("unknown map field ancestor")
-			// 	}
-			case *ast.PackageNode:
-				if node.Val == string(parentNode.Name.AsIdentifier()) {
-					tokens = append(tokens, mktokens(node, semanticTypeNamespace)...)
-				}
-			case *ast.FieldReferenceNode:
-				tokens = append(tokens, mktokens(node, semanticTypeProperty)...)
-			default:
-				s.lg.Warn("unknown ident ancestor", zap.String("type", fmt.Sprintf("%T", parentNode)))
-			}
-
-			return nil
-		},
-	}, tracker.AsWalkOptions()...)
-
-	sort.Slice(tokens, func(i, j int) bool {
-		if tokens[i].line != tokens[j].line {
-			return tokens[i].line < tokens[j].line
-		}
-		return tokens[i].start < tokens[j].start
-	})
-	x := make([]uint32, len(tokens)*5)
-	var j int
-	var last semanticToken
-	for i := 0; i < len(tokens); i++ {
-		item := tokens[i]
-
-		if j == 0 {
-			x[0] = tokens[0].line
-		} else {
-			x[j] = item.line - last.line
-		}
-		x[j+1] = item.start
-		if j > 0 && x[j] == 0 {
-			x[j+1] = item.start - last.start
-		}
-		x[j+2] = item.len
-		x[j+3] = uint32(item.tokenType)
-		mask := uint32(item.mods)
-		x[j+4] = uint32(mask)
-		j += 5
-		last = item
-	}
-	return x[:j], nil
-
-}
-
-type ranger interface {
-	Start() ast.SourcePos
-	End() ast.SourcePos
-}
-
-func toRange[T ranger](t T) protocol.Range {
-	return positionsToRange(t.Start(), t.End())
-}
-
-func positionsToRange(start, end ast.SourcePos) protocol.Range {
-	return protocol.Range{
-		Start: protocol.Position{
-			Line:      uint32(start.Line - 1),
-			Character: uint32(start.Col - 1),
-		},
-		End: protocol.Position{
-			Line:      uint32(end.Line - 1),
-			Character: uint32(end.Col - 1),
-		},
-	}
-}
-
-func (s *Snapshot) DocumentSymbolsForFile(file protocol.TextDocumentIdentifier) ([]any, error) {
-	u, err := uri.Parse(string(file.URI))
+func (c *Cache) ComputeSemanticTokensRange(doc protocol.TextDocumentIdentifier, rng protocol.Range) ([]uint32, error) {
+	result, err := semanticTokensRange(c, doc, rng)
 	if err != nil {
 		return nil, err
 	}
-	f, err := s.FindFileByPath(u.Filename())
-	if err != nil {
-		return nil, err
-	}
+	return result.Data, nil
+}
 
-	var symbols []any
-
-	s.lg.Debug("computing document symbols", zap.String("file", string(file.URI)))
-	fn := f.AST()
-	ast.Walk(fn, &ast.SimpleVisitor{
-		// DoVisitImportNode: func(node *ast.ImportNode) error {
-		// 	s.lg.Debug("found import", zap.String("name", string(node.Name.AsString())))
-		// 	symbols = append(symbols, protocol.DocumentSymbol{
-		// 		Name:           string(node.Name.AsString()),
-		// 		Kind:           protocol.SymbolKindNamespace,
-		// 		Range:          posToRange(fn.NodeInfo(node)),
-		// 		SelectionRange: posToRange(fn.NodeInfo(node.Name)),
-		// 	})
-		// 	return nil
-		// },
-		DoVisitServiceNode: func(node *ast.ServiceNode) error {
-			s.lg.Debug("found service", zap.String("name", string(node.Name.AsIdentifier())))
-			service := protocol.DocumentSymbol{
-				Name:           string(node.Name.AsIdentifier()),
-				Kind:           protocol.Interface,
-				Range:          toRange(fn.NodeInfo(node)),
-				SelectionRange: toRange(fn.NodeInfo(node.Name)),
-			}
-
-			ast.Walk(node, &ast.SimpleVisitor{
-				DoVisitRPCNode: func(node *ast.RPCNode) error {
-					s.lg.Debug("found rpc", zap.String("name", string(node.Name.AsIdentifier())), zap.String("service", string(node.Name.AsIdentifier())))
-					var detail string
-					switch {
-					case node.Input.Stream != nil && node.Output.Stream != nil:
-						detail = "stream (bidirectional)"
-					case node.Input.Stream != nil:
-						detail = "stream (client)"
-					case node.Output.Stream != nil:
-						detail = "stream (server)"
-					default:
-						detail = "unary"
-					}
-					rpc := protocol.DocumentSymbol{
-						Name:           string(node.Name.AsIdentifier()),
-						Detail:         detail,
-						Kind:           protocol.Method,
-						Range:          toRange(fn.NodeInfo(node)),
-						SelectionRange: toRange(fn.NodeInfo(node.Name)),
-					}
-
-					ast.Walk(node, &ast.SimpleVisitor{
-						DoVisitRPCTypeNode: func(node *ast.RPCTypeNode) error {
-							s.lg.Debug("found rpc type", zap.String("name", string(node.MessageType.AsIdentifier())), zap.String("service", string(node.MessageType.AsIdentifier())))
-							rpcType := protocol.DocumentSymbol{
-								Name:           string(node.MessageType.AsIdentifier()),
-								Kind:           protocol.Class,
-								Range:          toRange(fn.NodeInfo(node)),
-								SelectionRange: toRange(fn.NodeInfo(node.MessageType)),
-							}
-							rpc.Children = append(rpc.Children, rpcType)
-							return nil
-						},
-					})
-					service.Children = append(service.Children, rpc)
-					return nil
-				},
-			})
-			symbols = append(symbols, service)
-			return nil
-		},
-		DoVisitMessageNode: func(node *ast.MessageNode) error {
-			sym := protocol.DocumentSymbol{
-				Name:           string(node.Name.AsIdentifier()),
-				Kind:           protocol.Class,
-				Range:          toRange(fn.NodeInfo(node)),
-				SelectionRange: toRange(fn.NodeInfo(node.Name)),
-			}
-			ast.Walk(node, &ast.SimpleVisitor{
-				DoVisitFieldNode: func(node *ast.FieldNode) error {
-					sym.Children = append(sym.Children, protocol.DocumentSymbol{
-						Name:           string(node.Name.AsIdentifier()),
-						Detail:         string(node.FldType.AsIdentifier()),
-						Kind:           protocol.Field,
-						Range:          toRange(fn.NodeInfo(node)),
-						SelectionRange: toRange(fn.NodeInfo(node.Name)),
-					})
-					return nil
-				},
-				DoVisitMapFieldNode: func(node *ast.MapFieldNode) error {
-					sym.Children = append(sym.Children, protocol.DocumentSymbol{
-						Name:           string(node.Name.AsIdentifier()),
-						Detail:         fmt.Sprintf("map<%s, %s>", string(node.KeyField().Ident.AsIdentifier()), string(node.ValueField().Ident.AsIdentifier())),
-						Kind:           protocol.Field,
-						Range:          toRange(fn.NodeInfo(node)),
-						SelectionRange: toRange(fn.NodeInfo(node.Name)),
-					})
-					return nil
-				},
-			})
-			symbols = append(symbols, sym)
-			return nil
-		},
-		DoVisitEnumNode: func(node *ast.EnumNode) error {
-			sym := protocol.DocumentSymbol{
-				Name:           string(node.Name.AsIdentifier()),
-				Kind:           protocol.Enum,
-				Range:          toRange(fn.NodeInfo(node)),
-				SelectionRange: toRange(fn.NodeInfo(node.Name)),
-			}
-			ast.Walk(node, &ast.SimpleVisitor{
-				DoVisitEnumValueNode: func(node *ast.EnumValueNode) error {
-					sym.Children = append(sym.Children, protocol.DocumentSymbol{
-						Name:           string(node.Name.AsIdentifier()),
-						Kind:           protocol.EnumMember,
-						Range:          toRange(fn.NodeInfo(node)),
-						SelectionRange: toRange(fn.NodeInfo(node.Name)),
-					})
-					return nil
-				},
-			})
-			symbols = append(symbols, sym)
-			return nil
-		},
-		DoVisitExtendNode: func(node *ast.ExtendNode) error {
-			sym := protocol.DocumentSymbol{
-				Name:           string(node.Extendee.AsIdentifier()),
-				Kind:           protocol.Class,
-				Range:          toRange(fn.NodeInfo(node)),
-				SelectionRange: toRange(fn.NodeInfo(node.Extendee)),
-			}
-			ast.Walk(node, &ast.SimpleVisitor{
-				DoVisitFieldNode: func(node *ast.FieldNode) error {
-					sym.Children = append(sym.Children, protocol.DocumentSymbol{
-						Name:           string(node.Name.AsIdentifier()),
-						Kind:           protocol.Field,
-						Range:          toRange(fn.NodeInfo(node)),
-						SelectionRange: toRange(fn.NodeInfo(node.Name)),
-					})
-					return nil
-				},
-			})
-			symbols = append(symbols, sym)
-			return nil
-		},
-	})
-	return symbols, nil
+func (c *Cache) getMapper(uri span.URI) (*protocol.Mapper, error) {
+	return c.compiler.overlay.Get(c.filePathsByURI[uri])
 }

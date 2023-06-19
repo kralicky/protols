@@ -18,6 +18,7 @@ import (
 	"github.com/bufbuild/protocompile/parser"
 	"github.com/bufbuild/protocompile/reporter"
 	"github.com/jhump/protoreflect/desc"
+	"github.com/jhump/protoreflect/desc/protoprint"
 	"github.com/kralicky/ragu"
 	"go.uber.org/zap"
 	"golang.org/x/exp/maps"
@@ -27,7 +28,9 @@ import (
 	"golang.org/x/tools/pkg/diff"
 	"golang.org/x/tools/pkg/jsonrpc2"
 	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 // Cache is responsible for keeping track of all the known proto source files
@@ -167,41 +170,6 @@ type Compiler struct {
 	overlay *Overlay
 }
 
-func NewCompiler(workdir string, reporter reporter.Reporter) *Compiler {
-	accessor := ragu.SourceAccessor(nil)
-	overlay := &Overlay{
-		baseAccessor: accessor,
-		sources:      map[string]*protocol.Mapper{},
-	}
-	resolver := protocompile.CompositeResolver{
-		&protocompile.SourceResolver{
-			Accessor: overlay.Accessor,
-		},
-		&protocompile.SourceResolver{
-			Accessor: accessor,
-		},
-		protocompile.ResolverFunc(func(path string) (protocompile.SearchResult, error) {
-			fd, err := desc.LoadFileDescriptor(path)
-			if err != nil {
-				return protocompile.SearchResult{}, err
-			}
-			return protocompile.SearchResult{Desc: fd.UnwrapFile()}, nil
-		}),
-	}
-	return &Compiler{
-		Compiler: &protocompile.Compiler{
-			Resolver:       resolver,
-			MaxParallelism: -1,
-			Reporter:       reporter,
-			SourceInfoMode: protocompile.SourceInfoExtraComments | protocompile.SourceInfoExtraOptionLocations,
-			RetainResults:  true,
-			RetainASTs:     true,
-		},
-		workdir: workdir,
-		overlay: overlay,
-	}
-}
-
 type Overlay struct {
 	baseAccessor func(path string) (io.ReadCloser, error)
 	sourcesMu    sync.Mutex
@@ -301,9 +269,41 @@ func (o *Overlay) Get(path string) (*protocol.Mapper, error) {
 func NewCache(workdir string, lg *zap.Logger) *Cache {
 	diagHandler := NewDiagnosticHandler()
 	reporter := reporter.NewReporter(diagHandler.HandleError, diagHandler.HandleWarning)
+	accessor := ragu.SourceAccessor(nil)
+	overlay := &Overlay{
+		baseAccessor: accessor,
+		sources:      map[string]*protocol.Mapper{},
+	}
+	resolver := protocompile.CompositeResolver{
+		&protocompile.SourceResolver{
+			Accessor: overlay.Accessor,
+		},
+		&protocompile.SourceResolver{
+			Accessor: accessor,
+		},
+		protocompile.ResolverFunc(func(path string) (protocompile.SearchResult, error) {
+			fd, err := desc.LoadFileDescriptor(path)
+			if err != nil {
+				return protocompile.SearchResult{}, err
+			}
+			return protocompile.SearchResult{Desc: fd.UnwrapFile()}, nil
+		}),
+	}
+	compiler := &Compiler{
+		Compiler: &protocompile.Compiler{
+			Resolver:       resolver,
+			MaxParallelism: -1,
+			Reporter:       reporter,
+			SourceInfoMode: protocompile.SourceInfoExtraComments | protocompile.SourceInfoExtraOptionLocations,
+			RetainResults:  true,
+			RetainASTs:     true,
+		},
+		workdir: workdir,
+		overlay: overlay,
+	}
 	cache := &Cache{
 		lg:                 lg,
-		compiler:           NewCompiler(workdir, reporter),
+		compiler:           compiler,
 		diagHandler:        diagHandler,
 		indexedDirsByGoPkg: map[string]string{},
 		indexedGoPkgsByDir: map[string]string{},
@@ -311,8 +311,33 @@ func NewCache(workdir string, lg *zap.Logger) *Cache {
 		fileURIsByPath:     map[string]span.URI{},
 		partialResults:     map[string]parser.Result{},
 	}
+	compiler.Hooks = protocompile.CompilerHooks{
+		PreInvalidate:  cache.preInvalidateHook,
+		PostInvalidate: cache.postInvalidateHook,
+		PreCompile:     cache.preCompile,
+		PostCompile:    cache.postCompile,
+	}
 	cache.Reindex()
 	return cache
+}
+
+func (c *Cache) preInvalidateHook(path string, reason string) {
+	fmt.Printf("invalidating %s (%s)\n", path, reason)
+
+	c.diagHandler.ClearDiagnosticsForPath(path)
+}
+
+func (c *Cache) postInvalidateHook(path string) {
+	fmt.Printf("done invalidating %s\n", path)
+}
+
+func (c *Cache) preCompile(path string) {
+	fmt.Printf("compiling %s\n", path)
+	delete(c.partialResults, path)
+}
+
+func (c *Cache) postCompile(path string) {
+	fmt.Printf("done compiling %s\n", path)
 }
 
 func (c *Cache) Reindex() {
@@ -360,9 +385,8 @@ func (c *Cache) Compile(protos ...string) {
 	c.lg.Info("done compiling", zap.Int("protos", len(protos)))
 	for _, r := range res.Files {
 		path := r.Path()
-		c.diagHandler.ClearDiagnosticsForPath(path)
 		found := false
-		delete(c.partialResults, path)
+		// delete(c.partialResults, path)
 		for i, f := range c.results {
 			// todo: this is big slow
 			if f.Path() == path {
@@ -454,6 +478,8 @@ func (c *Cache) getMapper(uri span.URI) (*protocol.Mapper, error) {
 }
 
 func (c *Cache) ComputeDiagnosticReports(uri span.URI) ([]*protocol.Diagnostic, error) {
+	c.resultsMu.Lock()
+	defer c.resultsMu.Unlock()
 	rawReports, found := c.diagHandler.GetDiagnosticsForPath(c.filePathsByURI[uri])
 	if !found {
 		return nil, nil // no reports
@@ -523,13 +549,55 @@ func (c *Cache) ComputeInlayHints(doc protocol.TextDocumentIdentifier, rng proto
 	return hints, nil
 }
 
+type optionGetter[T proto.Message] interface {
+	GetOptions() T
+}
+
+func collectOptions[V proto.Message, T ast.OptionDeclNode, U optionGetter[V]](t T, getter U, optionsByNode map[*ast.OptionNode][]protoreflect.ExtensionType) {
+	opt, ok := any(t).(*ast.OptionNode)
+	if !ok {
+		return
+	}
+	proto.RangeExtensions(getter.GetOptions(), func(et protoreflect.ExtensionType, i interface{}) bool {
+		if et.TypeDescriptor().IsExtension() {
+			optionsByNode[opt] = append(optionsByNode[opt], et)
+		}
+		return true
+	})
+}
+
+var (
+	wellKnownFileOptions = map[string]string{
+		"java_package":                  "string",
+		"java_outer_classname":          "string",
+		"java_multiple_files":           "bool",
+		"java_generate_equals_and_hash": "bool",
+		"java_string_check_utf8":        "bool",
+		"optimize_for":                  "google.protobuf.FileOptions.OptimizeMode",
+		"go_package":                    "string",
+		"cc_generic_services":           "bool",
+		"java_generic_services":         "bool",
+		"py_generic_services":           "bool",
+		"php_generic_services":          "bool",
+		"deprecated":                    "bool",
+		"cc_enable_arenas":              "bool",
+		"objc_class_prefix":             "string",
+		"csharp_namespace":              "string",
+		"swift_prefix":                  "string",
+		"php_class_prefix":              "string",
+		"php_namespace":                 "string",
+		"php_metadata_namespace":        "string",
+		"ruby_package":                  "string",
+	}
+)
+
 func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, rng protocol.Range) []protocol.InlayHint {
 	var hints []protocol.InlayHint
 	res, err := c.FindResultByURI(doc.URI.SpanURI())
 	if err != nil {
 		return nil
 	}
-
+	fdp := res.FileDescriptorProto()
 	mapper, err := c.getMapper(doc.URI.SpanURI())
 	if err != nil {
 		return nil
@@ -540,6 +608,78 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 	startToken := a.TokenAtOffset(startOff)
 	endToken := a.TokenAtOffset(endOff)
 
+	optionsByNode := make(map[*ast.OptionNode][]protoreflect.ExtensionType)
+
+	for _, decl := range a.Decls {
+		if opt, ok := decl.(*ast.OptionNode); ok {
+			if len(opt.Name.Parts) == 1 {
+				info := a.NodeInfo(opt.Name)
+				part := opt.Name.Parts[0]
+				if wellKnownType, ok := wellKnownFileOptions[part.Value()]; ok {
+					hints = append(hints, protocol.InlayHint{
+						Kind: protocol.Type,
+						Position: protocol.Position{
+							Line:      uint32(info.End().Line - 1),
+							Character: uint32(info.End().Col - 1),
+						},
+						Label: []protocol.InlayHintLabelPart{
+							{
+								Value: wellKnownType,
+							},
+						},
+						PaddingLeft: true,
+					})
+					continue
+				}
+			}
+			collectOptions[*descriptorpb.FileOptions](opt, fdp, optionsByNode)
+		}
+	}
+	// collect all options
+	for _, svc := range fdp.GetService() {
+		for _, decl := range res.ServiceNode(svc).(*ast.ServiceNode).Decls {
+			if opt, ok := decl.(*ast.OptionNode); ok {
+				collectOptions[*descriptorpb.ServiceOptions](opt, svc, optionsByNode)
+			}
+		}
+		for _, method := range svc.GetMethod() {
+			for _, decl := range res.MethodNode(method).(*ast.RPCNode).Decls {
+				if opt, ok := decl.(*ast.OptionNode); ok {
+					collectOptions[*descriptorpb.MethodOptions](opt, method, optionsByNode)
+				}
+			}
+		}
+	}
+	for _, msg := range fdp.GetMessageType() {
+		for _, decl := range res.MessageNode(msg).(*ast.MessageNode).Decls {
+			if opt, ok := decl.(*ast.OptionNode); ok {
+				collectOptions[*descriptorpb.MessageOptions](opt, msg, optionsByNode)
+			}
+			for _, field := range msg.GetField() {
+				for _, opt := range res.FieldNode(field).(*ast.FieldNode).GetOptions().GetElements() {
+					collectOptions[*descriptorpb.FieldOptions](opt, field, optionsByNode)
+				}
+			}
+		}
+	}
+	for _, enum := range fdp.GetEnumType() {
+		for _, decl := range res.EnumNode(enum).(*ast.EnumNode).Decls {
+			if opt, ok := decl.(*ast.OptionNode); ok {
+				collectOptions[*descriptorpb.EnumOptions](opt, enum, optionsByNode)
+			}
+		}
+		for _, val := range enum.GetValue() {
+			for _, opt := range res.EnumValueNode(val).(*ast.EnumValueNode).Options.GetElements() {
+				collectOptions[*descriptorpb.EnumValueOptions](opt, val, optionsByNode)
+			}
+		}
+	}
+	for _, ext := range fdp.GetExtension() {
+		for _, opt := range res.FieldNode(ext).(*ast.FieldNode).GetOptions().GetElements() {
+			collectOptions[*descriptorpb.FieldOptions](opt, ext, optionsByNode)
+		}
+	}
+
 	allNodes := a.Children()
 	for _, node := range allNodes {
 		// only look at the decls that overlap the range
@@ -549,24 +689,34 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 		}
 		ast.Walk(node, &ast.SimpleVisitor{
 			DoVisitOptionNode: func(n *ast.OptionNode) error {
-				if lit, ok := n.Val.(*ast.MessageLiteralNode); ok {
-					for _, field := range lit.Elements {
-						extName := res.ResolveMessageLiteralExtensionName(field.Name.Name)
-						info := a.NodeInfo(field.Name)
+				opts, ok := optionsByNode[n]
+				if !ok {
+					return nil
+				}
+				for _, opt := range opts {
+					msg := opt.TypeDescriptor().Message()
+					if msg != nil {
+						fullName := msg.FullName()
+
+						info := a.NodeInfo(n.Val)
 						hints = append(hints, protocol.InlayHint{
 							Position: protocol.Position{
-								Line:      uint32(info.End().Line) - 1,
-								Character: uint32(info.End().Col) - 1,
+								Line:      uint32(info.Start().Line) - 1,
+								Character: uint32(info.Start().Col) - 1,
 							},
 							Label: []protocol.InlayHintLabelPart{
 								{
-									Value: extName,
+									Value:   string(fullName),
+									Tooltip: makeTooltip(msg),
 								},
 							},
 							Kind:         protocol.Type,
 							PaddingLeft:  true,
 							PaddingRight: true,
 						})
+						if lit, ok := n.Val.(*ast.MessageLiteralNode); ok {
+							hints = append(hints, buildMessageLiteralHints(lit, msg, a)...)
+						}
 					}
 				}
 				return nil
@@ -575,4 +725,68 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 	}
 
 	return hints
+}
+
+func buildMessageLiteralHints(lit *ast.MessageLiteralNode, msg protoreflect.MessageDescriptor, a *ast.FileNode) []protocol.InlayHint {
+	msgFields := msg.Fields()
+	var hints []protocol.InlayHint
+	for _, field := range lit.Elements {
+		fieldDesc := msgFields.ByName(protoreflect.Name(field.Name.Value()))
+		if fieldDesc == nil {
+			continue
+		}
+		fieldHint := protocol.InlayHint{
+			Kind:         protocol.Type,
+			PaddingLeft:  true,
+			PaddingRight: true,
+		}
+		kind := fieldDesc.Kind()
+		if kind == protoreflect.MessageKind {
+			info := a.NodeInfo(field.Val)
+			fieldHint.Position = protocol.Position{
+				Line:      uint32(info.Start().Line) - 1,
+				Character: uint32(info.Start().Col) - 1,
+			}
+			fieldHint.Label = append(fieldHint.Label, protocol.InlayHintLabelPart{
+				Value:   string(fieldDesc.Message().FullName()),
+				Tooltip: makeTooltip(fieldDesc.Message()),
+			})
+			hints = append(hints, buildMessageLiteralHints(field.Val.(*ast.MessageLiteralNode), fieldDesc.Message(), a)...)
+			fieldHint.PaddingLeft = false
+		} else {
+			info := a.NodeInfo(field.Sep)
+			fieldHint.Position = protocol.Position{
+				Line:      uint32(info.Start().Line) - 1,
+				Character: uint32(info.Start().Col) - 1,
+			}
+			fieldHint.Label = append(fieldHint.Label, protocol.InlayHintLabelPart{
+				Value: kind.String(),
+			})
+			fieldHint.PaddingRight = false
+		}
+		hints = append(hints, fieldHint)
+	}
+	return hints
+}
+
+func makeTooltip(d protoreflect.Descriptor) *protocol.OrPTooltipPLabel {
+	wrap, err := desc.WrapDescriptor(d)
+	if err != nil {
+		return nil
+	}
+	printer := protoprint.Printer{
+		SortElements: true,
+		Indent:       "  ",
+		Compact:      true,
+	}
+	str, err := printer.PrintProtoToString(wrap)
+	if err != nil {
+		return nil
+	}
+	return &protocol.OrPTooltipPLabel{
+		Value: protocol.MarkupContent{
+			Kind:  protocol.Markdown,
+			Value: fmt.Sprintf("```protobuf\n%s\n```", str),
+		},
+	}
 }

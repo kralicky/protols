@@ -118,6 +118,7 @@ func computeSemanticTokens(cache *Cache, td protocol.TextDocumentIdentifier, rng
 		}
 		e.inspect(node)
 	}
+	e.mkcomments(a.NodeInfo(a.EOF))
 
 	ans.Data = e.Data()
 	return &ans, nil
@@ -148,6 +149,10 @@ func (s *encoded) mktokens(node ast.Node, tt tokenType, mods tokenModifier) {
 	}
 	s.items = append(s.items, nodeTk)
 
+	s.mkcomments(info)
+}
+
+func (s *encoded) mkcomments(info ast.NodeInfo) {
 	leadingComments := info.LeadingComments()
 	for i := 0; i < leadingComments.Len(); i++ {
 		comment := leadingComments.Index(i)

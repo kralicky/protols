@@ -46,8 +46,15 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 				Change:    protocol.Incremental,
 				Save:      &protocol.SaveOptions{IncludeText: true},
 			},
-			HoverProvider: &protocol.Or_ServerCapabilities_hoverProvider{Value: true},
-
+			// HoverProvider: &protocol.Or_ServerCapabilities_hoverProvider{Value: true},
+			DiagnosticProvider: &protocol.Or_ServerCapabilities_diagnosticProvider{
+				Value: protocol.DiagnosticOptions{
+					WorkspaceDiagnostics:  false,
+					InterFileDependencies: false,
+				},
+			},
+			InlayHintProvider:    true,
+			DocumentLinkProvider: &protocol.DocumentLinkOptions{},
 			// DeclarationProvider: &protocol.Or_ServerCapabilities_declarationProvider{Value: true},
 			// TypeDefinitionProvider: true,
 			// ReferencesProvider: true,
@@ -354,8 +361,24 @@ func (*Server) Declaration(context.Context, *protocol.DeclarationParams) (*proto
 }
 
 // Diagnostic implements protocol.Server.
-func (*Server) Diagnostic(context.Context, *string) (*string, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+func (s *Server) Diagnostic(ctx context.Context, params *protocol.DocumentDiagnosticParams) (*protocol.Or_DocumentDiagnosticReport, error) {
+	reports, err := s.c.ComputeDiagnosticReports(params.TextDocument.URI.SpanURI())
+	if err != nil {
+		s.lg.Error("failed to compute diagnostic reports", zap.Error(err))
+		return nil, err
+	}
+	items := []protocol.Diagnostic{}
+	for _, report := range reports {
+		items = append(items, *report)
+	}
+	return &protocol.Or_DocumentDiagnosticReport{
+		Value: protocol.RelatedFullDocumentDiagnosticReport{
+			FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
+				Kind:  string(protocol.DiagnosticFull),
+				Items: items,
+			},
+		},
+	}, nil
 }
 
 // DiagnosticRefresh implements protocol.Server.
@@ -414,8 +437,8 @@ func (*Server) DocumentHighlight(context.Context, *protocol.DocumentHighlightPar
 }
 
 // DocumentLink implements protocol.Server.
-func (*Server) DocumentLink(context.Context, *protocol.DocumentLinkParams) ([]protocol.DocumentLink, error) {
-	return nil, nil
+func (s *Server) DocumentLink(ctx context.Context, params *protocol.DocumentLinkParams) ([]protocol.DocumentLink, error) {
+	return s.c.ComputeDocumentLinks(params.TextDocument)
 }
 
 // ExecuteCommand implements protocol.Server.
@@ -449,8 +472,8 @@ func (*Server) IncomingCalls(context.Context, *protocol.CallHierarchyIncomingCal
 }
 
 // InlayHint implements protocol.Server.
-func (*Server) InlayHint(context.Context, *protocol.InlayHintParams) ([]protocol.InlayHint, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+func (s *Server) InlayHint(ctx context.Context, params *protocol.InlayHintParams) ([]protocol.InlayHint, error) {
+	return s.c.ComputeInlayHints(params.TextDocument, params.Range)
 }
 
 // InlayHintRefresh implements protocol.Server.

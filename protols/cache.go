@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,7 +13,9 @@ import (
 
 	"github.com/bmatcuk/doublestar"
 	"github.com/bufbuild/protocompile"
+	"github.com/bufbuild/protocompile/ast"
 	"github.com/bufbuild/protocompile/linker"
+	"github.com/bufbuild/protocompile/parser"
 	"github.com/bufbuild/protocompile/reporter"
 	"github.com/jhump/protoreflect/desc"
 	"github.com/kralicky/ragu"
@@ -32,12 +35,17 @@ import (
 type Cache struct {
 	lg                 *zap.Logger
 	compiler           *Compiler
+	diagHandler        *DiagnosticHandler
 	resultsMu          sync.RWMutex
 	results            linker.Files
+	partialResults     map[string]parser.Result
 	indexMu            sync.RWMutex
 	indexedDirsByGoPkg map[string]string   // go package name -> directory
 	indexedGoPkgsByDir map[string]string   // directory -> go package name
 	filePathsByURI     map[span.URI]string // URI -> canonical file path (go package + file name)
+	fileURIsByPath     map[string]span.URI // canonical file path (go package + file name) -> URI
+
+	todoModLock sync.Mutex
 }
 
 // FindDescriptorByName implements linker.Resolver.
@@ -70,7 +78,7 @@ func (c *Cache) FindResultByPath(path string) (linker.Result, error) {
 	f := c.results.FindFileByPath(path)
 	if f == nil {
 		fmt.Printf("%v\n", c.filePathsByURI)
-		return nil, fmt.Errorf("package not found: %q", path)
+		return nil, fmt.Errorf("FindResultByPath: package not found: %q", path)
 	}
 	return f.(linker.Result), nil
 }
@@ -88,9 +96,25 @@ func (c *Cache) FindResultByURI(uri span.URI) (linker.Result, error) {
 	f := c.results.FindFileByPath(path)
 	if f == nil {
 		fmt.Printf("%v\n", c.filePathsByURI)
-		return nil, fmt.Errorf("package not found: %q", path)
+		return nil, fmt.Errorf("FindResultByURI: package not found: %q", path)
 	}
 	return f.(linker.Result), nil
+}
+
+func (c *Cache) FindParseResultByURI(uri span.URI) (parser.Result, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	if c.results == nil && len(c.partialResults) == 0 {
+		return nil, fmt.Errorf("no results or partial results exist")
+	}
+	path, ok := c.filePathsByURI[uri]
+	if !ok {
+		return nil, fmt.Errorf("no file found for URI %q", uri)
+	}
+	if pr, ok := c.partialResults[path]; ok {
+		return pr, nil
+	}
+	return c.FindResultByURI(uri)
 }
 
 // FindFileByPath implements linker.Resolver.
@@ -143,7 +167,7 @@ type Compiler struct {
 	overlay *Overlay
 }
 
-func NewCompiler(workdir string) *Compiler {
+func NewCompiler(workdir string, reporter reporter.Reporter) *Compiler {
 	accessor := ragu.SourceAccessor(nil)
 	overlay := &Overlay{
 		baseAccessor: accessor,
@@ -168,7 +192,7 @@ func NewCompiler(workdir string) *Compiler {
 		Compiler: &protocompile.Compiler{
 			Resolver:       resolver,
 			MaxParallelism: -1,
-			Reporter:       reporter.NewReporter(nil, nil),
+			Reporter:       reporter,
 			SourceInfoMode: protocompile.SourceInfoExtraComments | protocompile.SourceInfoExtraOptionLocations,
 			RetainResults:  true,
 			RetainASTs:     true,
@@ -194,13 +218,12 @@ func (o *Overlay) Create(uri span.URI, path string, contents []byte) error {
 	return nil
 }
 
+// requires sourcesMu to be locked (todo: fix)
 func (o *Overlay) Update(uri span.URI, path string, contentChanges []protocol.TextDocumentContentChangeEvent) error {
 	if len(contentChanges) == 0 {
 		return fmt.Errorf("%w: no content changes provided", jsonrpc2.ErrInternal)
 	}
 
-	o.sourcesMu.Lock()
-	defer o.sourcesMu.Unlock()
 	if _, ok := o.sources[path]; !ok {
 		baseReader, err := o.baseAccessor(path)
 		if err != nil {
@@ -276,12 +299,17 @@ func (o *Overlay) Get(path string) (*protocol.Mapper, error) {
 
 // NewCache creates a new cache.
 func NewCache(workdir string, lg *zap.Logger) *Cache {
+	diagHandler := NewDiagnosticHandler()
+	reporter := reporter.NewReporter(diagHandler.HandleError, diagHandler.HandleWarning)
 	cache := &Cache{
 		lg:                 lg,
-		compiler:           NewCompiler(workdir),
+		compiler:           NewCompiler(workdir, reporter),
+		diagHandler:        diagHandler,
 		indexedDirsByGoPkg: map[string]string{},
 		indexedGoPkgsByDir: map[string]string{},
 		filePathsByURI:     map[span.URI]string{},
+		fileURIsByPath:     map[string]span.URI{},
+		partialResults:     map[string]parser.Result{},
 	}
 	cache.Reindex()
 	return cache
@@ -295,6 +323,7 @@ func (c *Cache) Reindex() {
 	maps.Clear(c.indexedDirsByGoPkg)
 	maps.Clear(c.indexedGoPkgsByDir)
 	maps.Clear(c.filePathsByURI)
+	maps.Clear(c.partialResults)
 	allProtos, _ := doublestar.Glob(path.Join(c.compiler.workdir, "**/*.proto"))
 	c.lg.Debug("found protos", zap.Strings("protos", allProtos))
 	var resolved []string
@@ -311,6 +340,7 @@ func (c *Cache) Reindex() {
 		c.indexedGoPkgsByDir[filepath.Dir(proto)] = goPkg
 		canonicalName := filepath.Join(goPkg, filepath.Base(proto))
 		c.filePathsByURI[span.URIFromPath(proto)] = canonicalName
+		c.fileURIsByPath[canonicalName] = span.URIFromPath(proto)
 		resolved = append(resolved, canonicalName)
 	}
 	c.Compile(resolved...)
@@ -322,10 +352,33 @@ func (c *Cache) Compile(protos ...string) {
 	c.lg.Info("compiling", zap.Int("protos", len(protos)))
 	res, err := c.compiler.Compile(context.TODO(), protos...)
 	if err != nil {
-		c.lg.With(zap.Error(err)).Error("failed to compile")
-		return
+		if !errors.Is(err, reporter.ErrInvalidSource) {
+			c.lg.With(zap.Error(err)).Error("failed to compile")
+			return
+		}
 	}
-	c.results = res
+	c.lg.Info("done compiling", zap.Int("protos", len(protos)))
+	for _, r := range res.Files {
+		path := r.Path()
+		c.diagHandler.ClearDiagnosticsForPath(path)
+		found := false
+		delete(c.partialResults, path)
+		for i, f := range c.results {
+			// todo: this is big slow
+			if f.Path() == path {
+				found = true
+				c.results[i] = r
+				break
+			}
+		}
+		if !found {
+			c.results = append(c.results, r)
+		}
+	}
+	for path, partial := range res.UnlinkedParserResults {
+		partial := partial
+		c.partialResults[path] = partial
+	}
 	c.lg.Info("reindexed", zap.Int("protos", len(protos)))
 }
 
@@ -345,6 +398,8 @@ func (s *Cache) OnFileClosed(doc protocol.TextDocumentIdentifier) {
 }
 
 func (s *Cache) OnFileModified(f protocol.VersionedTextDocumentIdentifier, contentChanges []protocol.TextDocumentContentChangeEvent) error {
+	s.todoModLock.Lock()
+	defer s.todoModLock.Unlock()
 	s.lg.With(
 		zap.String("file", string(f.URI)),
 	).Debug("file modified")
@@ -396,4 +451,128 @@ func (c *Cache) ComputeSemanticTokensRange(doc protocol.TextDocumentIdentifier, 
 
 func (c *Cache) getMapper(uri span.URI) (*protocol.Mapper, error) {
 	return c.compiler.overlay.Get(c.filePathsByURI[uri])
+}
+
+func (c *Cache) ComputeDiagnosticReports(uri span.URI) ([]*protocol.Diagnostic, error) {
+	rawReports, found := c.diagHandler.GetDiagnosticsForPath(c.filePathsByURI[uri])
+	if !found {
+		return nil, nil // no reports
+	}
+	mapper, err := c.getMapper(uri)
+	if err != nil {
+		return nil, err
+	}
+
+	// convert to protocol reports
+	var reports []*protocol.Diagnostic
+	for _, rawReport := range rawReports {
+		rng, err := mapper.OffsetRange(rawReport.Pos.Start().Offset, rawReport.Pos.End().Offset+1)
+		if err != nil {
+			c.lg.With(
+				zap.String("file", string(uri)),
+				zap.Error(err),
+			).Debug("failed to map range")
+			continue
+		}
+		reports = append(reports, &protocol.Diagnostic{
+			Range:    rng,
+			Severity: rawReport.Severity,
+			Message:  rawReport.Error.Error(),
+		})
+	}
+
+	return reports, nil
+}
+
+func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]protocol.DocumentLink, error) {
+	// link valid imports
+	var links []protocol.DocumentLink
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+
+	res, err := c.FindResultByURI(doc.URI.SpanURI())
+	if err != nil {
+		return nil, err
+	}
+	resAst := res.AST()
+	var imports []*ast.ImportNode
+	// get the source positions of the import statements
+	for _, decl := range resAst.Decls {
+		if imp, ok := decl.(*ast.ImportNode); ok {
+			imports = append(imports, imp)
+		}
+	}
+
+	for _, imp := range imports {
+		path := imp.Name.AsString()
+		if uri, ok := c.fileURIsByPath[path]; ok {
+			nameInfo := resAst.NodeInfo(imp.Name)
+			links = append(links, protocol.DocumentLink{
+				Range:  toRange(nameInfo),
+				Target: uri.Filename(),
+			})
+		}
+	}
+
+	return links, nil
+}
+
+func (c *Cache) ComputeInlayHints(doc protocol.TextDocumentIdentifier, rng protocol.Range) ([]protocol.InlayHint, error) {
+	hints := []protocol.InlayHint{}
+	hints = append(hints, c.computeMessageLiteralHints(doc, rng)...)
+	return hints, nil
+}
+
+func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, rng protocol.Range) []protocol.InlayHint {
+	var hints []protocol.InlayHint
+	res, err := c.FindResultByURI(doc.URI.SpanURI())
+	if err != nil {
+		return nil
+	}
+
+	mapper, err := c.getMapper(doc.URI.SpanURI())
+	if err != nil {
+		return nil
+	}
+	a := res.AST()
+
+	startOff, endOff, _ := mapper.RangeOffsets(rng)
+	startToken := a.TokenAtOffset(startOff)
+	endToken := a.TokenAtOffset(endOff)
+
+	allNodes := a.Children()
+	for _, node := range allNodes {
+		// only look at the decls that overlap the range
+		start, end := node.Start(), node.End()
+		if end <= startToken || start >= endToken {
+			continue
+		}
+		ast.Walk(node, &ast.SimpleVisitor{
+			DoVisitOptionNode: func(n *ast.OptionNode) error {
+				if lit, ok := n.Val.(*ast.MessageLiteralNode); ok {
+					for _, field := range lit.Elements {
+						extName := res.ResolveMessageLiteralExtensionName(field.Name.Name)
+						info := a.NodeInfo(field.Name)
+						hints = append(hints, protocol.InlayHint{
+							Position: protocol.Position{
+								Line:      uint32(info.End().Line) - 1,
+								Character: uint32(info.End().Col) - 1,
+							},
+							Label: []protocol.InlayHintLabelPart{
+								{
+									Value: extName,
+								},
+							},
+							Kind:         protocol.Type,
+							PaddingLeft:  true,
+							PaddingRight: true,
+						})
+					}
+				}
+				return nil
+			},
+		})
+	}
+
+	return hints
 }

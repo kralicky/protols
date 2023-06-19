@@ -4,25 +4,9 @@ import (
 	"sort"
 
 	"github.com/bufbuild/protocompile/ast"
-	"github.com/bufbuild/protocompile/linker"
+	"github.com/bufbuild/protocompile/parser"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 )
-
-// type SemanticDocument struct {
-// 	fileNode       *ast.FileNode
-// 	mapper         *protocol.Mapper
-// 	semanticTokens *interval.SearchTree[semanticToken, protocol.Position]
-// }
-
-// func NewSemanticDocument(fileNode *ast.FileNode, mapper *protocol.Mapper) *SemanticDocument {
-// 	sd := &SemanticDocument{
-// 		fileNode:       fileNode,
-// 		mapper:         mapper,
-// 		semanticTokens: interval.NewSearchTree[semanticToken, protocol.Position](protocol.ComparePosition),
-// 	}
-// 	sd.buildTokens(fileNode)
-// 	return sd
-// }
 
 type tokenType uint32
 
@@ -77,7 +61,7 @@ type encoded struct {
 	// the generated data
 	items []semItem
 
-	res        linker.Result
+	res        parser.Result
 	mapper     *protocol.Mapper
 	rng        *protocol.Range
 	start, end ast.Token
@@ -94,7 +78,7 @@ func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng 
 }
 
 func computeSemanticTokens(cache *Cache, td protocol.TextDocumentIdentifier, rng *protocol.Range) (*protocol.SemanticTokens, error) {
-	file, err := cache.FindResultByURI(td.URI.SpanURI())
+	file, err := cache.FindParseResultByURI(td.URI.SpanURI())
 	if err != nil {
 		return nil, err
 	}
@@ -226,6 +210,10 @@ func (s *encoded) inspect(node ast.Node) {
 		DoVisitFieldNode: func(node *ast.FieldNode) error {
 			s.mktokens(node.Name, semanticTypeProperty, 0)
 			s.mktokens(node.FldType, semanticTypeType, 0)
+			return nil
+		},
+		DoVisitFieldReferenceNode: func(node *ast.FieldReferenceNode) error {
+			s.mktokens(node.Name, semanticTypeProperty, 0)
 			return nil
 		},
 		DoVisitMapFieldNode: func(node *ast.MapFieldNode) error {

@@ -109,16 +109,18 @@ func computeSemanticTokens(cache *Cache, td protocol.TextDocumentIdentifier, rng
 		start:  startToken,
 		end:    endToken,
 	}
-	allNodes := a.Children()
-	for _, node := range allNodes {
+	if a.Syntax != nil {
+		e.mkcomments(a.Syntax)
+	}
+	for _, node := range a.Decls {
 		// only look at the decls that overlap the range
 		start, end := node.Start(), node.End()
-		if end <= e.start || start >= e.end {
+		if end < e.start || start > e.end {
 			continue
 		}
 		e.inspect(node)
 	}
-	e.mkcomments(a.NodeInfo(a.EOF))
+	e.mkcomments(a.EOF)
 
 	ans.Data = e.Data()
 	return &ans, nil
@@ -127,14 +129,6 @@ func computeSemanticTokens(cache *Cache, td protocol.TextDocumentIdentifier, rng
 func (s *encoded) mktokens(node ast.Node, tt tokenType, mods tokenModifier) {
 	info := s.res.AST().NodeInfo(node)
 	if !info.IsValid() {
-		return
-	}
-
-	if node.Start() >= s.end || node.End() <= s.start {
-		return
-	}
-
-	if info.End().Line != info.Start().Line {
 		return
 	}
 
@@ -149,10 +143,11 @@ func (s *encoded) mktokens(node ast.Node, tt tokenType, mods tokenModifier) {
 	}
 	s.items = append(s.items, nodeTk)
 
-	s.mkcomments(info)
+	s.mkcomments(node)
 }
 
-func (s *encoded) mkcomments(info ast.NodeInfo) {
+func (s *encoded) mkcomments(node ast.Node) {
+	info := s.res.AST().NodeInfo(node)
 	leadingComments := info.LeadingComments()
 	for i := 0; i < leadingComments.Len(); i++ {
 		comment := leadingComments.Index(i)
@@ -202,10 +197,15 @@ func (s *encoded) inspect(node ast.Node) {
 		},
 		DoVisitRuneNode: func(node *ast.RuneNode) error {
 			switch node.Rune {
-			case '{', '}', ';', '.':
+			case '}', ';', '{', '.':
+				s.mkcomments(node)
 			default:
 				s.mktokens(node, semanticTypeOperator, 0)
 			}
+			return nil
+		},
+		DoVisitOneofNode: func(node *ast.OneofNode) error {
+			s.mktokens(node.Name, semanticTypeClass, 0)
 			return nil
 		},
 		DoVisitMessageNode: func(node *ast.MessageNode) error {
@@ -249,6 +249,10 @@ func (s *encoded) inspect(node ast.Node) {
 		},
 		DoVisitEnumValueNode: func(node *ast.EnumValueNode) error {
 			s.mktokens(node.Name, semanticTypeEnumMember, 0)
+			return nil
+		},
+		DoVisitTerminalNode: func(node ast.TerminalNode) error {
+			s.mkcomments(node)
 			return nil
 		},
 	})

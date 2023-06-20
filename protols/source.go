@@ -80,7 +80,7 @@ func rangeToSourcePositions(rng protocol.Range) (start, end ast.SourcePos) {
 }
 
 func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParams, cache *Cache, lg *zap.Logger) (protoreflect.Descriptor, protocol.Range, error) {
-	fd, err := cache.FindResultByPath(params.TextDocument.URI.SpanURI().Filename())
+	fd, err := cache.FindResultByURI(params.TextDocument.URI.SpanURI())
 	if err != nil {
 		return nil, protocol.Range{}, err
 	}
@@ -364,6 +364,14 @@ func findRelevantDescriptorAtLocation(params *protocol.TextDocumentPositionParam
 					return nil, protocol.Range{}, fmt.Errorf("failed to find extension by name %q: %w", definitionFullName, err)
 				}
 				definitionFullName = extType.TypeDescriptor().FullName()
+				break
+			}
+		}
+	case *descriptorpb.DescriptorProto:
+		// nested message or enum
+		for _, nestedType := range desc.GetNestedType() {
+			if nestedType.GetName() == desc.GetName() {
+				definitionFullName = nestedType.ProtoReflect().Descriptor().FullName()
 				break
 			}
 		}

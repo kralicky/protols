@@ -9,6 +9,7 @@ import (
 	"github.com/bufbuild/protocompile/protoutil"
 	"github.com/jhump/protoreflect/desc"
 	"github.com/jhump/protoreflect/desc/protoprint"
+	"github.com/samber/lo"
 	"go.uber.org/zap"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/pkg/jsonrpc2"
@@ -38,6 +39,14 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 	// 	return nil, fmt.Errorf("indexing failed: %w", err)
 	// }
 
+	filters := []protocol.FileOperationFilter{
+		{
+			Scheme: "file",
+			Pattern: protocol.FileOperationPattern{
+				Glob: "**/*.proto",
+			},
+		},
+	}
 	s.lg.Debug("Initialize", zap.String("workdir", params.RootURI.SpanURI().Filename()), zap.Any("initOpts", params.InitializationOptions))
 	return &protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
@@ -46,11 +55,24 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 				Change:    protocol.Incremental,
 				Save:      &protocol.SaveOptions{IncludeText: true},
 			},
-			// HoverProvider: &protocol.Or_ServerCapabilities_hoverProvider{Value: true},
+			HoverProvider: &protocol.Or_ServerCapabilities_hoverProvider{Value: true},
 			DiagnosticProvider: &protocol.Or_ServerCapabilities_diagnosticProvider{
 				Value: protocol.DiagnosticOptions{
 					WorkspaceDiagnostics:  false,
 					InterFileDependencies: false,
+				},
+			},
+			Workspace: &protocol.Workspace6Gn{
+				FileOperations: &protocol.FileOperationOptions{
+					DidCreate: &protocol.FileOperationRegistrationOptions{
+						Filters: filters,
+					},
+					DidRename: &protocol.FileOperationRegistrationOptions{
+						Filters: filters,
+					},
+					DidDelete: &protocol.FileOperationRegistrationOptions{
+						Filters: filters,
+					},
 				},
 			},
 			InlayHintProvider:    true,
@@ -62,7 +84,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			// CompletionProvider: protocol.CompletionOptions{
 			// 	TriggerCharacters: []string{"."},
 			// },
-			// DefinitionProvider: &protocol.Or_ServerCapabilities_definitionProvider{Value: true},
+			DefinitionProvider: &protocol.Or_ServerCapabilities_definitionProvider{Value: true},
 			SemanticTokensProvider: &protocol.SemanticTokensOptions{
 				Legend: protocol.SemanticTokensLegend{
 					TokenTypes:     semanticTokenTypes,
@@ -71,7 +93,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 				Full:  &protocol.Or_SemanticTokensOptions_full{Value: true},
 				Range: &protocol.Or_SemanticTokensOptions_range{Value: true},
 			},
-			// DocumentSymbolProvider: &protocol.Or_ServerCapabilities_documentSymbolProvider{Value: true},
+			DocumentSymbolProvider: &protocol.Or_ServerCapabilities_documentSymbolProvider{Value: true},
 		},
 
 		ServerInfo: &protocol.PServerInfoMsg_initialize{
@@ -143,6 +165,9 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 	if err != nil {
 		return nil, err
 	}
+	if desc == nil {
+		return nil, nil
+	}
 	parentFile := desc.ParentFile()
 	if parentFile == nil {
 		return nil, errors.New("no parent file found for descriptor")
@@ -175,9 +200,13 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 	}
 
 	info := containingFileResolver.AST().NodeInfo(node)
+	uri, err := s.c.PathToURI(containingFileResolver.Path())
+	if err != nil {
+		return nil, err
+	}
 	return []protocol.Location{
 		{
-			URI: protocol.DocumentURI(containingFileResolver.Path()),
+			URI: protocol.URIFromSpanURI(uri),
 			Range: protocol.Range{
 				Start: protocol.Position{
 					Line:      uint32(info.Start().Line - 1),
@@ -194,6 +223,9 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 
 // Hover implements protocol.Server.
 func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (result *protocol.Hover, err error) {
+	// return s.c.ComputeHover(params.TextDocumentPositionParams)
+
+	// todo: this implementation kinda sucks
 	s.lg.Debug("Hover Request", zap.String("uri", string(params.TextDocument.URI)), zap.Int("line", int(params.Position.Line)), zap.Int("col", int(params.Position.Character)))
 	d, rng, err := findRelevantDescriptorAtLocation(&params.TextDocumentPositionParams, s.c, s.lg)
 	if err != nil {
@@ -241,30 +273,17 @@ func (s *Server) DidChange(ctx context.Context, params *protocol.DidChangeTextDo
 
 // DidCreateFiles implements protocol.Server.
 func (s *Server) DidCreateFiles(ctx context.Context, params *protocol.CreateFilesParams) (err error) {
-	for _, f := range params.Files {
-		if err := s.c.OnFileCreated(f); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.c.OnFilesCreated(params.Files)
 }
 
 // DidDeleteFiles implements protocol.Server.
 func (s *Server) DidDeleteFiles(ctx context.Context, params *protocol.DeleteFilesParams) (err error) {
-	for _, f := range params.Files {
-		if err := s.c.OnFileDeleted(f); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.c.OnFilesDeleted(params.Files)
 }
 
 // DidRenameFiles implements protocol.Server.
 func (s *Server) DidRenameFiles(ctx context.Context, params *protocol.RenameFilesParams) (err error) {
-	return fmt.Errorf("not implemented")
-	// for _, f := range params.Files {
-	// 	s.c.OnFileRenamed(f)
-	// }
+	return s.c.OnFilesRenamed(params.Files)
 }
 
 // DidSave implements protocol.Server.
@@ -306,12 +325,11 @@ func (s *Server) SemanticTokensRefresh(ctx context.Context) (err error) {
 
 // DocumentSymbol implements protocol.Server.
 func (s *Server) DocumentSymbol(ctx context.Context, params *protocol.DocumentSymbolParams) (result []interface{}, err error) {
-	return nil, nil
-	// symbols, err := s.c.DocumentSymbolsForFile(params.TextDocument)
-	// if err != nil {
-	// 	return nil, err
-	// }
-	// return symbols, nil
+	symbols, err := s.c.DocumentSymbolsForFile(params.TextDocument)
+	if err != nil {
+		return nil, err
+	}
+	return lo.ToAnySlice(symbols), nil
 }
 
 var _ protocol.Server = &Server{}

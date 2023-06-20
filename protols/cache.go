@@ -36,17 +36,17 @@ import (
 // Cache is responsible for keeping track of all the known proto source files
 // and definitions.
 type Cache struct {
-	lg                 *zap.Logger
-	compiler           *Compiler
-	diagHandler        *DiagnosticHandler
-	resultsMu          sync.RWMutex
-	results            linker.Files
-	partialResults     map[string]parser.Result
-	indexMu            sync.RWMutex
-	indexedDirsByGoPkg map[string]string   // go package name -> directory
-	indexedGoPkgsByDir map[string]string   // directory -> go package name
-	filePathsByURI     map[span.URI]string // URI -> canonical file path (go package + file name)
-	fileURIsByPath     map[string]span.URI // canonical file path (go package + file name) -> URI
+	lg             *zap.Logger
+	compiler       *Compiler
+	diagHandler    *DiagnosticHandler
+	resultsMu      sync.RWMutex
+	results        linker.Files
+	partialResults map[string]parser.Result
+	indexMu        sync.RWMutex
+	// indexedDirsByGoPkg map[string]string   // go package name -> directory
+	// indexedGoPkgsByDir map[string]string   // directory -> go package name
+	filePathsByURI map[span.URI]string // URI -> canonical file path (go package + file name)
+	fileURIsByPath map[string]span.URI // canonical file path (go package + file name) -> URI
 
 	todoModLock sync.Mutex
 }
@@ -137,6 +137,25 @@ func (c *Cache) FindFileByURI(uri span.URI) (protoreflect.FileDescriptor, error)
 	return c.results.AsResolver().FindFileByPath(path)
 }
 
+func (c *Cache) PathToURI(path string) (span.URI, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	uri, ok := c.fileURIsByPath[path]
+	if !ok {
+		return "", fmt.Errorf("no file found for path %q", path)
+	}
+	return uri, nil
+}
+func (c *Cache) URIToPath(uri span.URI) (string, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	path, ok := c.filePathsByURI[uri]
+	if !ok {
+		return "", fmt.Errorf("no file found for URI %q", uri)
+	}
+	return path, nil
+}
+
 // FindMessageByName implements linker.Resolver.
 func (c *Cache) FindMessageByName(name protoreflect.FullName) (protoreflect.MessageType, error) {
 	c.resultsMu.RLock()
@@ -149,17 +168,6 @@ func (c *Cache) FindMessageByURL(url string) (protoreflect.MessageType, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
 	return c.results.AsResolver().FindMessageByURL(url)
-}
-
-func (c *Cache) filePathToGoPackage(path string) string {
-	dir, name := filepath.Split(path)
-	dir = filepath.Clean(dir)
-	pkg, ok := c.indexedGoPkgsByDir[dir]
-	if !ok {
-		c.lg.Debug("no go package found for directory", zap.String("dir", dir))
-		return path
-	}
-	return filepath.Join(pkg, name)
 }
 
 var _ linker.Resolver = (*Cache)(nil)
@@ -302,14 +310,14 @@ func NewCache(workdir string, lg *zap.Logger) *Cache {
 		overlay: overlay,
 	}
 	cache := &Cache{
-		lg:                 lg,
-		compiler:           compiler,
-		diagHandler:        diagHandler,
-		indexedDirsByGoPkg: map[string]string{},
-		indexedGoPkgsByDir: map[string]string{},
-		filePathsByURI:     map[span.URI]string{},
-		fileURIsByPath:     map[string]span.URI{},
-		partialResults:     map[string]parser.Result{},
+		lg:          lg,
+		compiler:    compiler,
+		diagHandler: diagHandler,
+		// indexedDirsByGoPkg: map[string]string{},
+		// indexedGoPkgsByDir: map[string]string{},
+		filePathsByURI: map[span.URI]string{},
+		fileURIsByPath: map[string]span.URI{},
+		partialResults: map[string]parser.Result{},
 	}
 	compiler.Hooks = protocompile.CompilerHooks{
 		PreInvalidate:  cache.preInvalidateHook,
@@ -342,33 +350,26 @@ func (c *Cache) postCompile(path string) {
 
 func (c *Cache) Reindex() {
 	c.lg.Debug("reindexing")
-	c.indexMu.Lock()
-	defer c.indexMu.Unlock()
 
-	maps.Clear(c.indexedDirsByGoPkg)
-	maps.Clear(c.indexedGoPkgsByDir)
+	c.indexMu.Lock()
+	// maps.Clear(c.indexedDirsByGoPkg)
+	// maps.Clear(c.indexedGoPkgsByDir)
 	maps.Clear(c.filePathsByURI)
 	maps.Clear(c.partialResults)
+	c.indexMu.Unlock()
+
 	allProtos, _ := doublestar.Glob(path.Join(c.compiler.workdir, "**/*.proto"))
 	c.lg.Debug("found protos", zap.Strings("protos", allProtos))
-	var resolved []string
-	for _, proto := range allProtos {
-		goPkg, err := ragu.FastLookupGoModule(proto)
-		if err != nil {
-			c.lg.With(
-				zap.String("proto", proto),
-				zap.Error(err),
-			).Debug("failed to lookup go module")
-			continue
+	created := make([]protocol.FileCreate, len(allProtos))
+	for i, proto := range allProtos {
+		created[i] = protocol.FileCreate{
+			URI: string(span.URIFromPath(proto)),
 		}
-		c.indexedDirsByGoPkg[goPkg] = filepath.Dir(proto)
-		c.indexedGoPkgsByDir[filepath.Dir(proto)] = goPkg
-		canonicalName := filepath.Join(goPkg, filepath.Base(proto))
-		c.filePathsByURI[span.URIFromPath(proto)] = canonicalName
-		c.fileURIsByPath[canonicalName] = span.URIFromPath(proto)
-		resolved = append(resolved, canonicalName)
 	}
-	c.Compile(resolved...)
+
+	if err := c.OnFilesCreated(created); err != nil {
+		c.lg.Error("failed to index files", zap.Error(err))
+	}
 }
 
 func (c *Cache) Compile(protos ...string) {
@@ -435,12 +436,77 @@ func (s *Cache) OnFileModified(f protocol.VersionedTextDocumentIdentifier, conte
 	return nil
 }
 
-func (s *Cache) OnFileDeleted(f protocol.FileDelete) error {
-	return nil // TODO
+func (c *Cache) OnFilesDeleted(f []protocol.FileDelete) error {
+	c.indexMu.Lock()
+	defer c.indexMu.Unlock()
+	// remove from cache
+	paths := make([]string, len(f))
+	for i, file := range f {
+		paths[i] = c.filePathsByURI[span.URIFromURI(file.URI)]
+		c.compiler.overlay.Delete(paths[i])
+	}
+	c.lg.With(
+		zap.Strings("files", paths),
+	).Debug("files deleted")
+	c.Compile(paths...)
+
+	for _, path := range paths {
+		uri := c.fileURIsByPath[path]
+		delete(c.filePathsByURI, uri)
+		delete(c.fileURIsByPath, path)
+	}
+	return nil
 }
 
-func (s *Cache) OnFileCreated(f protocol.FileCreate) error {
-	return nil // TODO
+func (c *Cache) OnFilesCreated(files []protocol.FileCreate) error {
+	c.indexMu.Lock()
+	resolved := make([]string, 0, len(files))
+	for _, f := range files {
+		uri := span.URIFromURI(f.URI)
+		filename := uri.Filename()
+		goPkg, err := ragu.FastLookupGoModule(filename)
+		if err != nil {
+			c.lg.With(
+				zap.String("filename", filename),
+				zap.Error(err),
+			).Debug("failed to lookup go module")
+			continue
+		}
+		canonicalName := filepath.Join(goPkg, filepath.Base(filename))
+		c.filePathsByURI[uri] = canonicalName
+		c.fileURIsByPath[canonicalName] = uri
+		resolved = append(resolved, canonicalName)
+	}
+	c.indexMu.Unlock()
+	c.lg.With(
+		zap.Int("files", len(resolved)),
+	).Debug("files created")
+	c.Compile(resolved...)
+
+	return nil
+}
+
+func (c *Cache) OnFilesRenamed(f []protocol.FileRename) error {
+	c.lg.With(
+		zap.Any("files", f),
+	).Debug("files renamed")
+
+	c.indexMu.Lock()
+	defer c.indexMu.Unlock()
+
+	paths := make([]string, len(f))
+	for _, file := range f {
+		oldURI := span.URIFromURI(file.OldURI)
+		newURI := span.URIFromURI(file.NewURI)
+		path := c.filePathsByURI[oldURI]
+		delete(c.filePathsByURI, oldURI)
+		c.filePathsByURI[newURI] = path
+		c.fileURIsByPath[path] = newURI
+		paths = append(paths, path)
+	}
+
+	c.Compile(paths...)
+	return nil
 }
 
 func (s *Cache) OnFileSaved(f *protocol.DidSaveTextDocumentParams) error {
@@ -612,6 +678,7 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 
 	for _, decl := range a.Decls {
 		if opt, ok := decl.(*ast.OptionNode); ok {
+			opt := opt
 			if len(opt.Name.Parts) == 1 {
 				info := a.NodeInfo(opt.Name)
 				part := opt.Name.Parts[0]
@@ -632,6 +699,7 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 					continue
 				}
 			}
+			// todo(bug): if more than one FileOption is declared in the same file, each option will show up in all usages of the options in the file
 			collectOptions[*descriptorpb.FileOptions](opt, fdp, optionsByNode)
 		}
 	}
@@ -656,8 +724,16 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 				collectOptions[*descriptorpb.MessageOptions](opt, msg, optionsByNode)
 			}
 			for _, field := range msg.GetField() {
-				for _, opt := range res.FieldNode(field).(*ast.FieldNode).GetOptions().GetElements() {
-					collectOptions[*descriptorpb.FieldOptions](opt, field, optionsByNode)
+				fieldNode := res.FieldNode(field)
+				switch fieldNode := fieldNode.(type) {
+				case *ast.FieldNode:
+					for _, opt := range fieldNode.GetOptions().GetElements() {
+						collectOptions[*descriptorpb.FieldOptions](opt, field, optionsByNode)
+					}
+				case *ast.MapFieldNode:
+					for _, opt := range fieldNode.GetOptions().GetElements() {
+						collectOptions[*descriptorpb.FieldOptions](opt, field, optionsByNode)
+					}
 				}
 			}
 		}
@@ -727,6 +803,157 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 	return hints
 }
 
+func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]protocol.DocumentSymbol, error) {
+	f, err := c.FindResultByURI(doc.URI.SpanURI())
+	if err != nil {
+		return nil, err
+	}
+
+	var symbols []protocol.DocumentSymbol
+
+	fn := f.AST()
+	ast.Walk(fn, &ast.SimpleVisitor{
+		// DoVisitImportNode: func(node *ast.ImportNode) error {
+		// 	s.lg.Debug("found import", zap.String("name", string(node.Name.AsString())))
+		// 	symbols = append(symbols, protocol.DocumentSymbol{
+		// 		Name:           string(node.Name.AsString()),
+		// 		Kind:           protocol.SymbolKindNamespace,
+		// 		Range:          posToRange(fn.NodeInfo(node)),
+		// 		SelectionRange: posToRange(fn.NodeInfo(node.Name)),
+		// 	})
+		// 	return nil
+		// },
+		DoVisitServiceNode: func(node *ast.ServiceNode) error {
+			service := protocol.DocumentSymbol{
+				Name:           string(node.Name.AsIdentifier()),
+				Kind:           protocol.Interface,
+				Range:          toRange(fn.NodeInfo(node)),
+				SelectionRange: toRange(fn.NodeInfo(node.Name)),
+			}
+
+			ast.Walk(node, &ast.SimpleVisitor{
+				DoVisitRPCNode: func(node *ast.RPCNode) error {
+					// s.lg.Debug("found rpc", zap.String("name", string(node.Name.AsIdentifier())), zap.String("service", string(node.Name.AsIdentifier())))
+					var detail string
+					switch {
+					case node.Input.Stream != nil && node.Output.Stream != nil:
+						detail = "stream (bidirectional)"
+					case node.Input.Stream != nil:
+						detail = "stream (client)"
+					case node.Output.Stream != nil:
+						detail = "stream (server)"
+					default:
+						detail = "unary"
+					}
+					rpc := protocol.DocumentSymbol{
+						Name:           string(node.Name.AsIdentifier()),
+						Detail:         detail,
+						Kind:           protocol.Method,
+						Range:          toRange(fn.NodeInfo(node)),
+						SelectionRange: toRange(fn.NodeInfo(node.Name)),
+					}
+
+					ast.Walk(node, &ast.SimpleVisitor{
+						DoVisitRPCTypeNode: func(node *ast.RPCTypeNode) error {
+							rpcType := protocol.DocumentSymbol{
+								Name:           string(node.MessageType.AsIdentifier()),
+								Kind:           protocol.Class,
+								Range:          toRange(fn.NodeInfo(node)),
+								SelectionRange: toRange(fn.NodeInfo(node.MessageType)),
+							}
+							rpc.Children = append(rpc.Children, rpcType)
+							return nil
+						},
+					})
+					service.Children = append(service.Children, rpc)
+					return nil
+				},
+			})
+			symbols = append(symbols, service)
+			return nil
+		},
+		DoVisitMessageNode: func(node *ast.MessageNode) error {
+			sym := protocol.DocumentSymbol{
+				Name:           string(node.Name.AsIdentifier()),
+				Kind:           protocol.Class,
+				Range:          toRange(fn.NodeInfo(node)),
+				SelectionRange: toRange(fn.NodeInfo(node.Name)),
+			}
+			ast.Walk(node, &ast.SimpleVisitor{
+				DoVisitFieldNode: func(node *ast.FieldNode) error {
+					sym.Children = append(sym.Children, protocol.DocumentSymbol{
+						Name:           string(node.Name.AsIdentifier()),
+						Detail:         string(node.FldType.AsIdentifier()),
+						Kind:           protocol.Field,
+						Range:          toRange(fn.NodeInfo(node)),
+						SelectionRange: toRange(fn.NodeInfo(node.Name)),
+					})
+					return nil
+				},
+				DoVisitMapFieldNode: func(node *ast.MapFieldNode) error {
+					sym.Children = append(sym.Children, protocol.DocumentSymbol{
+						Name:           string(node.Name.AsIdentifier()),
+						Detail:         fmt.Sprintf("map<%s, %s>", string(node.KeyField().Ident.AsIdentifier()), string(node.ValueField().Ident.AsIdentifier())),
+						Kind:           protocol.Field,
+						Range:          toRange(fn.NodeInfo(node)),
+						SelectionRange: toRange(fn.NodeInfo(node.Name)),
+					})
+					return nil
+				},
+			})
+			symbols = append(symbols, sym)
+			return nil
+		},
+		DoVisitEnumNode: func(node *ast.EnumNode) error {
+			sym := protocol.DocumentSymbol{
+				Name:           string(node.Name.AsIdentifier()),
+				Kind:           protocol.Enum,
+				Range:          toRange(fn.NodeInfo(node)),
+				SelectionRange: toRange(fn.NodeInfo(node.Name)),
+			}
+			ast.Walk(node, &ast.SimpleVisitor{
+				DoVisitEnumValueNode: func(node *ast.EnumValueNode) error {
+					sym.Children = append(sym.Children, protocol.DocumentSymbol{
+						Name:           string(node.Name.AsIdentifier()),
+						Kind:           protocol.EnumMember,
+						Range:          toRange(fn.NodeInfo(node)),
+						SelectionRange: toRange(fn.NodeInfo(node.Name)),
+					})
+					return nil
+				},
+			})
+			symbols = append(symbols, sym)
+			return nil
+		},
+		DoVisitExtendNode: func(node *ast.ExtendNode) error {
+			sym := protocol.DocumentSymbol{
+				Name:           string(node.Extendee.AsIdentifier()),
+				Kind:           protocol.Class,
+				Range:          toRange(fn.NodeInfo(node)),
+				SelectionRange: toRange(fn.NodeInfo(node.Extendee)),
+			}
+			ast.Walk(node, &ast.SimpleVisitor{
+				DoVisitFieldNode: func(node *ast.FieldNode) error {
+					sym.Children = append(sym.Children, protocol.DocumentSymbol{
+						Name:           string(node.Name.AsIdentifier()),
+						Kind:           protocol.Field,
+						Range:          toRange(fn.NodeInfo(node)),
+						SelectionRange: toRange(fn.NodeInfo(node.Name)),
+					})
+					return nil
+				},
+			})
+			symbols = append(symbols, sym)
+			return nil
+		},
+	})
+	return symbols, nil
+}
+
+func (c *Cache) ComputeHover(params protocol.TextDocumentPositionParams) (*protocol.Hover, error) {
+	panic("not implemented")
+}
+
 func buildMessageLiteralHints(lit *ast.MessageLiteralNode, msg protoreflect.MessageDescriptor, a *ast.FileNode) []protocol.InlayHint {
 	msgFields := msg.Fields()
 	var hints []protocol.InlayHint
@@ -751,7 +978,13 @@ func buildMessageLiteralHints(lit *ast.MessageLiteralNode, msg protoreflect.Mess
 				Value:   string(fieldDesc.Message().FullName()),
 				Tooltip: makeTooltip(fieldDesc.Message()),
 			})
-			hints = append(hints, buildMessageLiteralHints(field.Val.(*ast.MessageLiteralNode), fieldDesc.Message(), a)...)
+			switch val := field.Val.(type) {
+			case *ast.MessageLiteralNode:
+				hints = append(hints, buildMessageLiteralHints(val, fieldDesc.Message(), a)...)
+			case *ast.ArrayLiteralNode:
+			default:
+				// hints = append(hints, buildArrayLiteralHints(val, fieldDesc.Message(), a)...)
+			}
 			fieldHint.PaddingLeft = false
 		} else {
 			info := a.NodeInfo(field.Sep)

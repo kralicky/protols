@@ -77,6 +77,12 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			},
 			InlayHintProvider:    true,
 			DocumentLinkProvider: &protocol.DocumentLinkOptions{},
+			DocumentFormattingProvider: &protocol.Or_ServerCapabilities_documentFormattingProvider{
+				Value: protocol.DocumentFormattingOptions{},
+			},
+			DocumentRangeFormattingProvider: &protocol.Or_ServerCapabilities_documentRangeFormattingProvider{
+				Value: protocol.DocumentRangeFormattingOptions{},
+			},
 			// DeclarationProvider: &protocol.Or_ServerCapabilities_declarationProvider{Value: true},
 			// TypeDefinitionProvider: true,
 			// ReferencesProvider: true,
@@ -248,9 +254,10 @@ func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (resul
 		return nil, err
 	}
 	printer := protoprint.Printer{
-		SortElements: true,
-		Indent:       "  ",
-		Compact:      true,
+		SortElements:       true,
+		CustomSortFunction: SortElements,
+		Indent:             "  ",
+		Compact:            protoprint.CompactDefault,
 	}
 	str, err := printer.PrintProtoToString(wrap)
 	if err != nil {
@@ -475,8 +482,8 @@ func (*Server) FoldingRange(context.Context, *protocol.FoldingRangeParams) ([]pr
 }
 
 // Formatting implements protocol.Server.
-func (*Server) Formatting(context.Context, *protocol.DocumentFormattingParams) ([]protocol.TextEdit, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+func (s *Server) Formatting(ctx context.Context, params *protocol.DocumentFormattingParams) ([]protocol.TextEdit, error) {
+	return s.c.FormatDocument(params.TextDocument, params.Options)
 }
 
 // Implementation implements protocol.Server.
@@ -555,8 +562,8 @@ func (*Server) Progress(context.Context, *protocol.ProgressParams) error {
 }
 
 // RangeFormatting implements protocol.Server.
-func (*Server) RangeFormatting(context.Context, *protocol.DocumentRangeFormattingParams) ([]protocol.TextEdit, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+func (s *Server) RangeFormatting(ctx context.Context, params *protocol.DocumentRangeFormattingParams) ([]protocol.TextEdit, error) {
+	return s.c.FormatDocument(params.TextDocument, params.Options, params.Range)
 }
 
 // References implements protocol.Server.

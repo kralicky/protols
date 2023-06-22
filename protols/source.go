@@ -32,6 +32,7 @@ func findNodeAtSourcePos(file *ast.FileNode, pos ast.SourcePos) []ast.Node {
 	if err != nil && err != sentinel {
 		return nil
 	}
+
 	return path
 }
 

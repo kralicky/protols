@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
 
 	"github.com/bufbuild/protocompile/ast"
+	"github.com/bufbuild/protocompile/linker"
 	"github.com/bufbuild/protocompile/reporter"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 )
@@ -14,6 +16,7 @@ type ProtoDiagnostic struct {
 	Pos      ast.SourcePosInfo
 	Severity protocol.DiagnosticSeverity
 	Error    error
+	Tags     []protocol.DiagnosticTag
 }
 
 func NewDiagnosticHandler() *DiagnosticHandler {
@@ -25,6 +28,15 @@ func NewDiagnosticHandler() *DiagnosticHandler {
 type DiagnosticHandler struct {
 	diagnosticsMu sync.Mutex
 	diagnostics   map[string][]*ProtoDiagnostic
+}
+
+func tagsForError(err error) []protocol.DiagnosticTag {
+	switch errors.Unwrap(err).(type) {
+	case linker.ErrorUnusedImport:
+		return []protocol.DiagnosticTag{protocol.Unnecessary}
+	default:
+		return nil
+	}
 }
 
 func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
@@ -44,6 +56,7 @@ func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
 		Pos:      pos,
 		Severity: protocol.SeverityError,
 		Error:    err.Unwrap(),
+		Tags:     tagsForError(err),
 	})
 
 	return nil // allow the compiler to continue
@@ -66,6 +79,7 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 		Pos:      pos,
 		Severity: protocol.SeverityWarning,
 		Error:    err.Unwrap(),
+		Tags:     tagsForError(err),
 	})
 }
 

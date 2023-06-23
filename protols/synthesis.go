@@ -20,7 +20,6 @@ import (
 	"golang.org/x/tools/pkg/gocommand"
 	"golang.org/x/tools/pkg/imports"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
@@ -28,7 +27,6 @@ import (
 type ProtoSourceSynthesizer struct {
 	processEnv               *imports.ProcessEnv
 	moduleResolver           *imports.ModuleResolver
-	resolver                 protodesc.Resolver
 	knownAlternativePackages [][]diff.Edit
 }
 
@@ -59,11 +57,6 @@ func NewProtoSourceSynthesizer(workdir string) *ProtoSourceSynthesizer {
 		processEnv:     procEnv,
 		moduleResolver: resolver,
 	}
-}
-
-func (s *ProtoSourceSynthesizer) SetResolver(resolver protodesc.Resolver) {
-	// needs to be called afterwards, since this *is* part of the resolver
-	s.resolver = resolver
 }
 
 func (s *ProtoSourceSynthesizer) ImportFromGoModule(importName string) (_str string, _dir string, _err error) {

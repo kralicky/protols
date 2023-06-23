@@ -35,9 +35,6 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 	}
 
 	s.c = NewCache(params.RootURI.SpanURI().Filename(), s.lg.Named("cache"))
-	// if err := s.c.Reindex(ctx); err != nil {
-	// 	return nil, fmt.Errorf("indexing failed: %w", err)
-	// }
 
 	filters := []protocol.FileOperationFilter{
 		{

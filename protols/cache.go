@@ -1116,7 +1116,6 @@ func makeTooltip(d protoreflect.Descriptor) *protocol.OrPTooltipPLabel {
 		return nil
 	}
 	printer := protoprint.Printer{
-		SortElements:       true,
 		CustomSortFunction: SortElements,
 		Indent:             "  ",
 		Compact:            protoprint.CompactDefault,
@@ -1135,7 +1134,6 @@ func makeTooltip(d protoreflect.Descriptor) *protocol.OrPTooltipPLabel {
 
 func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options protocol.FormattingOptions, maybeRange ...protocol.Range) ([]protocol.TextEdit, error) {
 	printer := protoprint.Printer{
-		SortElements:       true,
 		CustomSortFunction: SortElements,
 		Indent:             "  ", // todo: tabs break semantic tokens
 		Compact:            protoprint.CompactDefault,
@@ -1181,7 +1179,7 @@ func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options prot
 		}
 		splicedBuffer.Write(mapper.Content[end:])
 		spliced := splicedBuffer.Bytes()
-		fmt.Printf("old:\n%s\nnew:\n%s\n", string(mapper.Content), string(spliced))
+		// fmt.Printf("old:\n%s\nnew:\n%s\n", string(mapper.Content), string(spliced))
 
 		edits := diff.Bytes(mapper.Content, spliced)
 		return source.ToProtocolEdits(mapper, edits)

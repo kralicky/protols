@@ -111,6 +111,10 @@ func computeSemanticTokens(cache *Cache, td protocol.TextDocumentIdentifier, rng
 	}
 	if a.Syntax != nil {
 		e.mkcomments(a.Syntax)
+		e.mktokens(a.Syntax.Keyword, semanticTypeKeyword, 0)
+		e.mktokens(a.Syntax.Equals, semanticTypeOperator, 0)
+		e.mktokens(a.Syntax.Syntax, semanticTypeString, 0)
+
 	}
 	for _, node := range a.Decls {
 		// only look at the decls that overlap the range
@@ -197,7 +201,7 @@ func (s *encoded) inspect(node ast.Node) {
 		},
 		DoVisitRuneNode: func(node *ast.RuneNode) error {
 			switch node.Rune {
-			case '}', ';', '{', '.':
+			case '}', ';', '{', '.', ',', '<', '>', '(', ')':
 				s.mkcomments(node)
 			default:
 				s.mktokens(node, semanticTypeOperator, 0)
@@ -218,7 +222,17 @@ func (s *encoded) inspect(node ast.Node) {
 			return nil
 		},
 		DoVisitFieldReferenceNode: func(node *ast.FieldReferenceNode) error {
-			s.mktokens(node.Name, semanticTypeProperty, 0)
+			if node.IsExtension() {
+				if node.IsAnyTypeReference() {
+					s.mktokens(node.URLPrefix, semanticTypeType, 0)
+					s.mktokens(node.Slash, semanticTypeType, 0)
+					s.mktokens(node.Name, semanticTypeType, 0)
+				} else {
+					s.mktokens(node.Name, semanticTypeType, 0)
+				}
+			} else {
+				s.mktokens(node.Name, semanticTypeProperty, 0)
+			}
 			return nil
 		},
 		DoVisitMapFieldNode: func(node *ast.MapFieldNode) error {
@@ -236,7 +250,7 @@ func (s *encoded) inspect(node ast.Node) {
 			return nil
 		},
 		DoVisitServiceNode: func(sn *ast.ServiceNode) error {
-			s.mktokens(sn.Name, semanticTypeInterface, 0)
+			s.mktokens(sn.Name, semanticTypeClass, 0)
 			return nil
 		},
 		DoVisitPackageNode: func(node *ast.PackageNode) error {

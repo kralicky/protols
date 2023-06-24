@@ -590,14 +590,22 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 				currentGroup = append(currentGroup, e)
 				continue
 			}
+
 			// group this field with the previous field if they are on directly
 			// consecutive lines
+			if fieldNode, ok := ast.Node(e).(*ast.FieldNode); ok {
+				// check if we are about to expand a compact options group
+				if fieldNode.Options != nil && f.compactOptionsShouldBeExpanded(fieldNode.Options) {
+					goto new_group
+				}
+			}
 			prevFieldInfo := f.fileNode.NodeInfo(currentGroup[len(currentGroup)-1])
 			if fieldInfo.Start().Line == prevFieldInfo.Start().Line+1 {
 				currentGroup = append(currentGroup, e)
 				continue
 			}
 		}
+	new_group:
 		// otherwise, start a new group
 		if len(currentGroup) > 0 {
 			groups = append(groups, currentGroup)
@@ -659,7 +667,6 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 				field.equalsTag, _ = io.ReadAll(colBuf)
 
 				if elem.Options != nil {
-					fclone.Space()
 					fclone.writeNode(elem.Options)
 				}
 				fclone.writeLineEnd(elem.Semicolon)
@@ -687,7 +694,6 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 				field.equalsTag, _ = io.ReadAll(colBuf)
 
 				if elem.Options != nil {
-					fclone.Space()
 					fclone.writeNode(elem.Options)
 				}
 				fclone.writeLineEnd(elem.Semicolon)
@@ -705,7 +711,6 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 				field.equalsTag, _ = io.ReadAll(colBuf)
 
 				if elem.Options != nil {
-					fclone.Space()
 					fclone.writeNode(elem.Options)
 				}
 				fclone.writeLineEnd(elem.Semicolon)
@@ -826,23 +831,31 @@ func (f *formatter) writeMessageLiteralForArray(
 	)
 }
 
+func (f *formatter) compactMessageLiteralShouldBeExpanded(messageLiteralNode *ast.MessageLiteralNode) bool {
+	if len(messageLiteralNode.Elements) == 0 {
+		return false
+	}
+	// if len(messageLiteralNode.Elements) == 0 || len(messageLiteralNode.Elements) > 1 ||
+	// 	f.hasInteriorComments(messageLiteralNode.Children()...) ||
+	// 	messageLiteralHasNestedMessageOrArray(messageLiteralNode) {
+	// 	return false
+	// }
+	// if the node is not currently formatted on a single line, then
+	// preserve the existing formatting
+	info := f.fileNode.NodeInfo(messageLiteralNode.Elements[0])
+	whitespace := info.LeadingWhitespace()
+	if strings.Contains(whitespace, "\n") {
+		return true
+	}
+	return false
+}
+
 func (f *formatter) maybeWriteCompactMessageLiteral(
 	messageLiteralNode *ast.MessageLiteralNode,
 	inArrayLiteral bool,
 ) bool {
-	if len(messageLiteralNode.Elements) == 0 || len(messageLiteralNode.Elements) > 1 ||
-		f.hasInteriorComments(messageLiteralNode.Children()...) ||
-		messageLiteralHasNestedMessageOrArray(messageLiteralNode) {
+	if f.compactMessageLiteralShouldBeExpanded(messageLiteralNode) {
 		return false
-	}
-	// if the node is not currently formatted on a single line, then
-	// preserve the existing formatting
-	if len(messageLiteralNode.Elements) > 0 {
-		info := f.fileNode.NodeInfo(messageLiteralNode.Elements[0])
-		whitespace := info.LeadingWhitespace()
-		if strings.Contains(whitespace, "\n") {
-			return false
-		}
 	}
 
 	// messages with a single scalar field and no comments can be
@@ -851,13 +864,15 @@ func (f *formatter) maybeWriteCompactMessageLiteral(
 		f.Indent(messageLiteralNode.Open)
 	}
 	f.writeInline(messageLiteralNode.Open)
-	fieldNode := messageLiteralNode.Elements[0]
-	f.writeInline(fieldNode.Name)
-	if fieldNode.Sep != nil {
-		f.writeInline(fieldNode.Sep)
+	if len(messageLiteralNode.Elements) != 0 {
+		fieldNode := messageLiteralNode.Elements[0]
+		f.writeInline(fieldNode.Name)
+		if fieldNode.Sep != nil {
+			f.writeInline(fieldNode.Sep)
+		}
+		f.Space()
+		f.writeInline(fieldNode.Val)
 	}
-	f.Space()
-	f.writeInline(fieldNode.Val)
 	f.writeInline(messageLiteralNode.Close)
 	return true
 }
@@ -915,7 +930,7 @@ func (f *formatter) writeMessageLiteralElements(messageLiteralNode *ast.MessageL
 			f.writeLineEnd(messageLiteralNode.Seps[i])
 			continue
 		}
-		f.writeMessageField(messageLiteralNode.Elements[i])
+		f.writeNode(messageLiteralNode.Elements[i])
 	}
 }
 
@@ -959,6 +974,12 @@ func (f *formatter) writeMessageFieldPrefix(messageFieldNode *ast.MessageFieldNo
 	fieldReferenceNode := messageFieldNode.Name
 	if fieldReferenceNode.Open != nil {
 		f.writeStart(fieldReferenceNode.Open, maybeNodeWriter...)
+		if fieldReferenceNode.URLPrefix != nil {
+			f.writeInline(fieldReferenceNode.URLPrefix)
+		}
+		if fieldReferenceNode.Slash != nil {
+			f.writeInline(fieldReferenceNode.Slash)
+		}
 		f.writeInline(fieldReferenceNode.Name)
 	} else {
 		f.writeStart(fieldReferenceNode.Name, maybeNodeWriter...)
@@ -1091,6 +1112,12 @@ func (f *formatter) writeFieldReference(fieldReferenceNode *ast.FieldReferenceNo
 	if fieldReferenceNode.Open != nil {
 		f.writeInline(fieldReferenceNode.Open)
 	}
+	if fieldReferenceNode.URLPrefix != nil {
+		f.writeInline(fieldReferenceNode.URLPrefix)
+	}
+	if fieldReferenceNode.Slash != nil {
+		f.writeInline(fieldReferenceNode.Slash)
+	}
 	f.writeInline(fieldReferenceNode.Name)
 	if fieldReferenceNode.Close != nil {
 		f.writeInline(fieldReferenceNode.Close)
@@ -1177,13 +1204,13 @@ func (f *formatter) writeRPC(rpcNode *ast.RPCNode) {
 	f.writeInline(rpcNode.Returns)
 	f.Space()
 	f.writeInline(rpcNode.Output)
-	if rpcNode.OpenBrace == nil {
+	if len(rpcNode.Decls) == 0 {
 		// This RPC doesn't have any elements, so we prefer the
 		// ';' form.
 		//
 		//  rpc Ping(PingRequest) returns (PingResponse);
 		//
-		f.writeLineEnd(rpcNode.Semicolon)
+		f.writeLineEnd(&ast.RuneNode{Rune: ';'})
 		return
 	}
 	f.Space()
@@ -1359,6 +1386,36 @@ func (f *formatter) writeRange(rangeNode *ast.RangeNode) {
 	}
 }
 
+func (f *formatter) compactOptionsShouldBeExpanded(compactOptionsNode *ast.CompactOptionsNode) bool {
+	if len(compactOptionsNode.Options) == 0 {
+		return false
+	}
+	info := f.fileNode.NodeInfo(compactOptionsNode.Options[0])
+	if strings.Contains(info.LeadingWhitespace(), "\n") {
+		return true
+	}
+	return false
+	// if len(compactOptionsNode.Options) > 1 {
+	// 	return true
+	// }
+	// if len(compactOptionsNode.Options) == 1 {
+	// 	if f.hasInteriorComments(compactOptionsNode.OpenBracket, compactOptionsNode.Options[0].Name) {
+	// 		return true
+	// 	}
+	// 	switch op := compactOptionsNode.Options[0].Val.(type) {
+	// 	case *ast.MessageLiteralNode:
+	// 		if messageLiteralHasNestedMessageOrArray(op) {
+	// 			return true
+	// 		}
+	// 	case *ast.ArrayLiteralNode:
+	// 		if arrayLiteralHasNestedMessageOrArray(op) {
+	// 			return true
+	// 		}
+	// 	}
+	// }
+	// return false
+}
+
 // writeCompactOptions writes a compact options node.
 //
 // For example,
@@ -1372,8 +1429,7 @@ func (f *formatter) writeCompactOptions(compactOptionsNode *ast.CompactOptionsNo
 	defer func() {
 		f.inCompactOptions = false
 	}()
-	if len(compactOptionsNode.Options) == 1 &&
-		!f.hasInteriorComments(compactOptionsNode.OpenBracket, compactOptionsNode.Options[0].Name) {
+	if !f.compactOptionsShouldBeExpanded(compactOptionsNode) {
 		// If there's only a single compact scalar option without comments, we can write it
 		// in-line. For example:
 		//
@@ -1388,20 +1444,22 @@ func (f *formatter) writeCompactOptions(compactOptionsNode *ast.CompactOptionsNo
 		//    deprecated = true
 		//  ]
 		//
-		optionNode := compactOptionsNode.Options[0]
 		f.writeInline(compactOptionsNode.OpenBracket)
-		f.writeInline(optionNode.Name)
-		f.Space()
-		f.writeInline(optionNode.Equals)
-		if node, ok := optionNode.Val.(*ast.CompoundStringLiteralNode); ok {
-			// If there's only a single compact option, the value needs to
-			// write its comments (if any) in a way that preserves the closing ']'.
-			f.writeCompoundStringLiteralNoIndentEndInline(node)
-			f.writeInline(compactOptionsNode.CloseBracket)
-			return
+		if len(compactOptionsNode.Options) != 0 {
+			optionNode := compactOptionsNode.Options[0]
+			f.writeInline(optionNode.Name)
+			f.Space()
+			f.writeInline(optionNode.Equals)
+			if node, ok := optionNode.Val.(*ast.CompoundStringLiteralNode); ok {
+				// If there's only a single compact option, the value needs to
+				// write its comments (if any) in a way that preserves the closing ']'.
+				f.writeCompoundStringLiteralNoIndentEndInline(node)
+				f.writeInline(compactOptionsNode.CloseBracket)
+				return
+			}
+			f.Space()
+			f.writeInline(optionNode.Val)
 		}
-		f.Space()
-		f.writeInline(optionNode.Val)
 		f.writeInline(compactOptionsNode.CloseBracket)
 		return
 	}

@@ -50,7 +50,8 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			TextDocumentSync: protocol.TextDocumentSyncOptions{
 				OpenClose: true,
 				Change:    protocol.Incremental,
-				Save:      &protocol.SaveOptions{IncludeText: true},
+				// WillSaveWaitUntil: true,
+				Save: &protocol.SaveOptions{IncludeText: false},
 			},
 			HoverProvider: &protocol.Or_ServerCapabilities_hoverProvider{Value: true},
 			DiagnosticProvider: &protocol.Or_ServerCapabilities_diagnosticProvider{
@@ -77,9 +78,9 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			DocumentFormattingProvider: &protocol.Or_ServerCapabilities_documentFormattingProvider{
 				Value: protocol.DocumentFormattingOptions{},
 			},
-			DocumentRangeFormattingProvider: &protocol.Or_ServerCapabilities_documentRangeFormattingProvider{
-				Value: protocol.DocumentRangeFormattingOptions{},
-			},
+			// DocumentRangeFormattingProvider: &protocol.Or_ServerCapabilities_documentRangeFormattingProvider{
+			// 	Value: protocol.DocumentRangeFormattingOptions{},
+			// },
 			// DeclarationProvider: &protocol.Or_ServerCapabilities_declarationProvider{Value: true},
 			// TypeDefinitionProvider: true,
 			// ReferencesProvider: true,
@@ -96,7 +97,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 				Full:  &protocol.Or_SemanticTokensOptions_full{Value: true},
 				Range: &protocol.Or_SemanticTokensOptions_range{Value: true},
 			},
-			DocumentSymbolProvider: &protocol.Or_ServerCapabilities_documentSymbolProvider{Value: true},
+			// DocumentSymbolProvider: &protocol.Or_ServerCapabilities_documentSymbolProvider{Value: true},
 		},
 
 		ServerInfo: &protocol.PServerInfoMsg_initialize{
@@ -560,7 +561,8 @@ func (*Server) Progress(context.Context, *protocol.ProgressParams) error {
 
 // RangeFormatting implements protocol.Server.
 func (s *Server) RangeFormatting(ctx context.Context, params *protocol.DocumentRangeFormattingParams) ([]protocol.TextEdit, error) {
-	return s.c.FormatDocument(params.TextDocument, params.Options, params.Range)
+	return nil, jsonrpc2.ErrMethodNotFound
+	// return s.c.FormatDocument(params.TextDocument, params.Options, params.Range)
 }
 
 // References implements protocol.Server.
@@ -664,7 +666,7 @@ func (*Server) WillSave(context.Context, *protocol.WillSaveTextDocumentParams) e
 }
 
 // WillSaveWaitUntil implements protocol.Server.
-func (*Server) WillSaveWaitUntil(context.Context, *protocol.WillSaveTextDocumentParams) ([]protocol.TextEdit, error) {
+func (s *Server) WillSaveWaitUntil(ctx context.Context, params *protocol.WillSaveTextDocumentParams) ([]protocol.TextEdit, error) {
 	return nil, jsonrpc2.ErrMethodNotFound
 }
 

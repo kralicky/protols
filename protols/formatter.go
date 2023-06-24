@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -65,6 +66,31 @@ type formatter struct {
 	// Records all errors that occur during the formatting process. Nearly any
 	// non-nil error represents a bug in the implementation.
 	err error
+}
+
+func (f *formatter) saveState(newWriter io.Writer) *formatter {
+	return &formatter{
+		writer:           newWriter,
+		fileNode:         f.fileNode,
+		indent:           f.indent,
+		lastWritten:      f.lastWritten,
+		previousNode:     f.previousNode,
+		pendingSpace:     f.pendingSpace,
+		inCompactOptions: f.inCompactOptions,
+		pendingIndent:    f.pendingIndent,
+		inline:           f.inline,
+	}
+}
+
+func (f *formatter) mergeState(other *formatter, reader io.Reader) {
+	io.Copy(f.writer, reader)
+	f.indent = other.indent
+	f.lastWritten = other.lastWritten
+	f.previousNode = other.previousNode
+	f.pendingSpace = other.pendingSpace
+	f.inCompactOptions = other.inCompactOptions
+	f.pendingIndent = other.pendingIndent
+	f.inline = other.inline
 }
 
 // newFormatter returns a new formatter for the given file.
@@ -532,9 +558,7 @@ func (f *formatter) writeMessage(messageNode *ast.MessageNode) {
 	var elementWriterFunc func()
 	if len(messageNode.Decls) != 0 {
 		elementWriterFunc = func() {
-			for _, decl := range messageNode.Decls {
-				f.writeNode(decl)
-			}
+			columnFormatElements(f, messageNode.Decls)
 		}
 	}
 	f.writeStart(messageNode.Keyword)
@@ -546,6 +570,202 @@ func (f *formatter) writeMessage(messageNode *ast.MessageNode) {
 		messageNode.CloseBrace,
 		elementWriterFunc,
 	)
+}
+
+func columnFormatElements[T ast.Node](f *formatter, elems []T) {
+	if len(elems) < 2 {
+		for _, decl := range elems {
+			f.writeNode(decl)
+		}
+		return
+	}
+	groups := [][]T{}
+	currentGroup := []T{}
+	for i := 0; i < len(elems); i++ {
+		e := elems[i]
+		switch ast.Node(e).(type) {
+		case *ast.FieldNode, *ast.MapFieldNode, *ast.EnumValueNode, *ast.MessageFieldNode:
+			fieldInfo := f.fileNode.NodeInfo(e)
+			if len(currentGroup) == 0 {
+				currentGroup = append(currentGroup, e)
+				continue
+			}
+			// group this field with the previous field if they are on directly
+			// consecutive lines
+			prevFieldInfo := f.fileNode.NodeInfo(currentGroup[len(currentGroup)-1])
+			if fieldInfo.Start().Line == prevFieldInfo.Start().Line+1 {
+				currentGroup = append(currentGroup, e)
+				continue
+			}
+		}
+		// otherwise, start a new group
+		if len(currentGroup) > 0 {
+			groups = append(groups, currentGroup)
+		}
+		currentGroup = []T{e}
+	}
+	if len(currentGroup) > 0 {
+		groups = append(groups, currentGroup)
+	}
+
+	type segmentedField struct {
+		contextBytesStart []byte
+		typeName          []byte
+		fieldName         []byte
+		equalsTag         []byte
+		lineEnd           []byte
+	}
+
+	for _, groupElem := range groups {
+		if len(groupElem) == 1 {
+			f.writeNode(groupElem[0])
+			continue
+		}
+		bufferedFields := []segmentedField{}
+		colBuf := new(bytes.Buffer)
+		fclone := f.saveState(colBuf)
+		for _, elem := range groupElem {
+			field := segmentedField{}
+			nodeWriter := func(n ast.Node) {
+				field.contextBytesStart, _ = io.ReadAll(colBuf)
+				fclone.writeNode(n)
+			}
+			switch elem := ast.Node(elem).(type) {
+			case *ast.FieldNode:
+				if elem.Label.KeywordNode != nil {
+					fclone.writeStart(elem.Label, nodeWriter)
+					fclone.Space()
+					fclone.writeInline(elem.FldType)
+				} else {
+					// If a label was not written, the multiline comments will be
+					// attached to the type.
+					if compoundIdentNode, ok := elem.FldType.(*ast.CompoundIdentNode); ok {
+						fclone.writeCompountIdentForFieldName(compoundIdentNode, nodeWriter)
+					} else {
+						fclone.writeStart(elem.FldType, nodeWriter)
+					}
+				}
+				// flush the buffer to save the type name
+				field.typeName, _ = io.ReadAll(colBuf)
+
+				fclone.writeInline(elem.Name)
+				// flush the buffer to save the field name
+				field.fieldName, _ = io.ReadAll(colBuf)
+
+				fclone.writeInline(elem.Equals)
+				fclone.Space()
+				fclone.writeInline(elem.Tag)
+				// flush the buffer to save the equals byte and tag
+				field.equalsTag, _ = io.ReadAll(colBuf)
+
+				if elem.Options != nil {
+					fclone.Space()
+					fclone.writeNode(elem.Options)
+				}
+				fclone.writeLineEnd(elem.Semicolon)
+				// flush the buffer to save the options and semicolon
+				field.lineEnd, _ = io.ReadAll(colBuf)
+			case *ast.MapFieldNode:
+				fclone.writeStart(elem.MapType.Keyword, nodeWriter)
+				fclone.writeInline(elem.MapType.OpenAngle)
+				fclone.writeInline(elem.MapType.KeyType)
+				fclone.writeInline(elem.MapType.Comma)
+				fclone.Space()
+				fclone.writeInline(elem.MapType.ValueType)
+				fclone.writeInline(elem.MapType.CloseAngle)
+				// flush the buffer to save the type name
+				field.typeName, _ = io.ReadAll(colBuf)
+
+				fclone.writeInline(elem.Name)
+				// flush the buffer to save the field name
+				field.fieldName, _ = io.ReadAll(colBuf)
+
+				fclone.writeInline(elem.Equals)
+				fclone.Space()
+				fclone.writeInline(elem.Tag)
+				// flush the buffer to save the equals byte and tag
+				field.equalsTag, _ = io.ReadAll(colBuf)
+
+				if elem.Options != nil {
+					fclone.Space()
+					fclone.writeNode(elem.Options)
+				}
+				fclone.writeLineEnd(elem.Semicolon)
+				// flush the buffer to save the options and semicolon
+				field.lineEnd, _ = io.ReadAll(colBuf)
+			case *ast.EnumValueNode:
+				fclone.writeStart(elem.Name, nodeWriter)
+				// flush the buffer to save the field name
+				field.fieldName, _ = io.ReadAll(colBuf)
+
+				fclone.writeInline(elem.Equals)
+				fclone.Space()
+				fclone.writeInline(elem.Number)
+				// flush the buffer to save the equals byte and tag
+				field.equalsTag, _ = io.ReadAll(colBuf)
+
+				if elem.Options != nil {
+					fclone.Space()
+					fclone.writeNode(elem.Options)
+				}
+				fclone.writeLineEnd(elem.Semicolon)
+				// flush the buffer to save the options and semicolon
+				field.lineEnd, _ = io.ReadAll(colBuf)
+			case *ast.MessageFieldNode:
+				fclone.writeMessageFieldPrefix(elem, nodeWriter)
+				field.typeName, _ = io.ReadAll(colBuf) // these column names don't exactly match up with the others
+				fclone.writeLineEnd(elem.Val)
+				field.lineEnd, _ = io.ReadAll(colBuf)
+
+			default:
+				panic(fmt.Sprintf("column formatting not implemented for element type %T", elem))
+			}
+			bufferedFields = append(bufferedFields, field)
+		}
+
+		// find the longest string in each column
+		typeNameCol, fieldNameCol, equalsTagCol, optionsSemicolonCol := 0, 0, 0, 0
+		for _, field := range bufferedFields {
+			typeNameCol = max(typeNameCol, len(field.typeName))
+			fieldNameCol = max(fieldNameCol, len(field.fieldName))
+			equalsTagCol = max(equalsTagCol, len(field.equalsTag))
+			optionsSemicolonCol = max(optionsSemicolonCol, len(field.lineEnd))
+		}
+
+		for _, field := range bufferedFields {
+			colBuf.Write(field.contextBytesStart)
+			colBuf.Write(field.typeName)
+			typeNamePadding, fieldNamePadding, equalsTagPadding := 1, 1, 1
+			if len(field.typeName) == 0 {
+				typeNamePadding = 0
+			}
+			if len(field.fieldName) == 0 {
+				fieldNamePadding = 0
+			}
+			if len(field.equalsTag) == 0 {
+				equalsTagPadding = 0
+			}
+			colBuf.Write(bytes.Repeat([]byte{' '}, typeNameCol-len(field.typeName)+typeNamePadding))
+			colBuf.Write(field.fieldName)
+			colBuf.Write(bytes.Repeat([]byte{' '}, fieldNameCol-len(field.fieldName)+fieldNamePadding))
+			colBuf.Write(field.equalsTag)
+			if field.lineEnd[0] == ';' {
+				// don't write spaces before the semicolon
+				colBuf.Write(field.lineEnd)
+			} else {
+				colBuf.Write(bytes.Repeat([]byte{' '}, equalsTagCol-len(field.equalsTag)+equalsTagPadding))
+				colBuf.Write(field.lineEnd)
+			}
+		}
+		f.mergeState(fclone, colBuf)
+	}
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // writeMessageLiteral writes a message literal.
@@ -615,6 +835,16 @@ func (f *formatter) maybeWriteCompactMessageLiteral(
 		messageLiteralHasNestedMessageOrArray(messageLiteralNode) {
 		return false
 	}
+	// if the node is not currently formatted on a single line, then
+	// preserve the existing formatting
+	if len(messageLiteralNode.Elements) > 0 {
+		info := f.fileNode.NodeInfo(messageLiteralNode.Elements[0])
+		whitespace := info.LeadingWhitespace()
+		if strings.Contains(whitespace, "\n") {
+			return false
+		}
+	}
+
 	// messages with a single scalar field and no comments can be
 	// printed all on one line
 	if inArrayLiteral {
@@ -659,13 +889,33 @@ func arrayLiteralHasNestedMessageOrArray(arrayLiteralNode *ast.ArrayLiteralNode)
 //	foo: 1
 //	foo: 2
 func (f *formatter) writeMessageLiteralElements(messageLiteralNode *ast.MessageLiteralNode) {
+	canColumnFormat := true
+	for _, elem := range messageLiteralNode.Seps {
+		if elem != nil {
+			canColumnFormat = false
+			break
+		}
+	}
+	if canColumnFormat {
+		for _, elem := range messageLiteralNode.Elements {
+			switch elem.Val.(type) {
+			case *ast.CompoundStringLiteralNode, *ast.MessageLiteralNode:
+				canColumnFormat = false
+				break
+			}
+		}
+	}
+	if canColumnFormat {
+		columnFormatElements(f, messageLiteralNode.Elements)
+		return
+	}
 	for i := 0; i < len(messageLiteralNode.Elements); i++ {
 		if sep := messageLiteralNode.Seps[i]; sep != nil {
 			f.writeMessageFieldWithSeparator(messageLiteralNode.Elements[i])
 			f.writeLineEnd(messageLiteralNode.Seps[i])
 			continue
 		}
-		f.writeNode(messageLiteralNode.Elements[i])
+		f.writeMessageField(messageLiteralNode.Elements[i])
 	}
 }
 
@@ -674,6 +924,7 @@ func (f *formatter) writeMessageLiteralElements(messageLiteralNode *ast.MessageL
 // message literal.
 func (f *formatter) writeMessageField(messageFieldNode *ast.MessageFieldNode) {
 	f.writeMessageFieldPrefix(messageFieldNode)
+	f.Space()
 	if compoundStringLiteral, ok := messageFieldNode.Val.(*ast.CompoundStringLiteralNode); ok {
 		f.writeCompoundStringLiteralIndent(compoundStringLiteral)
 		return
@@ -686,6 +937,7 @@ func (f *formatter) writeMessageField(messageFieldNode *ast.MessageFieldNode) {
 // literal.
 func (f *formatter) writeMessageFieldWithSeparator(messageFieldNode *ast.MessageFieldNode) {
 	f.writeMessageFieldPrefix(messageFieldNode)
+	f.Space()
 	if compoundStringLiteral, ok := messageFieldNode.Val.(*ast.CompoundStringLiteralNode); ok {
 		f.writeCompoundStringLiteralIndentEndInline(compoundStringLiteral)
 		return
@@ -698,7 +950,7 @@ func (f *formatter) writeMessageFieldWithSeparator(messageFieldNode *ast.Message
 // For example,
 //
 //	foo:"bar"
-func (f *formatter) writeMessageFieldPrefix(messageFieldNode *ast.MessageFieldNode) {
+func (f *formatter) writeMessageFieldPrefix(messageFieldNode *ast.MessageFieldNode, maybeNodeWriter ...func(ast.Node)) {
 	// The comments need to be written as a multiline comment above
 	// the message field name.
 	//
@@ -706,10 +958,10 @@ func (f *formatter) writeMessageFieldPrefix(messageFieldNode *ast.MessageFieldNo
 	// normally formatted in-line (i.e. as option name components).
 	fieldReferenceNode := messageFieldNode.Name
 	if fieldReferenceNode.Open != nil {
-		f.writeStart(fieldReferenceNode.Open)
+		f.writeStart(fieldReferenceNode.Open, maybeNodeWriter...)
 		f.writeInline(fieldReferenceNode.Name)
 	} else {
-		f.writeStart(fieldReferenceNode.Name)
+		f.writeStart(fieldReferenceNode.Name, maybeNodeWriter...)
 	}
 	if fieldReferenceNode.Close != nil {
 		f.writeInline(fieldReferenceNode.Close)
@@ -717,7 +969,6 @@ func (f *formatter) writeMessageFieldPrefix(messageFieldNode *ast.MessageFieldNo
 	if messageFieldNode.Sep != nil {
 		f.writeInline(messageFieldNode.Sep)
 	}
-	f.Space()
 }
 
 // writeEnum writes the enum node.
@@ -734,9 +985,7 @@ func (f *formatter) writeEnum(enumNode *ast.EnumNode) {
 	var elementWriterFunc func()
 	if len(enumNode.Decls) > 0 {
 		elementWriterFunc = func() {
-			for _, decl := range enumNode.Decls {
-				f.writeNode(decl)
-			}
+			columnFormatElements(f, enumNode.Decls)
 		}
 	}
 	f.writeStart(enumNode.Keyword)
@@ -1399,13 +1648,13 @@ func (f *formatter) writeCompoundIdent(compoundIdentNode *ast.CompoundIdentNode)
 //	  // These are comments attached to bar.
 //	  bar.v1.Bar bar = 1;
 //	}
-func (f *formatter) writeCompountIdentForFieldName(compoundIdentNode *ast.CompoundIdentNode) {
+func (f *formatter) writeCompountIdentForFieldName(compoundIdentNode *ast.CompoundIdentNode, maybeNodeWriter ...func(ast.Node)) {
 	if compoundIdentNode.LeadingDot != nil {
-		f.writeStart(compoundIdentNode.LeadingDot)
+		f.writeStart(compoundIdentNode.LeadingDot, maybeNodeWriter...)
 	}
 	for i := 0; i < len(compoundIdentNode.Components); i++ {
 		if i == 0 && compoundIdentNode.LeadingDot == nil {
-			f.writeStart(compoundIdentNode.Components[i])
+			f.writeStart(compoundIdentNode.Components[i], maybeNodeWriter...)
 			continue
 		}
 		if i > 0 {
@@ -1729,11 +1978,16 @@ func (f *formatter) writeNode(node ast.Node) {
 // Note that this is one of the most complex component of the formatter - it
 // controls how each node should be separated from one another and preserves
 // newlines in the original source.
-func (f *formatter) writeStart(node ast.Node) {
-	f.writeStartMaybeCompact(node, false)
+func (f *formatter) writeStart(node ast.Node, maybeNodeWriter ...func(ast.Node)) {
+	f.writeStartMaybeCompact(node, false, maybeNodeWriter...)
 }
 
-func (f *formatter) writeStartMaybeCompact(node ast.Node, forceCompact bool) {
+func (f *formatter) writeStartMaybeCompact(node ast.Node, forceCompact bool, maybeNodeWriter ...func(ast.Node)) {
+	nodeWriter := f.writeNode
+	if len(maybeNodeWriter) > 0 {
+		nodeWriter = maybeNodeWriter[0]
+	}
+
 	defer f.SetPreviousNode(node)
 	info := f.fileNode.NodeInfo(node)
 	var (
@@ -1777,7 +2031,7 @@ func (f *formatter) writeStartMaybeCompact(node ast.Node, forceCompact bool) {
 		f.P("")
 	}
 	f.Indent(node)
-	f.writeNode(node)
+	nodeWriter(node)
 	if info.TrailingComments().Len() > 0 {
 		f.writeInlineComments(info.TrailingComments())
 	}

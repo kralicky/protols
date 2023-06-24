@@ -19,7 +19,6 @@ import (
 	"github.com/bufbuild/protocompile/ast"
 	"github.com/bufbuild/protocompile/linker"
 	"github.com/bufbuild/protocompile/parser"
-	"github.com/bufbuild/protocompile/protoutil"
 	"github.com/bufbuild/protocompile/reporter"
 	"github.com/bufbuild/protocompile/walk"
 	"github.com/jhump/protoreflect/desc"
@@ -90,7 +89,6 @@ func (c *Cache) FindResultByPath(path string) (linker.Result, error) {
 	}
 	f := c.results.FindFileByPath(path)
 	if f == nil {
-		fmt.Printf("%v\n", c.filePathsByURI)
 		return nil, fmt.Errorf("FindResultByPath: package not found: %q", path)
 	}
 	return f.(linker.Result), nil
@@ -108,7 +106,6 @@ func (c *Cache) FindResultByURI(uri span.URI) (linker.Result, error) {
 	}
 	f := c.results.FindFileByPath(path)
 	if f == nil {
-		fmt.Printf("%v\n", c.filePathsByURI)
 		return nil, fmt.Errorf("FindResultByURI: package not found: %q", path)
 	}
 	return f.(linker.Result), nil
@@ -226,6 +223,23 @@ func (o *Overlay) Update(uri span.URI, path string, contentChanges []protocol.Te
 	}
 
 	o.sources[path] = protocol.NewMapper(uri, newSrc)
+	return nil
+}
+
+func (o *Overlay) ReloadFromDisk(uri span.URI, path string) error {
+
+	o.sourcesMu.Lock()
+	defer o.sourcesMu.Unlock()
+	if _, ok := o.sources[path]; !ok {
+		return fmt.Errorf("%w: file does not exist", jsonrpc2.ErrInternal)
+	}
+	baseReader, err := o.baseAccessor(path)
+	if err != nil {
+		return err
+	}
+	defer baseReader.Close()
+	baseContent, _ := io.ReadAll(baseReader)
+	o.sources[path] = protocol.NewMapper(uri, baseContent)
 	return nil
 }
 
@@ -584,12 +598,7 @@ func (s *Cache) OnFileSaved(f *protocol.DidSaveTextDocumentParams) error {
 	s.lg.With(
 		zap.String("file", string(f.TextDocument.URI)),
 	).Debug("file modified")
-
-	if err := s.compiler.overlay.Update(f.TextDocument.URI.SpanURI(), s.filePathsByURI[f.TextDocument.URI.SpanURI()], []protocol.Msg_TextDocumentContentChangeEvent{
-		{Text: *f.Text},
-	}); err != nil {
-		return err
-	}
+	s.compiler.overlay.ReloadFromDisk(f.TextDocument.URI.SpanURI(), s.filePathsByURI[f.TextDocument.URI.SpanURI()])
 	s.Compile(s.filePathsByURI[f.TextDocument.URI.SpanURI()])
 	return nil
 }
@@ -1133,11 +1142,11 @@ func makeTooltip(d protoreflect.Descriptor) *protocol.OrPTooltipPLabel {
 }
 
 func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options protocol.FormattingOptions, maybeRange ...protocol.Range) ([]protocol.TextEdit, error) {
-	printer := protoprint.Printer{
-		CustomSortFunction: SortElements,
-		Indent:             "  ", // todo: tabs break semantic tokens
-		Compact:            protoprint.CompactDefault,
-	}
+	// printer := protoprint.Printer{
+	// 	CustomSortFunction: SortElements,
+	// 	Indent:             "  ", // todo: tabs break semantic tokens
+	// 	Compact:            protoprint.CompactDefault,
+	// }
 	path, err := c.URIToPath(doc.URI.SpanURI())
 	if err != nil {
 		return nil, err
@@ -1146,53 +1155,53 @@ func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options prot
 	if err != nil {
 		return nil, err
 	}
-	res, err := c.FindResultByURI(doc.URI.SpanURI())
+	res, err := c.FindParseResultByURI(doc.URI.SpanURI())
 	if err != nil {
 		return nil, err
 	}
 
-	if len(maybeRange) == 1 {
-		rng := maybeRange[0]
-		// format range
-		start, end, err := mapper.RangeOffsets(rng)
-		if err != nil {
-			return nil, err
-		}
+	// if len(maybeRange) == 1 {
+	// 	rng := maybeRange[0]
+	// 	// format range
+	// 	start, end, err := mapper.RangeOffsets(rng)
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
 
-		// Try to map the range to a single top-level element. If the range overlaps
-		// multiple top level elements, we'll just format the whole file.
+	// 	// Try to map the range to a single top-level element. If the range overlaps
+	// 	// multiple top level elements, we'll just format the whole file.
 
-		targetDesc, err := findDescriptorWithinRangeOffsets(res, start, end)
-		if err != nil {
-			return nil, err
-		}
-		splicedBuffer := bytes.NewBuffer(bytes.Clone(mapper.Content[:start]))
+	// 	targetDesc, err := findDescriptorWithinRangeOffsets(res, start, end)
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
+	// 	splicedBuffer := bytes.NewBuffer(bytes.Clone(mapper.Content[:start]))
 
-		wrap, err := desc.WrapDescriptor(targetDesc)
-		if err != nil {
-			return nil, err
-		}
+	// 	wrap, err := desc.WrapDescriptor(targetDesc)
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
 
-		err = printer.PrintProto(wrap, splicedBuffer)
-		if err != nil {
-			return nil, err
-		}
-		splicedBuffer.Write(mapper.Content[end:])
-		spliced := splicedBuffer.Bytes()
-		// fmt.Printf("old:\n%s\nnew:\n%s\n", string(mapper.Content), string(spliced))
+	// 	err = printer.PrintProto(wrap, splicedBuffer)
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
+	// 	splicedBuffer.Write(mapper.Content[end:])
+	// 	spliced := splicedBuffer.Bytes()
+	// 	// fmt.Printf("old:\n%s\nnew:\n%s\n", string(mapper.Content), string(spliced))
 
-		edits := diff.Bytes(mapper.Content, spliced)
-		return source.ToProtocolEdits(mapper, edits)
-	}
+	// 	edits := diff.Bytes(mapper.Content, spliced)
+	// 	return source.ToProtocolEdits(mapper, edits)
+	// }
 
-	wrap, err := desc.WrapFile(res)
-	if err != nil {
-		return nil, err
-	}
+	// wrap, err := desc.WrapFile(res.Descriptor(res.FileNode()).(protoreflect.FileDescriptor))
+	// if err != nil {
+	// 	return nil, err
+	// }
 	// format whole file
 	buf := bytes.NewBuffer(make([]byte, 0, len(mapper.Content)))
-	err = printer.PrintProtoFile(wrap, buf)
-	if err != nil {
+	format := newFormatter(buf, res.AST())
+	if err := format.Run(); err != nil {
 		return nil, err
 	}
 
@@ -1200,15 +1209,15 @@ func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options prot
 	return source.ToProtocolEdits(mapper, edits)
 }
 
-func findDescriptorWithinRangeOffsets(res linker.Result, start, end int) (output protoreflect.Descriptor, err error) {
+func findDescriptorWithinRangeOffsets(res parser.Result, start, end int) (output protoreflect.Descriptor, err error) {
 	ast := res.AST()
 
-	err = walk.Descriptors(res, func(d protoreflect.Descriptor) error {
-		node := res.Node(protoutil.ProtoFromDescriptor(d))
+	err = walk.DescriptorProtos(res.FileDescriptorProto(), func(fn protoreflect.FullName, m proto.Message) error {
+		node := res.Node(m)
 		tokenStart := ast.TokenInfo(node.Start())
 		tokenEnd := ast.TokenInfo(node.End())
 		if tokenStart.Start().Offset >= start && tokenEnd.End().Offset <= end {
-			output = d
+			output = res.Descriptor(node).ProtoReflect().Descriptor()
 			return sentinel
 		}
 		return nil

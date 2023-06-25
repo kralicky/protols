@@ -78,6 +78,10 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			DocumentFormattingProvider: &protocol.Or_ServerCapabilities_documentFormattingProvider{
 				Value: protocol.DocumentFormattingOptions{},
 			},
+			CompletionProvider: &protocol.CompletionOptions{
+				TriggerCharacters: []string{"."},
+			},
+
 			// DocumentRangeFormattingProvider: &protocol.Or_ServerCapabilities_documentRangeFormattingProvider{
 			// 	Value: protocol.DocumentRangeFormattingOptions{},
 			// },
@@ -97,6 +101,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 				Full:  &protocol.Or_SemanticTokensOptions_full{Value: true},
 				Range: &protocol.Or_SemanticTokensOptions_range{Value: true},
 			},
+
 			// DocumentSymbolProvider: &protocol.Or_ServerCapabilities_documentSymbolProvider{Value: true},
 		},
 
@@ -122,7 +127,7 @@ func (s *Server) DidClose(ctx context.Context, params *protocol.DidCloseTextDocu
 
 // Completion implements protocol.Server.
 func (s *Server) Completion(ctx context.Context, params *protocol.CompletionParams) (result *protocol.CompletionList, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return s.c.GetCompletions(params)
 }
 
 // Initialized implements protocol.Server.

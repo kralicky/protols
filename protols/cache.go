@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/bmatcuk/doublestar"
 	"github.com/bufbuild/protocompile"
@@ -27,6 +28,7 @@ import (
 	"github.com/kralicky/ragu"
 	"go.uber.org/zap"
 	"golang.org/x/exp/maps"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/lsp/source"
@@ -489,7 +491,7 @@ func (c *Cache) Compile(protos ...string) {
 		partial := partial
 		c.partialResults[path] = partial
 	}
-	c.lg.Info("reindexed", zap.Int("protos", len(protos)))
+	c.lg.Info("reindexed", zap.Int("protos", len(protos)), zap.Int("results", len(c.results)))
 }
 
 func (s *Cache) OnFileOpened(doc protocol.TextDocumentItem) {
@@ -1226,4 +1228,118 @@ func findDescriptorWithinRangeOffsets(res parser.Result, start, end int) (output
 		err = nil
 	}
 	return
+}
+
+func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, localPackage protoreflect.FullName) []protoreflect.Descriptor {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	eg, ctx := errgroup.WithContext(ctx)
+	resultsByPackage := make([][]protoreflect.Descriptor, len(c.results))
+	for i, res := range c.results {
+		i, res := i, res
+		eg.Go(func() (err error) {
+			p := prefix
+			if res.Package() == localPackage {
+				p = string(localPackage) + "." + p
+			}
+			resultsByPackage[i], err = res.(linker.Result).FindDescriptorsByPrefix(ctx, p)
+			return
+		})
+	}
+	eg.Wait()
+	combined := make([]protoreflect.Descriptor, 0, len(c.results))
+	for _, results := range resultsByPackage {
+		combined = append(combined, results...)
+	}
+	return combined
+}
+
+func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *protocol.CompletionList, err error) {
+	doc := params.TextDocument
+	parseRes, err := c.FindParseResultByURI(doc.URI.SpanURI())
+	if err != nil {
+		return nil, err
+	}
+	mapper, err := c.getMapper(doc.URI.SpanURI())
+	if err != nil {
+		return nil, err
+	}
+	posOffset, err := mapper.PositionOffset(params.Position)
+	if err != nil {
+		return nil, err
+	}
+
+	fileNode := parseRes.AST()
+
+	completions := []protocol.CompletionItem{}
+	thisPackage := parseRes.FileDescriptorProto().GetPackage()
+
+	ast.Walk(fileNode, &ast.SimpleVisitor{
+		DoVisitMessageNode: func(node *ast.MessageNode) error {
+			scopeBegin := fileNode.NodeInfo(node.OpenBrace).Start().Offset
+			scopeEnd := fileNode.NodeInfo(node.CloseBrace).End().Offset
+
+			if posOffset < scopeBegin || posOffset > scopeEnd {
+				return nil
+			}
+
+			// find the text from the start of the line to the cursor
+			startOffset, err := mapper.PositionOffset(protocol.Position{
+				Line:      params.Position.Line,
+				Character: 0,
+			})
+			if err != nil {
+				return err
+			}
+
+			ctx, ca := context.WithTimeout(context.Background(), 1*time.Second)
+			defer ca()
+			text := strings.TrimLeftFunc(string(mapper.Content[startOffset:posOffset]), unicode.IsSpace)
+			fmt.Println("finding completions for", text)
+			matches := c.FindAllDescriptorsByPrefix(ctx, text, protoreflect.FullName(thisPackage))
+			for _, match := range matches {
+				var compl protocol.CompletionItem
+				parent := match.ParentFile()
+				pkg := parent.Package()
+				if pkg != protoreflect.FullName(thisPackage) {
+					compl.Label = string(pkg) + "." + string(match.Name())
+					compl.AdditionalTextEdits = []protocol.TextEdit{editAddImport(parseRes, parent.Path())}
+				} else {
+					compl.Label = string(match.Name())
+				}
+				switch match.(type) {
+				case protoreflect.MessageDescriptor:
+					compl.Kind = protocol.ClassCompletion
+				case protoreflect.EnumDescriptor:
+					compl.Kind = protocol.EnumCompletion
+				default:
+					continue
+				}
+				completions = append(completions, compl)
+			}
+			return nil
+		},
+	})
+
+	return &protocol.CompletionList{
+		Items: completions,
+	}, nil
+}
+
+func editAddImport(parseRes parser.Result, path string) protocol.TextEdit {
+	insertionPoint := parseRes.ImportInsertionPoint()
+	text := fmt.Sprintf("import \"%s\";\n", path)
+	return protocol.TextEdit{
+		Range: protocol.Range{
+			Start: protocol.Position{
+				Line:      uint32(insertionPoint.Line - 1),
+				Character: uint32(insertionPoint.Col - 1),
+			},
+			End: protocol.Position{
+				Line:      uint32(insertionPoint.Line - 1),
+				Character: uint32(insertionPoint.Col - 1),
+			},
+		},
+		NewText: text,
+	}
 }

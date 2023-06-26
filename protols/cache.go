@@ -625,39 +625,67 @@ func (c *Cache) getMapper(uri span.URI) (*protocol.Mapper, error) {
 	return c.compiler.overlay.Get(c.filePathsByURI[uri])
 }
 
-func (c *Cache) ComputeDiagnosticReports(uri span.URI) ([]*protocol.Diagnostic, error) {
+func (c *Cache) ComputeDiagnosticReports(uri span.URI, prevResultId string) ([]protocol.Diagnostic, protocol.DocumentDiagnosticReportKind, string, error) {
 	c.resultsMu.Lock()
 	defer c.resultsMu.Unlock()
-	rawReports, found := c.diagHandler.GetDiagnosticsForPath(c.filePathsByURI[uri])
-	if !found {
-		return nil, nil // no reports
+	var maybePrevResultId []string
+	if prevResultId != "" {
+		maybePrevResultId = append(maybePrevResultId, prevResultId)
 	}
-	mapper, err := c.getMapper(uri)
-	if err != nil {
-		return nil, err
+	rawReports, resultId, unchanged := c.diagHandler.GetDiagnosticsForPath(c.filePathsByURI[uri], maybePrevResultId...)
+	if unchanged {
+		return nil, protocol.DiagnosticUnchanged, resultId, nil
 	}
+	protocolReports := c.toProtocolDiagnostics(rawReports)
 
-	// convert to protocol reports
-	var reports []*protocol.Diagnostic
+	return protocolReports, protocol.DiagnosticFull, resultId, nil
+}
+
+func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.Diagnostic {
+	var reports []protocol.Diagnostic
 	for _, rawReport := range rawReports {
-		rng, err := mapper.OffsetRange(rawReport.Pos.Start().Offset, rawReport.Pos.End().Offset+1)
-		if err != nil {
-			c.lg.With(
-				zap.String("file", string(uri)),
-				zap.Error(err),
-			).Debug("failed to map range")
-			continue
-		}
-		reports = append(reports, &protocol.Diagnostic{
-			Range:    rng,
+		reports = append(reports, protocol.Diagnostic{
+			Range:    toRange(rawReport.Pos),
 			Severity: rawReport.Severity,
 			Message:  rawReport.Error.Error(),
 			Tags:     rawReport.Tags,
 			Source:   "protols",
 		})
 	}
+	return reports
+}
 
-	return reports, nil
+type workspaceDiagnosticCallbackFunc = func(uri span.URI, reports []protocol.Diagnostic, kind protocol.DocumentDiagnosticReportKind, resultId string)
+
+func (c *Cache) ComputeWorkspaceDiagnosticReports(ctx context.Context, previousResultIds []protocol.PreviousResultID, callback workspaceDiagnosticCallbackFunc) bool {
+	var prevResultMapByPath map[string]string
+	return c.diagHandler.MaybeRange(func() {
+		prevResultMapByPath = make(map[string]string, len(previousResultIds))
+		for _, prevResult := range previousResultIds {
+			if p, err := c.URIToPath(prevResult.URI.SpanURI()); err == nil {
+				prevResultMapByPath[p] = prevResult.Value
+			}
+		}
+	}, func(s string, dl *DiagnosticList) bool {
+		var maybePrevResultId []string
+		prevResultId, ok := prevResultMapByPath[s]
+		if ok {
+			maybePrevResultId = append(maybePrevResultId, prevResultId)
+		}
+		uri, err := c.PathToURI(s)
+		if err != nil {
+			return true // ???
+		}
+		rawResults, resultId, unchanged := dl.Get(maybePrevResultId...)
+		if unchanged {
+			callback(uri, []protocol.Diagnostic{}, protocol.DiagnosticUnchanged, resultId)
+		} else {
+			protocolResults := c.toProtocolDiagnostics(rawResults)
+
+			callback(uri, protocolResults, protocol.DiagnosticFull, resultId)
+		}
+		return true
+	})
 }
 
 func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]protocol.DocumentLink, error) {

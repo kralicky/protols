@@ -721,6 +721,8 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 				field.typeName, _ = io.ReadAll(colBuf) // these column names don't exactly match up with the others
 				fclone.writeLineEnd(elem.Val)
 				field.lineEnd, _ = io.ReadAll(colBuf)
+			case *ast.OptionNode:
+				// TODO
 
 			default:
 				panic(fmt.Sprintf("column formatting not implemented for element type %T", elem))

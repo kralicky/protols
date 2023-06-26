@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/samber/lo"
 	"go.uber.org/zap"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
+	"golang.org/x/tools/gopls/pkg/span"
 	"golang.org/x/tools/pkg/jsonrpc2"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -53,14 +55,19 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 				// WillSaveWaitUntil: true,
 				Save: &protocol.SaveOptions{IncludeText: false},
 			},
+
 			HoverProvider: &protocol.Or_ServerCapabilities_hoverProvider{Value: true},
 			DiagnosticProvider: &protocol.Or_ServerCapabilities_diagnosticProvider{
-				Value: protocol.DiagnosticOptions{
-					WorkspaceDiagnostics:  false,
-					InterFileDependencies: false,
+				Value: protocol.DiagnosticRegistrationOptions{
+					DiagnosticOptions: protocol.DiagnosticOptions{
+						WorkspaceDiagnostics: true,
+					},
 				},
 			},
 			Workspace: &protocol.Workspace6Gn{
+				WorkspaceFolders: &protocol.WorkspaceFolders5Gn{
+					Supported: false, // TODO
+				},
 				FileOperations: &protocol.FileOperationOptions{
 					DidCreate: &protocol.FileOperationRegistrationOptions{
 						Filters: filters,
@@ -101,7 +108,6 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 				Full:  &protocol.Or_SemanticTokensOptions_full{Value: true},
 				Range: &protocol.Or_SemanticTokensOptions_range{Value: true},
 			},
-
 			// DocumentSymbolProvider: &protocol.Or_ServerCapabilities_documentSymbolProvider{Value: true},
 		},
 
@@ -390,23 +396,36 @@ func (*Server) Declaration(context.Context, *protocol.DeclarationParams) (*proto
 
 // Diagnostic implements protocol.Server.
 func (s *Server) Diagnostic(ctx context.Context, params *protocol.DocumentDiagnosticParams) (*protocol.Or_DocumentDiagnosticReport, error) {
-	reports, err := s.c.ComputeDiagnosticReports(params.TextDocument.URI.SpanURI())
+	reports, kind, resultId, err := s.c.ComputeDiagnosticReports(params.TextDocument.URI.SpanURI(), params.PreviousResultID)
 	if err != nil {
 		s.lg.Error("failed to compute diagnostic reports", zap.Error(err))
 		return nil, err
 	}
-	items := []protocol.Diagnostic{}
-	for _, report := range reports {
-		items = append(items, *report)
-	}
-	return &protocol.Or_DocumentDiagnosticReport{
-		Value: protocol.RelatedFullDocumentDiagnosticReport{
-			FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
-				Kind:  string(protocol.DiagnosticFull),
-				Items: items,
+	switch kind {
+	case protocol.DiagnosticFull:
+		return &protocol.Or_DocumentDiagnosticReport{
+			Value: protocol.RelatedFullDocumentDiagnosticReport{
+				RelatedDocuments: map[protocol.DocumentURI]interface{}{},
+				FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
+					Kind:     string(protocol.DiagnosticFull),
+					ResultID: resultId,
+					Items:    reports,
+				},
 			},
-		},
-	}, nil
+		}, nil
+	case protocol.DiagnosticUnchanged:
+		return &protocol.Or_DocumentDiagnosticReport{
+			Value: protocol.RelatedUnchangedDocumentDiagnosticReport{
+				RelatedDocuments: map[protocol.DocumentURI]interface{}{},
+				UnchangedDocumentDiagnosticReport: protocol.UnchangedDocumentDiagnosticReport{
+					Kind:     string(protocol.DiagnosticUnchanged),
+					ResultID: resultId,
+				},
+			},
+		}, nil
+	default:
+		panic("bug: unknown diagnostic kind: " + kind)
+	}
 }
 
 // DiagnosticRefresh implements protocol.Server.
@@ -415,8 +434,50 @@ func (*Server) DiagnosticRefresh(context.Context) error {
 }
 
 // DiagnosticWorkspace implements protocol.Server.
-func (*Server) DiagnosticWorkspace(context.Context, *protocol.WorkspaceDiagnosticParams) (*protocol.WorkspaceDiagnosticReport, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+func (s *Server) DiagnosticWorkspace(ctx context.Context, params *protocol.WorkspaceDiagnosticParams) (*protocol.WorkspaceDiagnosticReport, error) {
+	report := &protocol.WorkspaceDiagnosticReport{
+		Items: []protocol.Or_WorkspaceDocumentDiagnosticReport{},
+	}
+
+	ok := s.c.ComputeWorkspaceDiagnosticReports(ctx, params.PreviousResultIds,
+		func(uri span.URI, reports []protocol.Diagnostic, kind protocol.DocumentDiagnosticReportKind, resultId string) {
+
+			if kind == protocol.DiagnosticUnchanged {
+				report.Items = append(report.Items, protocol.Or_WorkspaceDocumentDiagnosticReport{
+					Value: protocol.WorkspaceUnchangedDocumentDiagnosticReport{
+						URI: protocol.URIFromSpanURI(uri),
+						UnchangedDocumentDiagnosticReport: protocol.UnchangedDocumentDiagnosticReport{
+							Kind:     string(protocol.DiagnosticUnchanged),
+							ResultID: resultId,
+						},
+					},
+				})
+				return
+			}
+
+			report.Items = append(report.Items, protocol.Or_WorkspaceDocumentDiagnosticReport{
+				Value: protocol.WorkspaceFullDocumentDiagnosticReport{
+					URI: protocol.URIFromSpanURI(uri),
+					FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
+						Kind:     string(protocol.DiagnosticFull),
+						ResultID: resultId,
+						Items:    reports,
+					},
+				},
+			})
+		},
+	)
+
+	if ok {
+		return report, nil
+	}
+
+	// TODO: this doesn't seem to work
+	// https://github.com/microsoft/vscode-languageserver-node/issues/1261
+	data, _ := json.Marshal(protocol.DiagnosticServerCancellationData{
+		RetriggerRequest: false,
+	})
+	return nil, jsonrpc2.NewErrorWithData(int64(protocol.ServerCancelled), "", json.RawMessage(data))
 }
 
 // DidChangeConfiguration implements protocol.Server.

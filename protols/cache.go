@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -25,7 +26,6 @@ import (
 	"github.com/jhump/protoreflect/desc"
 	"github.com/jhump/protoreflect/desc/protoprint"
 	gsync "github.com/kralicky/gpkg/sync"
-	"github.com/kralicky/ragu"
 	"go.uber.org/zap"
 	"golang.org/x/exp/maps"
 	"golang.org/x/sync/errgroup"
@@ -551,7 +551,7 @@ func (c *Cache) OnFilesCreated(files []protocol.FileCreate) error {
 	for _, f := range files {
 		uri := span.URIFromURI(f.URI)
 		filename := uri.Filename()
-		goPkg, err := ragu.FastLookupGoModule(filename)
+		goPkg, err := FastLookupGoModule(filename)
 		if err != nil {
 			c.lg.With(
 				zap.String("filename", filename),
@@ -1370,4 +1370,44 @@ func editAddImport(parseRes parser.Result, path string) protocol.TextEdit {
 		},
 		NewText: text,
 	}
+}
+
+func FastLookupGoModule(filename string) (string, error) {
+	// Search the .proto file for `option go_package = "...";`
+	// We know this will be somewhere at the top of the file.
+	f, err := os.Open(filename)
+	if err != nil {
+		return "", err
+	}
+	scan := bufio.NewScanner(f)
+	for scan.Scan() {
+		line := scan.Text()
+		if !strings.HasPrefix(line, "option") {
+			continue
+		}
+		index := strings.Index(line, "go_package")
+		if index == -1 {
+			continue
+		}
+		for ; index < len(line); index++ {
+			if line[index] == '=' {
+				break
+			}
+		}
+		for ; index < len(line); index++ {
+			if line[index] == '"' {
+				break
+			}
+		}
+		if index == len(line) {
+			continue
+		}
+		startIdx := index + 1
+		endIdx := strings.LastIndexByte(line, '"')
+		if endIdx <= startIdx {
+			continue
+		}
+		return line[startIdx:endIdx], nil
+	}
+	return "", fmt.Errorf("no go_package option found")
 }

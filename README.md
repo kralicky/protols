@@ -8,7 +8,10 @@ Features in progress:
 - [x] Semantic token syntax highlighting
 - [x] Code formatting in the style of gofmt
 - [x] Detailed workspace diagnostics
-- [x] Several different import resolution strategies including importing from Go modules
+- [x] Import resolution
+  - [x] Filesystem
+  - [x] Go module path lookup with inline sources
+  - [x] Go module path lookup with missing proto sources synthesized from generated code
 - [ ] LSP features:
   - [x] Go-to-definition
   - [ ] Find references

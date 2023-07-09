@@ -572,6 +572,14 @@ func (f *formatter) writeMessage(messageNode *ast.MessageNode) {
 	)
 }
 
+func groupableNodeType(t ast.Node) bool {
+	switch t.(type) {
+	case *ast.FieldNode, *ast.MapFieldNode, *ast.EnumValueNode, *ast.MessageFieldNode:
+		return true
+	}
+	return false
+}
+
 func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 	if len(elems) < 2 {
 		for _, decl := range elems {
@@ -581,10 +589,15 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 	}
 	groups := [][]T{}
 	currentGroup := []T{}
+	startNewGroup := func() {
+		if len(currentGroup) > 0 {
+			groups = append(groups, currentGroup)
+		}
+		currentGroup = []T{}
+	}
 	for i := 0; i < len(elems); i++ {
 		e := elems[i]
-		switch ast.Node(e).(type) {
-		case *ast.FieldNode, *ast.MapFieldNode, *ast.EnumValueNode, *ast.MessageFieldNode:
+		if groupableNodeType(e) {
 			fieldInfo := f.fileNode.NodeInfo(e)
 			if len(currentGroup) == 0 {
 				currentGroup = append(currentGroup, e)
@@ -596,7 +609,10 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 			if fieldNode, ok := ast.Node(e).(*ast.FieldNode); ok {
 				// check if we are about to expand a compact options group
 				if fieldNode.Options != nil && f.compactOptionsShouldBeExpanded(fieldNode.Options) {
-					goto new_group
+					startNewGroup()
+					currentGroup = append(currentGroup, e)
+					startNewGroup()
+					continue
 				}
 			}
 			prevFieldInfo := f.fileNode.NodeInfo(currentGroup[len(currentGroup)-1])
@@ -604,13 +620,11 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 				currentGroup = append(currentGroup, e)
 				continue
 			}
+		} else {
+			startNewGroup()
+			currentGroup = append(currentGroup, e)
+			startNewGroup()
 		}
-	new_group:
-		// otherwise, start a new group
-		if len(currentGroup) > 0 {
-			groups = append(groups, currentGroup)
-		}
-		currentGroup = []T{e}
 	}
 	if len(currentGroup) > 0 {
 		groups = append(groups, currentGroup)
@@ -723,6 +737,7 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 				field.lineEnd, _ = io.ReadAll(colBuf)
 			case *ast.OptionNode:
 				// TODO
+			case *ast.ReservedNode:
 
 			default:
 				panic(fmt.Sprintf("column formatting not implemented for element type %T", elem))
@@ -756,7 +771,7 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 			colBuf.Write(field.fieldName)
 			colBuf.Write(bytes.Repeat([]byte{' '}, fieldNameCol-len(field.fieldName)+fieldNamePadding))
 			colBuf.Write(field.equalsTag)
-			if field.lineEnd[0] == ';' {
+			if len(field.lineEnd) > 0 && field.lineEnd[0] == ';' {
 				// don't write spaces before the semicolon
 				colBuf.Write(field.lineEnd)
 			} else {
@@ -1248,9 +1263,7 @@ func (f *formatter) writeOneOf(oneOfNode *ast.OneofNode) {
 	var elementWriterFunc func()
 	if len(oneOfNode.Decls) > 0 {
 		elementWriterFunc = func() {
-			for _, decl := range oneOfNode.Decls {
-				f.writeNode(decl)
-			}
+			columnFormatElements(f, oneOfNode.Decls)
 		}
 	}
 	f.writeStart(oneOfNode.Keyword)

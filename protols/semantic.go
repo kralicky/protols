@@ -87,7 +87,7 @@ func computeSemanticTokens(cache *Cache, td protocol.TextDocumentIdentifier, rng
 		Data: []uint32{},
 	}
 
-	mapper, err := cache.getMapper(td.URI.SpanURI())
+	mapper, err := cache.GetMapper(td.URI.SpanURI())
 	if err != nil {
 		return nil, err
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/samber/lo"
 	"go.uber.org/zap"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
+	"golang.org/x/tools/gopls/pkg/lsp/source"
 	"golang.org/x/tools/gopls/pkg/span"
 	"golang.org/x/tools/pkg/jsonrpc2"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -58,10 +59,9 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 
 			HoverProvider: &protocol.Or_ServerCapabilities_hoverProvider{Value: true},
 			DiagnosticProvider: &protocol.Or_ServerCapabilities_diagnosticProvider{
-				Value: protocol.DiagnosticRegistrationOptions{
-					DiagnosticOptions: protocol.DiagnosticOptions{
-						WorkspaceDiagnostics: true,
-					},
+				Value: protocol.DiagnosticOptions{
+					WorkspaceDiagnostics:  true,
+					InterFileDependencies: true,
 				},
 			},
 			Workspace: &protocol.Workspace6Gn{
@@ -80,7 +80,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 					},
 				},
 			},
-			InlayHintProvider:    true,
+			// InlayHintProvider:    true,
 			DocumentLinkProvider: &protocol.DocumentLinkOptions{},
 			DocumentFormattingProvider: &protocol.Or_ServerCapabilities_documentFormattingProvider{
 				Value: protocol.DocumentFormattingOptions{},
@@ -117,18 +117,6 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 		},
 	}, nil
 
-}
-
-// DidOpen implements protocol.Server.
-func (s *Server) DidOpen(ctx context.Context, params *protocol.DidOpenTextDocumentParams) (err error) {
-	s.c.OnFileOpened(params.TextDocument)
-	return nil
-}
-
-// DidClose implements protocol.Server.
-func (s *Server) DidClose(ctx context.Context, params *protocol.DidCloseTextDocumentParams) (err error) {
-	s.c.OnFileClosed(params.TextDocument)
-	return nil
 }
 
 // Completion implements protocol.Server.
@@ -215,7 +203,7 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 	}
 
 	info := containingFileResolver.AST().NodeInfo(node)
-	uri, err := s.c.PathToURI(containingFileResolver.Path())
+	uri, err := s.c.resolver.PathToURI(containingFileResolver.Path()) // todo: make PathToURI available in cache as well?
 	if err != nil {
 		return nil, err
 	}
@@ -282,29 +270,120 @@ func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (resul
 	}, nil
 }
 
+// DidOpen implements protocol.Server.
+func (s *Server) DidOpen(ctx context.Context, params *protocol.DidOpenTextDocumentParams) (err error) {
+	uri := params.TextDocument.URI.SpanURI()
+	if !uri.IsFile() {
+		return nil
+	}
+	return s.c.DidModifyFiles(ctx, []source.FileModification{
+		{
+			URI:        uri,
+			Action:     source.Open,
+			Version:    params.TextDocument.Version,
+			Text:       []byte(params.TextDocument.Text),
+			LanguageID: params.TextDocument.LanguageID,
+		},
+	})
+}
+
+// DidClose implements protocol.Server.
+func (s *Server) DidClose(ctx context.Context, params *protocol.DidCloseTextDocumentParams) (err error) {
+	uri := params.TextDocument.URI.SpanURI()
+	if !uri.IsFile() {
+		return nil
+	}
+	return s.c.DidModifyFiles(ctx, []source.FileModification{
+		{
+			URI:     uri,
+			Action:  source.Close,
+			Version: -1,
+			Text:    nil,
+		},
+	})
+}
+
 // DidChange implements protocol.Server.
 func (s *Server) DidChange(ctx context.Context, params *protocol.DidChangeTextDocumentParams) (err error) {
-	return s.c.OnFileModified(params.TextDocument, params.ContentChanges)
+	uri := params.TextDocument.URI.SpanURI()
+	if !uri.IsFile() {
+		return nil
+	}
+	text, err := s.c.ChangedText(ctx, uri, params.ContentChanges)
+	if err != nil {
+		return err
+	}
+	c := source.FileModification{
+		URI:     uri,
+		Action:  source.Change,
+		Version: params.TextDocument.Version,
+		Text:    text,
+	}
+	return s.c.DidModifyFiles(ctx, []source.FileModification{c})
 }
 
 // DidCreateFiles implements protocol.Server.
 func (s *Server) DidCreateFiles(ctx context.Context, params *protocol.CreateFilesParams) (err error) {
-	return s.c.OnFilesCreated(params.Files)
+	var modifications []source.FileModification
+	for _, f := range params.Files {
+		uri := f.URI
+		modifications = append(modifications, source.FileModification{
+			URI:    span.URIFromURI(uri),
+			Action: source.Create,
+			OnDisk: true,
+		})
+	}
+	return s.c.DidModifyFiles(ctx, modifications)
 }
 
 // DidDeleteFiles implements protocol.Server.
 func (s *Server) DidDeleteFiles(ctx context.Context, params *protocol.DeleteFilesParams) (err error) {
-	return s.c.OnFilesDeleted(params.Files)
+	var modifications []source.FileModification
+	for _, f := range params.Files {
+		uri := f.URI
+		modifications = append(modifications, source.FileModification{
+			URI:    span.URIFromURI(uri),
+			Action: source.Delete,
+			OnDisk: true,
+		})
+	}
+	return s.c.DidModifyFiles(ctx, modifications)
 }
 
 // DidRenameFiles implements protocol.Server.
 func (s *Server) DidRenameFiles(ctx context.Context, params *protocol.RenameFilesParams) (err error) {
-	return s.c.OnFilesRenamed(params.Files)
+	var modifications []source.FileModification
+	for _, f := range params.Files {
+		modifications = append(modifications,
+			source.FileModification{
+				URI:    span.URIFromURI(f.OldURI),
+				Action: source.Delete,
+				OnDisk: true,
+			},
+			source.FileModification{
+				URI:    span.URIFromURI(f.NewURI),
+				Action: source.Create,
+				OnDisk: true,
+			},
+		)
+	}
+	return s.c.DidModifyFiles(ctx, modifications)
 }
 
 // DidSave implements protocol.Server.
 func (s *Server) DidSave(ctx context.Context, params *protocol.DidSaveTextDocumentParams) (err error) {
-	return s.c.OnFileSaved(params)
+	uri := params.TextDocument.URI.SpanURI()
+	if !uri.IsFile() {
+		return nil
+	}
+	c := source.FileModification{
+		URI:    uri,
+		Action: source.Save,
+	}
+	if params.Text != nil {
+		c.Text = []byte(*params.Text)
+	}
+	return s.c.DidModifyFiles(ctx, []source.FileModification{c})
 }
 
 // SemanticTokensFull implements protocol.Server.

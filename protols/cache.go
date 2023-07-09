@@ -6,10 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -27,7 +25,6 @@ import (
 	"github.com/jhump/protoreflect/desc/protoprint"
 	gsync "github.com/kralicky/gpkg/sync"
 	"go.uber.org/zap"
-	"golang.org/x/exp/maps"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
@@ -46,6 +43,7 @@ import (
 type Cache struct {
 	lg             *zap.Logger
 	compiler       *Compiler
+	resolver       *Resolver
 	diagHandler    *DiagnosticHandler
 	resultsMu      sync.RWMutex
 	results        linker.Files
@@ -53,10 +51,12 @@ type Cache struct {
 	indexMu        sync.RWMutex
 	// indexedDirsByGoPkg map[string]string   // go package name -> directory
 	// indexedGoPkgsByDir map[string]string   // directory -> go package name
-	filePathsByURI map[span.URI]string // URI -> canonical file path (go package + file name)
-	fileURIsByPath map[string]span.URI // canonical file path (go package + file name) -> URI
+	// filePathsByURI map[span.URI]string // URI -> canonical file path (go package + file name)
+	// fileURIsByPath map[string]span.URI // canonical file path (go package + file name) -> URI
 
 	todoModLock sync.Mutex
+
+	compileLock sync.Mutex
 
 	inflightTasksInvalidate gsync.Map[string, time.Time]
 	inflightTasksCompile    gsync.Map[string, time.Time]
@@ -102,9 +102,9 @@ func (c *Cache) FindResultByURI(uri span.URI) (linker.Result, error) {
 	if c.results == nil {
 		return nil, fmt.Errorf("no results exist")
 	}
-	path, ok := c.filePathsByURI[uri]
-	if !ok {
-		return nil, fmt.Errorf("no file found for URI %q", uri)
+	path, err := c.resolver.URIToPath(uri)
+	if err != nil {
+		return nil, err
 	}
 	f := c.results.FindFileByPath(path)
 	if f == nil {
@@ -119,9 +119,9 @@ func (c *Cache) FindParseResultByURI(uri span.URI) (parser.Result, error) {
 	if c.results == nil && len(c.partialResults) == 0 {
 		return nil, fmt.Errorf("no results or partial results exist")
 	}
-	path, ok := c.filePathsByURI[uri]
-	if !ok {
-		return nil, fmt.Errorf("no file found for URI %q", uri)
+	path, err := c.resolver.URIToPath(uri)
+	if err != nil {
+		return nil, err
 	}
 	if pr, ok := c.partialResults[path]; ok {
 		return pr, nil
@@ -139,30 +139,11 @@ func (c *Cache) FindFileByPath(path string) (protoreflect.FileDescriptor, error)
 func (c *Cache) FindFileByURI(uri span.URI) (protoreflect.FileDescriptor, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
-	path, ok := c.filePathsByURI[uri]
-	if !ok {
-		return nil, fmt.Errorf("no file found for URI %q", uri)
+	path, err := c.resolver.URIToPath(uri)
+	if err != nil {
+		return nil, err
 	}
 	return c.results.AsResolver().FindFileByPath(path)
-}
-
-func (c *Cache) PathToURI(path string) (span.URI, error) {
-	c.resultsMu.RLock()
-	defer c.resultsMu.RUnlock()
-	uri, ok := c.fileURIsByPath[path]
-	if !ok {
-		return "", fmt.Errorf("no file found for path %q", path)
-	}
-	return uri, nil
-}
-func (c *Cache) URIToPath(uri span.URI) (string, error) {
-	c.resultsMu.RLock()
-	defer c.resultsMu.RUnlock()
-	path, ok := c.filePathsByURI[uri]
-	if !ok {
-		return "", fmt.Errorf("no file found for URI %q", uri)
-	}
-	return path, nil
 }
 
 // FindMessageByName implements linker.Resolver.
@@ -183,70 +164,65 @@ var _ linker.Resolver = (*Cache)(nil)
 
 type Compiler struct {
 	*protocompile.Compiler
+	fs      *cache.OverlayFS
 	workdir string
-	overlay *Overlay
 }
 
-type Overlay struct {
-	baseAccessor func(path string) (io.ReadCloser, error)
-	sourcesMu    sync.Mutex
-	sources      map[string]*protocol.Mapper
+var requiredGoEnvVars = []string{"GO111MODULE", "GOFLAGS", "GOINSECURE", "GOMOD", "GOMODCACHE", "GONOPROXY", "GONOSUMDB", "GOPATH", "GOPROXY", "GOROOT", "GOSUMDB", "GOWORK"}
+
+func NewCache(workdir string, lg *zap.Logger) *Cache {
+	fmt.Println("SourceAccessor", workdir)
+	// NewCache creates a new cache.
+	diagHandler := NewDiagnosticHandler()
+	reporter := reporter.NewReporter(diagHandler.HandleError, diagHandler.HandleWarning)
+	resolver := NewResolver(workdir, lg)
+
+	compiler := &Compiler{
+		fs: resolver.OverlayFS,
+		Compiler: &protocompile.Compiler{
+			Resolver:       resolver,
+			MaxParallelism: runtime.NumCPU() * 4,
+			Reporter:       reporter,
+			SourceInfoMode: protocompile.SourceInfoExtraComments | protocompile.SourceInfoExtraOptionLocations,
+			RetainResults:  true,
+			RetainASTs:     true,
+		},
+		workdir: workdir,
+	}
+	cache := &Cache{
+		lg:          lg,
+		compiler:    compiler,
+		resolver:    resolver,
+		diagHandler: diagHandler,
+		// indexedDirsByGoPkg: map[string]string{},
+		// indexedGoPkgsByDir: map[string]string{},
+		// filePathsByURI: map[span.URI]string{},
+		// fileURIsByPath: map[string]span.URI{},
+		partialResults: map[string]parser.Result{},
+	}
+	compiler.Hooks = protocompile.CompilerHooks{
+		PreInvalidate:  cache.preInvalidateHook,
+		PostInvalidate: cache.postInvalidateHook,
+		PreCompile:     cache.preCompile,
+		PostCompile:    cache.postCompile,
+	}
+	cache.Reindex()
+	return cache
 }
 
-func (o *Overlay) Create(uri span.URI, path string, contents []byte) error {
-	o.sourcesMu.Lock()
-	defer o.sourcesMu.Unlock()
-	if _, ok := o.sources[path]; ok {
-		return fmt.Errorf("%w: file already exists", jsonrpc2.ErrInternal)
-	}
-	o.sources[path] = protocol.NewMapper(uri, contents)
-	return nil
-}
-
-// requires sourcesMu to be locked (todo: fix)
-func (o *Overlay) Update(uri span.URI, path string, contentChanges []protocol.TextDocumentContentChangeEvent) error {
-	if len(contentChanges) == 0 {
-		return fmt.Errorf("%w: no content changes provided", jsonrpc2.ErrInternal)
-	}
-
-	if _, ok := o.sources[path]; !ok {
-		baseReader, err := o.baseAccessor(path)
-		if err != nil {
-			return err
-		}
-		defer baseReader.Close()
-		baseContent, _ := io.ReadAll(baseReader)
-		o.sources[path] = protocol.NewMapper(uri, baseContent)
-	}
-	source := o.sources[path]
-	newSrc, err := applyChanges(source, contentChanges)
+func (r *Cache) GetMapper(uri span.URI) (*protocol.Mapper, error) {
+	fh, err := r.resolver.ReadFile(context.TODO(), uri)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	o.sources[path] = protocol.NewMapper(uri, newSrc)
-	return nil
-}
-
-func (o *Overlay) ReloadFromDisk(uri span.URI, path string) error {
-
-	o.sourcesMu.Lock()
-	defer o.sourcesMu.Unlock()
-	if _, ok := o.sources[path]; !ok {
-		return fmt.Errorf("%w: file does not exist", jsonrpc2.ErrInternal)
-	}
-	baseReader, err := o.baseAccessor(path)
+	content, err := fh.Content()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer baseReader.Close()
-	baseContent, _ := io.ReadAll(baseReader)
-	o.sources[path] = protocol.NewMapper(uri, baseContent)
-	return nil
+	return protocol.NewMapper(uri, content), nil
 }
 
-// requires sourcesMu to be held
-func applyChanges(m *protocol.Mapper, changes []protocol.TextDocumentContentChangeEvent) ([]byte, error) {
+func (s *Cache) ChangedText(ctx context.Context, uri span.URI, changes []protocol.TextDocumentContentChangeEvent) ([]byte, error) {
 	if len(changes) == 0 {
 		return nil, fmt.Errorf("%w: no content changes provided", jsonrpc2.ErrInternal)
 	}
@@ -257,6 +233,10 @@ func applyChanges(m *protocol.Mapper, changes []protocol.TextDocumentContentChan
 		return []byte(changes[0].Text), nil
 	}
 
+	m, err := s.GetMapper(uri)
+	if err != nil {
+		return nil, err
+	}
 	diffs, err := contentChangeEventsToDiffEdits(m, changes)
 	if err != nil {
 		return nil, err
@@ -274,135 +254,6 @@ func contentChangeEventsToDiffEdits(mapper *protocol.Mapper, changes []protocol.
 	}
 
 	return source.FromProtocolEdits(mapper, edits)
-}
-
-func (o *Overlay) Delete(path string) {
-	o.sourcesMu.Lock()
-	defer o.sourcesMu.Unlock()
-	delete(o.sources, path)
-}
-
-func (o *Overlay) Accessor(path string) (io.ReadCloser, error) {
-	o.sourcesMu.Lock()
-	defer o.sourcesMu.Unlock()
-	if source, ok := o.sources[path]; ok {
-		return io.NopCloser(bytes.NewReader(source.Content)), nil
-	}
-	return nil, os.ErrNotExist
-}
-func (o *Overlay) Get(path string) (*protocol.Mapper, error) {
-	o.sourcesMu.Lock()
-	defer o.sourcesMu.Unlock()
-	if source, ok := o.sources[path]; ok {
-		return source, nil
-	}
-	return nil, os.ErrNotExist
-}
-
-var requiredGoEnvVars = []string{"GO111MODULE", "GOFLAGS", "GOINSECURE", "GOMOD", "GOMODCACHE", "GONOPROXY", "GONOSUMDB", "GOPATH", "GOPROXY", "GOROOT", "GOSUMDB", "GOWORK"}
-
-func NewCache(workdir string, lg *zap.Logger) *Cache {
-	synthesizer := NewProtoSourceSynthesizer(workdir)
-	fmt.Println("SourceAccessor", workdir)
-	memoizedFs := cache.NewMemoizedFS()
-
-	tryReadFromFs := func(importName string) (_ io.ReadCloser, _err error) {
-		fmt.Println("tryReadFromOverlay", importName)
-		defer func() { fmt.Println("tryReadFromOverlay done", importName, _err) }()
-		fh, err := memoizedFs.ReadFile(context.TODO(), span.URIFromPath(importName))
-		if err == nil {
-			content, err := fh.Content()
-			if err != nil {
-				return nil, err
-			}
-			if content != nil {
-				return io.NopCloser(bytes.NewReader(content)), nil
-			}
-		}
-		return nil, err
-	}
-	resolverFn := protocompile.ResolverFunc(func(importName string) (result protocompile.SearchResult, _ error) {
-		if strings.HasPrefix(importName, "google/") {
-			return protocompile.SearchResult{}, os.ErrNotExist
-		}
-		if strings.HasPrefix(importName, "gogoproto/") {
-			importName = "github.com/gogo/protobuf/" + importName
-		}
-
-		rc, err := tryReadFromFs(importName)
-		if err == nil {
-			result.Source = rc
-			return
-		}
-		f, dir, err := synthesizer.ImportFromGoModule(importName)
-		if err == nil {
-			result.Source, _ = os.Open(f)
-			return
-		}
-		if dir != "" {
-			if synthesized, err := synthesizer.SynthesizeFromGoSource(importName, dir); err == nil {
-				result.Proto = synthesized
-				return
-			} else {
-				return protocompile.SearchResult{}, fmt.Errorf("failed to synthesize %s: %w", importName, err)
-			}
-		}
-
-		return protocompile.SearchResult{}, fmt.Errorf("failed to resolve %s: %w", importName, err)
-	})
-
-	// NewCache creates a new cache.
-	diagHandler := NewDiagnosticHandler()
-	reporter := reporter.NewReporter(diagHandler.HandleError, diagHandler.HandleWarning)
-	accessor := tryReadFromFs
-	overlay := &Overlay{
-		baseAccessor: accessor,
-		sources:      map[string]*protocol.Mapper{},
-	}
-	resolver := protocompile.CompositeResolver{
-		&protocompile.SourceResolver{
-			Accessor: overlay.Accessor,
-		},
-		resolverFn,
-		protocompile.ResolverFunc(func(path string) (protocompile.SearchResult, error) {
-			fd, err := desc.LoadFileDescriptor(path)
-			if err != nil {
-				return protocompile.SearchResult{}, err
-			}
-			return protocompile.SearchResult{Desc: fd.UnwrapFile()}, nil
-		}),
-	}
-
-	compiler := &Compiler{
-		Compiler: &protocompile.Compiler{
-			Resolver:       resolver,
-			MaxParallelism: runtime.NumCPU() * 4,
-			Reporter:       reporter,
-			SourceInfoMode: protocompile.SourceInfoExtraComments | protocompile.SourceInfoExtraOptionLocations,
-			RetainResults:  true,
-			RetainASTs:     true,
-		},
-		workdir: workdir,
-		overlay: overlay,
-	}
-	cache := &Cache{
-		lg:          lg,
-		compiler:    compiler,
-		diagHandler: diagHandler,
-		// indexedDirsByGoPkg: map[string]string{},
-		// indexedGoPkgsByDir: map[string]string{},
-		filePathsByURI: map[span.URI]string{},
-		fileURIsByPath: map[string]span.URI{},
-		partialResults: map[string]parser.Result{},
-	}
-	compiler.Hooks = protocompile.CompilerHooks{
-		PreInvalidate:  cache.preInvalidateHook,
-		PostInvalidate: cache.postInvalidateHook,
-		PreCompile:     cache.preCompile,
-		PostCompile:    cache.postCompile,
-	}
-	cache.Reindex()
-	return cache
 }
 
 func (c *Cache) preInvalidateHook(path string, reason string) {
@@ -423,7 +274,9 @@ func (c *Cache) postInvalidateHook(path string) {
 func (c *Cache) preCompile(path string) {
 	fmt.Printf("compiling %s\n", path)
 	c.inflightTasksCompile.Store(path, time.Now())
+	c.resultsMu.Lock()
 	delete(c.partialResults, path)
+	c.resultsMu.Unlock()
 }
 
 func (c *Cache) postCompile(path string) {
@@ -438,30 +291,27 @@ func (c *Cache) postCompile(path string) {
 func (c *Cache) Reindex() {
 	c.lg.Debug("reindexing")
 
-	c.indexMu.Lock()
-	// maps.Clear(c.indexedDirsByGoPkg)
-	// maps.Clear(c.indexedGoPkgsByDir)
-	maps.Clear(c.filePathsByURI)
-	maps.Clear(c.partialResults)
-	c.indexMu.Unlock()
+	c.resolver.ResetPathMappings()
 
 	allProtos, _ := doublestar.Glob(path.Join(c.compiler.workdir, "**/*.proto"))
 	c.lg.Debug("found protos", zap.Strings("protos", allProtos))
-	created := make([]protocol.FileCreate, len(allProtos))
+	created := make([]source.FileModification, len(allProtos))
 	for i, proto := range allProtos {
-		created[i] = protocol.FileCreate{
-			URI: string(span.URIFromPath(proto)),
+		created[i] = source.FileModification{
+			Action: source.Create,
+			OnDisk: true,
+			URI:    span.URIFromPath(proto),
 		}
 	}
 
-	if err := c.OnFilesCreated(created); err != nil {
+	if err := c.DidModifyFiles(context.TODO(), created); err != nil {
 		c.lg.Error("failed to index files", zap.Error(err))
 	}
 }
 
 func (c *Cache) Compile(protos ...string) {
-	c.resultsMu.Lock()
-	defer c.resultsMu.Unlock()
+	c.compileLock.Lock()
+	defer c.compileLock.Unlock()
 	c.lg.Info("compiling", zap.Int("protos", len(protos)))
 	res, err := c.compiler.Compile(context.TODO(), protos...)
 	if err != nil {
@@ -470,6 +320,9 @@ func (c *Cache) Compile(protos ...string) {
 			return
 		}
 	}
+	// important to lock resultsMu here so that it can be modified in compile hooks
+	c.resultsMu.Lock()
+	defer c.resultsMu.Unlock()
 	c.lg.Info("done compiling", zap.Int("protos", len(protos)))
 	for _, r := range res.Files {
 		path := r.Path()
@@ -479,133 +332,170 @@ func (c *Cache) Compile(protos ...string) {
 			// todo: this is big slow
 			if f.Path() == path {
 				found = true
+				c.lg.With(zap.String("path", path)).Debug("updating existing linker result")
 				c.results[i] = r
 				break
 			}
 		}
 		if !found {
+			c.lg.With(zap.String("path", path)).Debug("adding new linker result")
 			c.results = append(c.results, r)
 		}
 	}
 	for path, partial := range res.UnlinkedParserResults {
 		partial := partial
+		c.lg.With(zap.String("path", path)).Debug("adding new partial linker result")
 		c.partialResults[path] = partial
 	}
-	c.lg.Info("reindexed", zap.Int("protos", len(protos)), zap.Int("results", len(c.results)))
 }
 
-func (s *Cache) OnFileOpened(doc protocol.TextDocumentItem) {
-	s.lg.With(
-		zap.String("file", string(doc.URI)),
-		zap.String("path", s.filePathsByURI[doc.URI.SpanURI()]),
-	).Debug("file opened")
-	s.compiler.overlay.Create(doc.URI.SpanURI(), s.filePathsByURI[doc.URI.SpanURI()], []byte(doc.Text))
-}
+// func (s *Cache) OnFileOpened(doc protocol.TextDocumentItem) {
+// 	s.lg.With(
+// 		zap.String("file", string(doc.URI)),
+// 		zap.String("path", s.filePathsByURI[doc.URI.SpanURI()]),
+// 	).Debug("file opened")
+// 	s.compiler.overlay.Create(doc.URI.SpanURI(), s.filePathsByURI[doc.URI.SpanURI()], []byte(doc.Text))
+// }
 
-func (s *Cache) OnFileClosed(doc protocol.TextDocumentIdentifier) {
-	s.lg.With(
-		zap.String("file", string(doc.URI)),
-	).Debug("file closed")
-	s.compiler.overlay.Delete(s.filePathsByURI[doc.URI.SpanURI()])
-}
+// func (s *Cache) OnFileClosed(doc protocol.TextDocumentIdentifier) {
+// 	s.lg.With(
+// 		zap.String("file", string(doc.URI)),
+// 	).Debug("file closed")
+// 	s.compiler.overlay.Delete(s.filePathsByURI[doc.URI.SpanURI()])
+// }
 
-func (s *Cache) OnFileModified(f protocol.VersionedTextDocumentIdentifier, contentChanges []protocol.TextDocumentContentChangeEvent) error {
-	s.todoModLock.Lock()
-	defer s.todoModLock.Unlock()
-	s.lg.With(
-		zap.String("file", string(f.URI)),
-	).Debug("file modified")
+// func (s *Cache) OnFileModified(f protocol.VersionedTextDocumentIdentifier, contentChanges []protocol.TextDocumentContentChangeEvent) error {
+// 	s.todoModLock.Lock()
+// 	defer s.todoModLock.Unlock()
+// 	s.lg.With(
+// 		zap.String("file", string(f.URI)),
+// 	).Debug("file modified")
 
-	if err := s.compiler.overlay.Update(f.URI.SpanURI(), s.filePathsByURI[f.URI.SpanURI()], contentChanges); err != nil {
-		return err
-	}
-	s.Compile(s.filePathsByURI[f.URI.SpanURI()])
-	return nil
-}
+// 	if err := s.compiler.overlay.Update(f.URI.SpanURI(), contentChanges); err != nil {
+// 		return err
+// 	}
+// 	s.Compile(s.filePathsByURI[f.URI.SpanURI()])
+// 	return nil
+// }
 
-func (c *Cache) OnFilesDeleted(f []protocol.FileDelete) error {
-	c.indexMu.Lock()
-	defer c.indexMu.Unlock()
-	// remove from cache
-	paths := make([]string, len(f))
-	for i, file := range f {
-		paths[i] = c.filePathsByURI[span.URIFromURI(file.URI)]
-		c.compiler.overlay.Delete(paths[i])
-	}
-	c.lg.With(
-		zap.Strings("files", paths),
-	).Debug("files deleted")
-	c.Compile(paths...)
+// func (c *Cache) OnFilesDeleted(f []protocol.FileDelete) error {
+// 	c.indexMu.Lock()
+// 	defer c.indexMu.Unlock()
+// 	// remove from cache
+// 	paths := make([]string, len(f))
+// 	for i, file := range f {
+// 		paths[i] = c.filePathsByURI[span.URIFromURI(file.URI)]
+// 		c.compiler.overlay.Delete(paths[i])
+// 	}
+// 	c.lg.With(
+// 		zap.Strings("files", paths),
+// 	).Debug("files deleted")
+// 	c.Compile(paths...)
 
-	for _, path := range paths {
-		uri := c.fileURIsByPath[path]
-		delete(c.filePathsByURI, uri)
-		delete(c.fileURIsByPath, path)
-	}
-	return nil
-}
+// 	for _, path := range paths {
+// 		uri := c.fileURIsByPath[path]
+// 		delete(c.filePathsByURI, uri)
+// 		delete(c.fileURIsByPath, path)
+// 	}
+// 	return nil
+// }
 
-func (c *Cache) OnFilesCreated(files []protocol.FileCreate) error {
-	c.indexMu.Lock()
-	resolved := make([]string, 0, len(files))
-	for _, f := range files {
-		uri := span.URIFromURI(f.URI)
-		filename := uri.Filename()
-		goPkg, err := FastLookupGoModule(filename)
+// func (c *Cache) OnFilesCreated(files []protocol.FileCreate) error {
+// 	c.indexMu.Lock()
+// 	resolved := make([]string, 0, len(files))
+// 	for _, f := range files {
+// 		uri := span.URIFromURI(f.URI)
+// 		filename := uri.Filename()
+// 		goPkg, err := FastLookupGoModule(filename)
+// 		if err != nil {
+// 			c.lg.With(
+// 				zap.String("filename", filename),
+// 				zap.Error(err),
+// 			).Debug("failed to lookup go module")
+// 			continue
+// 		}
+// 		canonicalName := filepath.Join(goPkg, filepath.Base(filename))
+// 		c.filePathsByURI[uri] = canonicalName
+// 		c.fileURIsByPath[canonicalName] = uri
+// 		resolved = append(resolved, canonicalName)
+// 	}
+// 	c.indexMu.Unlock()
+// 	c.lg.With(
+// 		zap.Int("files", len(resolved)),
+// 	).Debug("files created")
+// 	c.Compile(resolved...)
+
+// 	return nil
+// }
+
+// func (c *Cache) OnFilesRenamed(f []protocol.FileRename) error {
+// 	c.lg.With(
+// 		zap.Any("files", f),
+// 	).Debug("files renamed")
+
+// 	c.indexMu.Lock()
+// 	defer c.indexMu.Unlock()
+
+// 	paths := make([]string, len(f))
+// 	for _, file := range f {
+// 		oldURI := span.URIFromURI(file.OldURI)
+// 		newURI := span.URIFromURI(file.NewURI)
+// 		path := c.filePathsByURI[oldURI]
+// 		delete(c.filePathsByURI, oldURI)
+// 		c.filePathsByURI[newURI] = path
+// 		c.fileURIsByPath[path] = newURI
+// 		paths = append(paths, path)
+// 	}
+
+// 	c.Compile(paths...)
+// 	return nil
+// }
+
+func (c *Cache) DidModifyFiles(ctx context.Context, modifications []source.FileModification) error {
+	c.resolver.UpdateURIPathMappings(modifications)
+
+	var toRecompile []string
+	for _, m := range modifications {
+		path, err := c.resolver.URIToPath(m.URI)
 		if err != nil {
 			c.lg.With(
-				zap.String("filename", filename),
 				zap.Error(err),
-			).Debug("failed to lookup go module")
+				zap.String("uri", m.URI.Filename()),
+			).Error("failed to resolve uri to path")
 			continue
 		}
-		canonicalName := filepath.Join(goPkg, filepath.Base(filename))
-		c.filePathsByURI[uri] = canonicalName
-		c.fileURIsByPath[canonicalName] = uri
-		resolved = append(resolved, canonicalName)
+		switch m.Action {
+		case source.Open:
+		case source.Close:
+		case source.Save:
+			toRecompile = append(toRecompile, path)
+		case source.Change:
+			toRecompile = append(toRecompile, path)
+		case source.Create:
+			toRecompile = append(toRecompile, path)
+		case source.Delete:
+			toRecompile = append(toRecompile, path)
+		}
 	}
-	c.indexMu.Unlock()
-	c.lg.With(
-		zap.Int("files", len(resolved)),
-	).Debug("files created")
-	c.Compile(resolved...)
-
-	return nil
-}
-
-func (c *Cache) OnFilesRenamed(f []protocol.FileRename) error {
-	c.lg.With(
-		zap.Any("files", f),
-	).Debug("files renamed")
-
-	c.indexMu.Lock()
-	defer c.indexMu.Unlock()
-
-	paths := make([]string, len(f))
-	for _, file := range f {
-		oldURI := span.URIFromURI(file.OldURI)
-		newURI := span.URIFromURI(file.NewURI)
-		path := c.filePathsByURI[oldURI]
-		delete(c.filePathsByURI, oldURI)
-		c.filePathsByURI[newURI] = path
-		c.fileURIsByPath[path] = newURI
-		paths = append(paths, path)
+	if err := c.compiler.fs.UpdateOverlays(ctx, modifications); err != nil {
+		return err
 	}
-
-	c.Compile(paths...)
+	c.Compile(toRecompile...)
 	return nil
 }
 
-func (s *Cache) OnFileSaved(f *protocol.DidSaveTextDocumentParams) error {
-	s.lg.With(
-		zap.String("file", string(f.TextDocument.URI)),
-	).Debug("file modified")
-	s.compiler.overlay.ReloadFromDisk(f.TextDocument.URI.SpanURI(), s.filePathsByURI[f.TextDocument.URI.SpanURI()])
-	s.Compile(s.filePathsByURI[f.TextDocument.URI.SpanURI()])
-	return nil
-}
+// func (s *Cache) OnFileSaved(f *protocol.DidSaveTextDocumentParams) error {
+// 	s.lg.With(
+// 		zap.String("file", string(f.TextDocument.URI)),
+// 	).Debug("file modified")
+// 	s.compiler.overlay.ReloadFromDisk(f.TextDocument.URI.SpanURI())
+// 	s.Compile(s.filePathsByURI[f.TextDocument.URI.SpanURI()])
+// 	return nil
+// }
 
 func (c *Cache) ComputeSemanticTokens(doc protocol.TextDocumentIdentifier) ([]uint32, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
 	result, err := semanticTokensFull(c, doc)
 	if err != nil {
 		return nil, err
@@ -614,6 +504,8 @@ func (c *Cache) ComputeSemanticTokens(doc protocol.TextDocumentIdentifier) ([]ui
 }
 
 func (c *Cache) ComputeSemanticTokensRange(doc protocol.TextDocumentIdentifier, rng protocol.Range) ([]uint32, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
 	result, err := semanticTokensRange(c, doc, rng)
 	if err != nil {
 		return nil, err
@@ -621,18 +513,22 @@ func (c *Cache) ComputeSemanticTokensRange(doc protocol.TextDocumentIdentifier, 
 	return result.Data, nil
 }
 
-func (c *Cache) getMapper(uri span.URI) (*protocol.Mapper, error) {
-	return c.compiler.overlay.Get(c.filePathsByURI[uri])
-}
-
 func (c *Cache) ComputeDiagnosticReports(uri span.URI, prevResultId string) ([]protocol.Diagnostic, protocol.DocumentDiagnosticReportKind, string, error) {
-	c.resultsMu.Lock()
-	defer c.resultsMu.Unlock()
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
 	var maybePrevResultId []string
 	if prevResultId != "" {
 		maybePrevResultId = append(maybePrevResultId, prevResultId)
 	}
-	rawReports, resultId, unchanged := c.diagHandler.GetDiagnosticsForPath(c.filePathsByURI[uri], maybePrevResultId...)
+	path, err := c.resolver.URIToPath(uri)
+	if err != nil {
+		c.lg.With(
+			zap.Error(err),
+			zap.String("uri", uri.Filename()),
+		).Error("failed to resolve uri to path")
+		return nil, protocol.DiagnosticUnchanged, "", nil
+	}
+	rawReports, resultId, unchanged := c.diagHandler.GetDiagnosticsForPath(path, maybePrevResultId...)
 	if unchanged {
 		return nil, protocol.DiagnosticUnchanged, resultId, nil
 	}
@@ -658,11 +554,13 @@ func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.
 type workspaceDiagnosticCallbackFunc = func(uri span.URI, reports []protocol.Diagnostic, kind protocol.DocumentDiagnosticReportKind, resultId string)
 
 func (c *Cache) ComputeWorkspaceDiagnosticReports(ctx context.Context, previousResultIds []protocol.PreviousResultID, callback workspaceDiagnosticCallbackFunc) bool {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
 	var prevResultMapByPath map[string]string
 	return c.diagHandler.MaybeRange(func() {
 		prevResultMapByPath = make(map[string]string, len(previousResultIds))
 		for _, prevResult := range previousResultIds {
-			if p, err := c.URIToPath(prevResult.URI.SpanURI()); err == nil {
+			if p, err := c.resolver.URIToPath(prevResult.URI.SpanURI()); err == nil {
 				prevResultMapByPath[p] = prevResult.Value
 			}
 		}
@@ -672,7 +570,7 @@ func (c *Cache) ComputeWorkspaceDiagnosticReports(ctx context.Context, previousR
 		if ok {
 			maybePrevResultId = append(maybePrevResultId, prevResultId)
 		}
-		uri, err := c.PathToURI(s)
+		uri, err := c.resolver.PathToURI(s)
 		if err != nil {
 			return true // ???
 		}
@@ -709,7 +607,7 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 
 	for _, imp := range imports {
 		path := imp.Name.AsString()
-		if uri, ok := c.fileURIsByPath[path]; ok {
+		if uri, err := c.resolver.PathToURI(path); err == nil {
 			nameInfo := resAst.NodeInfo(imp.Name)
 			links = append(links, protocol.DocumentLink{
 				Range:  toRange(nameInfo),
@@ -722,6 +620,8 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 }
 
 func (c *Cache) ComputeInlayHints(doc protocol.TextDocumentIdentifier, rng protocol.Range) ([]protocol.InlayHint, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
 	hints := []protocol.InlayHint{}
 	hints = append(hints, c.computeMessageLiteralHints(doc, rng)...)
 	return hints, nil
@@ -776,7 +676,7 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 		return nil
 	}
 	fdp := res.FileDescriptorProto()
-	mapper, err := c.getMapper(doc.URI.SpanURI())
+	mapper, err := c.GetMapper(doc.URI.SpanURI())
 	if err != nil {
 		return nil
 	}
@@ -951,6 +851,9 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 }
 
 func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]protocol.DocumentSymbol, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+
 	f, err := c.FindResultByURI(doc.URI.SpanURI())
 	if err != nil {
 		return nil, err
@@ -1177,11 +1080,8 @@ func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options prot
 	// 	Indent:             "  ", // todo: tabs break semantic tokens
 	// 	Compact:            protoprint.CompactDefault,
 	// }
-	path, err := c.URIToPath(doc.URI.SpanURI())
-	if err != nil {
-		return nil, err
-	}
-	mapper, err := c.compiler.overlay.Get(path)
+
+	mapper, err := c.GetMapper(doc.URI.SpanURI())
 	if err != nil {
 		return nil, err
 	}
@@ -1288,7 +1188,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	if err != nil {
 		return nil, err
 	}
-	mapper, err := c.getMapper(doc.URI.SpanURI())
+	mapper, err := c.GetMapper(doc.URI.SpanURI())
 	if err != nil {
 		return nil, err
 	}
@@ -1379,6 +1279,7 @@ func FastLookupGoModule(filename string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer f.Close()
 	scan := bufio.NewScanner(f)
 	for scan.Scan() {
 		line := scan.Text()

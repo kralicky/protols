@@ -108,7 +108,7 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "[diagnostic] error: %s\n", err.Error())
+	fmt.Fprintf(os.Stderr, "[diagnostic] warning: %s\n", err.Error())
 
 	pos := err.GetPosition()
 	filename := pos.Start().Filename
@@ -132,10 +132,10 @@ func (dr *DiagnosticHandler) GetDiagnosticsForPath(path string, prevResultId ...
 	if !ok {
 		return []*ProtoDiagnostic{}, "", false
 	}
-	return dl.Get(prevResultId...)
+	res, resultId, unchanged := dl.Get(prevResultId...)
 
-	// fmt.Printf("[diagnostic] querying diagnostics for %s: (%d results)\n", path, len(res))
-	// return res, ok
+	fmt.Printf("[diagnostic] querying diagnostics for %s: (%d results)\n", path, len(res))
+	return res, resultId, unchanged
 }
 
 func (dr *DiagnosticHandler) ClearDiagnosticsForPath(path string) {
@@ -143,10 +143,9 @@ func (dr *DiagnosticHandler) ClearDiagnosticsForPath(path string) {
 	if !ok {
 		return
 	}
-	dl.Clear()
+	prev := dl.Clear()
 
-	// fmt.Printf("[diagnostic] clearing %d diagnostics for %s\n", len(dr.diagnostics[path]), path)
-
+	fmt.Printf("[diagnostic] clearing %d diagnostics for %s\n", len(prev), path)
 }
 
 func (dr *DiagnosticHandler) MaybeRange(setup func(), fn func(string, *DiagnosticList) bool) bool {

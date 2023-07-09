@@ -1,0 +1,42 @@
+// A launch configuration that compiles the extension and then opens it inside a new window
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "extensionHost",
+			"request": "launch",
+			"name": "Launch Extension Host",
+			"runtimeExecutable": "${execPath}",
+			"args": [
+				"--extensionDevelopmentPath=${workspaceFolder}/editors/vscode"
+			],
+			"outFiles": [
+				"${workspaceFolder}/editors/vscode/client/out/**/*.js"
+			],
+			"preLaunchTask": {
+				"type": "npm",
+				"script": "watch",
+				"path": "editors/vscode"
+			}
+		},
+		{
+			"name": "Attach to Process",
+			"type": "go",
+			"request": "attach",
+			"mode": "local",
+			"processId": "protols",
+		},
+	],
+	"inputs": [
+		{
+			"id": "findProcess",
+			"type": "command",
+			"command": "shellCommand.execute",
+			"args": {
+				"command": "pgrep -f /home/joe/ragu/protols",
+				"description": "Select PID to attach to",
+				"useFirstResult": true,
+			}
+		}
+	]
+}

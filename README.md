@@ -7,15 +7,21 @@ A language server implementation for Protocol Buffers. Still in development.
 Features in progress:
 - [x] Semantic token syntax highlighting
 - [x] Code formatting in the style of gofmt
-- [x] Detailed workspace diagnostics
 - [x] Import resolution
   - [x] Filesystem
   - [x] Go module path lookup with inline sources
   - [x] Go module path lookup with missing proto sources synthesized from generated code
 - [ ] LSP features:
+  - [x] Document and workspace diagnostics
+  - [x] Import links
   - [x] Go-to-definition
   - [ ] Find references
+  - [ ] Find references to generated code
   - [x] Hover
+  - [ ] Document and workspace symbols
+  - [ ] Code Actions
+  - [ ] Code Lens
+  - [ ] Rename symbols
 - Code completion:
   - [x] Message and enum types (with automatic import management)
   - [ ] Import paths 

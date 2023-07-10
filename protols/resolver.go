@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -26,6 +28,8 @@ type Resolver struct {
 	pathsMu        sync.RWMutex
 	filePathsByURI map[span.URI]string // URI -> canonical file path (go package + file name)
 	fileURIsByPath map[string]span.URI // canonical file path (go package + file name) -> URI
+
+	syntheticFiles map[span.URI]string
 }
 
 func NewResolver(workdir string, lg *zap.Logger) *Resolver {
@@ -35,6 +39,7 @@ func NewResolver(workdir string, lg *zap.Logger) *Resolver {
 		synthesizer:    NewProtoSourceSynthesizer(workdir),
 		filePathsByURI: make(map[span.URI]string),
 		fileURIsByPath: make(map[string]span.URI),
+		syntheticFiles: make(map[span.URI]string),
 	}
 }
 
@@ -63,6 +68,16 @@ func (r *Resolver) URIToPath(uri span.URI) (string, error) {
 		return "", fmt.Errorf("%w: URI %q", os.ErrNotExist, uri)
 	}
 	return path, nil
+}
+
+func (r *Resolver) SyntheticFileContents(uri span.URI) (string, error) {
+	r.pathsMu.RLock()
+	defer r.pathsMu.RUnlock()
+	contents, ok := r.syntheticFiles[uri]
+	if !ok {
+		return "", fmt.Errorf("%w: URI %q", os.ErrNotExist, uri)
+	}
+	return contents, nil
 }
 
 func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification) {
@@ -206,6 +221,13 @@ func (r *Resolver) checkGoModule(path string) (protocompile.SearchResult, error)
 	}
 	if dir != "" {
 		if synthesized, err := r.synthesizer.SynthesizeFromGoSource(path, dir); err == nil {
+			syntheticURI := url.URL{
+				Scheme: "proto",
+				Path:   path,
+			}
+			uri := span.URI(syntheticURI.String())
+			r.filePathsByURI[uri] = path
+			r.fileURIsByPath[path] = uri
 			return protocompile.SearchResult{
 				Proto: synthesized,
 			}, nil
@@ -221,7 +243,32 @@ func (r *Resolver) checkGlobalCache(path string) (protocompile.SearchResult, err
 	if err != nil {
 		return protocompile.SearchResult{}, err
 	}
-	return protocompile.SearchResult{Desc: fd.UnwrapFile()}, nil
+	syntheticURI := url.URL{
+		Scheme: "proto",
+		Path:   path,
+	}
+	uri := span.URI(syntheticURI.String())
+	r.filePathsByURI[uri] = path
+	r.fileURIsByPath[path] = uri
+	src, err := printDescriptor(fd.UnwrapFile())
+	if err != nil {
+		return protocompile.SearchResult{Desc: fd.UnwrapFile()}, nil
+	}
+	r.syntheticFiles[uri] = src
+	return protocompile.SearchResult{
+		Source: strings.NewReader(src),
+	}, nil
+}
+
+func (r *Resolver) SyntheticFiles() []span.URI {
+	var uris []span.URI
+	for uri := range r.syntheticFiles {
+		uris = append(uris, uri)
+	}
+	sort.Slice(uris, func(i, j int) bool {
+		return string(uris[i]) < string(uris[j])
+	})
+	return uris
 }
 
 // type Overlay struct {

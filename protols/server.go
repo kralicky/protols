@@ -226,7 +226,7 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 
 // Hover implements protocol.Server.
 func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (result *protocol.Hover, err error) {
-	// return s.c.ComputeHover(params.TextDocumentPositionParams)
+	return s.c.ComputeHover(params.TextDocumentPositionParams)
 
 	// todo: this implementation kinda sucks
 	s.lg.Debug("Hover Request", zap.String("uri", string(params.TextDocument.URI)), zap.Int("line", int(params.Position.Line)), zap.Int("col", int(params.Position.Character)))
@@ -670,8 +670,13 @@ func (*Server) Moniker(context.Context, *protocol.MonikerParams) ([]protocol.Mon
 }
 
 // NonstandardRequest implements protocol.Server.
-func (*Server) NonstandardRequest(ctx context.Context, method string, params interface{}) (interface{}, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+func (s *Server) NonstandardRequest(ctx context.Context, method string, params interface{}) (interface{}, error) {
+	switch method {
+	case "protols/synthetic-file-contents":
+		return s.c.GetSyntheticFileContents(ctx, params.([]any)[0].(string))
+	default:
+		return nil, jsonrpc2.ErrMethodNotFound
+	}
 }
 
 // OnTypeFormatting implements protocol.Server.

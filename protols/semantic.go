@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"sort"
 
 	"github.com/bufbuild/protocompile/ast"
@@ -55,6 +56,9 @@ type semItem struct {
 	len         uint32
 	typ         tokenType
 	mods        tokenModifier
+
+	// An AST node associated with this token. Used for hover, definitions, etc.
+	node ast.Node
 }
 
 type encoded struct {
@@ -68,23 +72,31 @@ type encoded struct {
 }
 
 func semanticTokensFull(cache *Cache, doc protocol.TextDocumentIdentifier) (*protocol.SemanticTokens, error) {
-	ret, err := computeSemanticTokens(cache, doc, nil)
+	enc, err := computeSemanticTokens(cache, doc, nil)
+	if err != nil {
+		return nil, err
+	}
+	ret := &protocol.SemanticTokens{
+		Data: enc.Data(),
+	}
 	return ret, err
 }
 
 func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng protocol.Range) (*protocol.SemanticTokens, error) {
-	ret, err := computeSemanticTokens(cache, doc, &rng)
-	return ret, err
-}
-
-func computeSemanticTokens(cache *Cache, td protocol.TextDocumentIdentifier, rng *protocol.Range) (*protocol.SemanticTokens, error) {
-	file, err := cache.FindParseResultByURI(td.URI.SpanURI())
+	enc, err := computeSemanticTokens(cache, doc, &rng)
 	if err != nil {
 		return nil, err
 	}
+	ret := &protocol.SemanticTokens{
+		Data: enc.Data(),
+	}
+	return ret, err
+}
 
-	ans := protocol.SemanticTokens{
-		Data: []uint32{},
+func computeSemanticTokens(cache *Cache, td protocol.TextDocumentIdentifier, rng *protocol.Range) (*encoded, error) {
+	file, err := cache.FindParseResultByURI(td.URI.SpanURI())
+	if err != nil {
+		return nil, err
 	}
 
 	mapper, err := cache.GetMapper(td.URI.SpanURI())
@@ -110,11 +122,13 @@ func computeSemanticTokens(cache *Cache, td protocol.TextDocumentIdentifier, rng
 		end:    endToken,
 	}
 	if a.Syntax != nil {
-		e.mkcomments(a.Syntax)
-		e.mktokens(a.Syntax.Keyword, semanticTypeKeyword, 0)
-		e.mktokens(a.Syntax.Equals, semanticTypeOperator, 0)
-		e.mktokens(a.Syntax.Syntax, semanticTypeString, 0)
-
+		start, end := a.Syntax.Start(), a.Syntax.End()
+		if end >= e.start && start <= e.end {
+			e.mkcomments(a.Syntax)
+			e.mktokens(a.Syntax.Keyword, semanticTypeKeyword, 0)
+			e.mktokens(a.Syntax.Equals, semanticTypeOperator, 0)
+			e.mktokens(a.Syntax.Syntax, semanticTypeString, 0)
+		}
 	}
 	for _, node := range a.Decls {
 		// only look at the decls that overlap the range
@@ -124,10 +138,34 @@ func computeSemanticTokens(cache *Cache, td protocol.TextDocumentIdentifier, rng
 		}
 		e.inspect(node)
 	}
-	e.mkcomments(a.EOF)
+	if endToken == a.End() {
+		e.mkcomments(a.EOF)
+	}
 
-	ans.Data = e.Data()
-	return &ans, nil
+	return e, nil
+}
+
+func findNarrowestSemanticToken(tokens []semItem, pos protocol.Position) (narrowest semItem, found bool) {
+	// find the narrowest token that contains the position and also has a node
+	// associated with it. The set of tokens will contain all the tokens that
+	// contain the position, scoped to the narrowest top-level declaration (message, service, etc.)
+	narrowestLen := uint32(math.MaxUint32)
+
+	for _, token := range tokens {
+		if pos.Line != token.line {
+			continue // Skip tokens not on the same line
+		}
+		if pos.Character < token.start || pos.Character > token.start+token.len {
+			continue // Skip tokens that don't contain the position
+		}
+		if token.len < narrowestLen {
+			// Found a narrower token, update narrowest and narrowestLen
+			narrowest, narrowestLen = token, token.len
+			found = true
+		}
+	}
+
+	return
 }
 
 func (s *encoded) mktokens(node ast.Node, tt tokenType, mods tokenModifier) {
@@ -144,6 +182,7 @@ func (s *encoded) mktokens(node ast.Node, tt tokenType, mods tokenModifier) {
 		len:   uint32(length),
 		typ:   tt,
 		mods:  mods,
+		node:  node,
 	}
 	s.items = append(s.items, nodeTk)
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"runtime"
@@ -34,6 +35,7 @@ import (
 	"golang.org/x/tools/pkg/jsonrpc2"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
@@ -211,6 +213,13 @@ func NewCache(workdir string, lg *zap.Logger) *Cache {
 }
 
 func (r *Cache) GetMapper(uri span.URI) (*protocol.Mapper, error) {
+	if !uri.IsFile() {
+		data, err := r.resolver.SyntheticFileContents(uri)
+		if err != nil {
+			return nil, err
+		}
+		return protocol.NewMapper(uri, []byte(data)), nil
+	}
 	fh, err := r.resolver.ReadFile(context.TODO(), uri)
 	if err != nil {
 		return nil, err
@@ -307,6 +316,11 @@ func (c *Cache) Reindex() {
 	if err := c.DidModifyFiles(context.TODO(), created); err != nil {
 		c.lg.Error("failed to index files", zap.Error(err))
 	}
+	c.resultsMu.Lock()
+	defer c.resultsMu.Unlock()
+	implicit := c.compiler.GetImplicitResults()
+	c.lg.Debug("indexing implicit results", zap.Int("results", len(implicit)))
+	c.results = append(c.results, implicit...)
 }
 
 func (c *Cache) Compile(protos ...string) {
@@ -524,7 +538,7 @@ func (c *Cache) ComputeDiagnosticReports(uri span.URI, prevResultId string) ([]p
 	if err != nil {
 		c.lg.With(
 			zap.Error(err),
-			zap.String("uri", uri.Filename()),
+			zap.String("uri", string(uri)),
 		).Error("failed to resolve uri to path")
 		return nil, protocol.DiagnosticUnchanged, "", nil
 	}
@@ -607,11 +621,11 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 
 	for _, imp := range imports {
 		path := imp.Name.AsString()
+		nameInfo := resAst.NodeInfo(imp.Name)
 		if uri, err := c.resolver.PathToURI(path); err == nil {
-			nameInfo := resAst.NodeInfo(imp.Name)
 			links = append(links, protocol.DocumentLink{
 				Range:  toRange(nameInfo),
-				Target: uri.Filename(),
+				Target: string(uri),
 			})
 		}
 	}
@@ -1000,8 +1014,108 @@ func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]p
 	return symbols, nil
 }
 
+func (c *Cache) GetSyntheticFileContents(ctx context.Context, uri string) (string, error) {
+	if !strings.HasPrefix(uri, "proto://") {
+		return "", fmt.Errorf("not a synthetic file: %s", uri)
+	}
+	name := strings.TrimPrefix(uri, "proto://")
+	fh, err := c.resolver.FindFileByPath(name)
+	if err != nil {
+		return "", err
+	}
+
+	switch {
+	case fh.Source != nil:
+		b, err := io.ReadAll(fh.Source)
+		return string(b), err
+	case fh.Desc != nil:
+		return printDescriptor(fh.Desc)
+
+	case fh.Proto != nil:
+		f, err := protodesc.NewFile(fh.Proto, c.results.AsResolver())
+		if err != nil {
+			return "", err
+		}
+		return printDescriptor(f)
+	default:
+		return "", fmt.Errorf("unimplemented synthetic file type for %s", uri)
+	}
+}
+
 func (c *Cache) ComputeHover(params protocol.TextDocumentPositionParams) (*protocol.Hover, error) {
-	panic("not implemented")
+	enc, err := computeSemanticTokens(c, params.TextDocument, &protocol.Range{
+		Start: params.Position,
+		End:   params.Position,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	item, found := findNarrowestSemanticToken(enc.items, params.Position)
+	if !found {
+		return nil, nil
+	}
+	parseRes, err := c.FindParseResultByURI(params.TextDocument.URI.SpanURI())
+	if err != nil {
+		return nil, err
+	}
+
+	switch node := item.node.(type) {
+	case ast.IdentValueNode:
+		rng := toRange(parseRes.AST().NodeInfo(node))
+		name := string(node.AsIdentifier())
+		var desc protoreflect.Descriptor
+		var unqualifiedName protoreflect.Name
+		var pkg protoreflect.FullName
+		if strings.Contains(name, ".") {
+			// treat as fully qualified name
+			fn := protoreflect.FullName(name)
+			unqualifiedName = fn.Name()
+			pkg = fn.Parent()
+		} else {
+			unqualifiedName = protoreflect.Name(name)
+			pkg = protoreflect.FullName(parseRes.FileDescriptorProto().GetPackage())
+		}
+		if desc == nil {
+			descs := c.FindAllDescriptorsByPrefix(context.TODO(), string(unqualifiedName), pkg)
+			if len(descs) > 0 {
+				desc = descs[0]
+			}
+		}
+		if desc == nil {
+			return nil, nil
+		}
+		tooltip := makeTooltip(desc)
+		return &protocol.Hover{
+			Contents: tooltip.Value.(protocol.MarkupContent),
+			Range:    rng,
+		}, nil
+	default:
+		return nil, nil
+	}
+
+	// var msg proto.Message
+	// var rng protocol.Range
+	// if res, err := c.FindResultByURI(params.TextDocument.URI.SpanURI()); err != nil {
+
+	// } else {
+	// 	msg = res.Descriptor(item.node)
+	// 	rng = toRange(res.AST().NodeInfo(item.node))
+	// }
+
+	// if msg == nil {
+	// 	return nil, nil
+	// }
+
+	// desc, ok := msg.(protoreflect.Descriptor)
+	// if !ok {
+	// 	return nil, nil
+	// }
+	// tooltip := makeTooltip(desc)
+	// return &protocol.Hover{
+	// 	Contents: tooltip.Value.(protocol.MarkupContent),
+	// 	Range:    rng,
+	// }, nil
 }
 
 func buildMessageLiteralHints(lit *ast.MessageLiteralNode, msg protoreflect.MessageDescriptor, a *ast.FileNode) []protocol.InlayHint {
@@ -1052,10 +1166,10 @@ func buildMessageLiteralHints(lit *ast.MessageLiteralNode, msg protoreflect.Mess
 	return hints
 }
 
-func makeTooltip(d protoreflect.Descriptor) *protocol.OrPTooltipPLabel {
+func printDescriptor(d protoreflect.Descriptor) (string, error) {
 	wrap, err := desc.WrapDescriptor(d)
 	if err != nil {
-		return nil
+		return "", err
 	}
 	printer := protoprint.Printer{
 		CustomSortFunction: SortElements,
@@ -1063,6 +1177,14 @@ func makeTooltip(d protoreflect.Descriptor) *protocol.OrPTooltipPLabel {
 		Compact:            protoprint.CompactDefault,
 	}
 	str, err := printer.PrintProtoToString(wrap)
+	if err != nil {
+		return "", err
+	}
+	return str, nil
+}
+
+func makeTooltip(d protoreflect.Descriptor) *protocol.OrPTooltipPLabel {
+	str, err := printDescriptor(d)
 	if err != nil {
 		return nil
 	}

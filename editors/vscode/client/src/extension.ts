@@ -34,7 +34,7 @@ import {
 	SocketTransport,
 } from 'vscode-languageclient/node';
 
-export class RaguLanguageClient extends LanguageClient {
+export class RaguLanguageClient extends LanguageClient implements vscode.TextDocumentContentProvider  {
 	constructor(
 		id: string,
 		name: string,
@@ -43,6 +43,13 @@ export class RaguLanguageClient extends LanguageClient {
 	) {
 		super(id, name, serverOptions, clientOptions);
 	}
+	onDidChange?: vscode.Event<vscode.Uri>;
+
+	provideTextDocumentContent(uri: vscode.Uri, token: vscode.CancellationToken): vscode.ProviderResult<string> {
+		return this.sendRequest('protols/synthetic-file-contents', uri.toString()).then((result: string) => {
+			return result;
+		});
+	}
 }
 
 export function buildLanguageClient(
@@ -50,6 +57,7 @@ export function buildLanguageClient(
 ): RaguLanguageClient {
 	const documentSelector = [
 		{ language: 'protobuf', scheme: 'file' },
+		{ language: 'protobuf', scheme: 'proto' }
 	];
 
 	const c = new RaguLanguageClient(
@@ -75,6 +83,7 @@ let client: LanguageClient;
 
 export function activate(context: ExtensionContext) {
 	const client = buildLanguageClient(context);
+	workspace.registerTextDocumentContentProvider('proto', client);
 	// Start the client. This will also launch the server
 	client.start();
 }

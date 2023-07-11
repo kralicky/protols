@@ -15,7 +15,7 @@ Features in progress:
   - [x] Document and workspace diagnostics
   - [x] Import links
   - [x] Go-to-definition
-  - [ ] Find references
+  - [x] Find references
   - [ ] Find references to generated code
   - [x] Hover
   - [ ] Document and workspace symbols

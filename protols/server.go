@@ -4,19 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 
-	"github.com/bufbuild/protocompile/ast"
-	"github.com/bufbuild/protocompile/protoutil"
-	"github.com/jhump/protoreflect/desc"
-	"github.com/jhump/protoreflect/desc/protoprint"
 	"github.com/samber/lo"
 	"go.uber.org/zap"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/lsp/source"
 	"golang.org/x/tools/gopls/pkg/span"
 	"golang.org/x/tools/pkg/jsonrpc2"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 type Server struct {
@@ -88,17 +82,11 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			CompletionProvider: &protocol.CompletionOptions{
 				TriggerCharacters: []string{"."},
 			},
-
-			// DocumentRangeFormattingProvider: &protocol.Or_ServerCapabilities_documentRangeFormattingProvider{
-			// 	Value: protocol.DocumentRangeFormattingOptions{},
-			// },
 			// DeclarationProvider: &protocol.Or_ServerCapabilities_declarationProvider{Value: true},
 			// TypeDefinitionProvider: true,
-			// ReferencesProvider: true,
+			ReferencesProvider: &protocol.Or_ServerCapabilities_referencesProvider{Value: true},
 			// WorkspaceSymbolProvider: &protocol.Or_ServerCapabilities_workspaceSymbolProvider{Value: true},
-			// CompletionProvider: protocol.CompletionOptions{
-			// 	TriggerCharacters: []string{"."},
-			// },
+
 			DefinitionProvider: &protocol.Or_ServerCapabilities_definitionProvider{Value: true},
 			SemanticTokensProvider: &protocol.SemanticTokensOptions{
 				Legend: protocol.SemanticTokensLegend{
@@ -162,112 +150,22 @@ func (s *Server) CompletionResolve(ctx context.Context, params *protocol.Complet
 
 // Definition implements protocol.Server.
 func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionParams) (result []protocol.Location, err error) {
-	// return nil, jsonrpc2.ErrMethodNotFound
-	s.lg.Debug("Definition Request", zap.String("uri", string(params.TextDocument.URI)), zap.Int("line", int(params.Position.Line)), zap.Int("col", int(params.Position.Character)))
-	desc, _, err := findRelevantDescriptorAtLocation(&params.TextDocumentPositionParams, s.c, s.lg)
+	desc, _, err := s.c.FindTypeDescriptorAtLocation(params.TextDocumentPositionParams)
 	if err != nil {
 		return nil, err
-	}
-	if desc == nil {
+	} else if desc == nil {
 		return nil, nil
 	}
-	parentFile := desc.ParentFile()
-	if parentFile == nil {
-		return nil, errors.New("no parent file found for descriptor")
-	}
-	containingFileResolver, err := s.c.FindResultByPath(parentFile.Path())
-	if err != nil {
-		return nil, fmt.Errorf("failed to find containing file for %q: %w", parentFile.Path(), err)
-	}
-	var node ast.Node
-	switch desc := desc.(type) {
-	case protoreflect.MessageDescriptor:
-		node = containingFileResolver.MessageNode(protoutil.ProtoFromMessageDescriptor(desc))
-	case protoreflect.EnumDescriptor:
-		node = containingFileResolver.EnumNode(protoutil.ProtoFromEnumDescriptor(desc))
-	case protoreflect.ServiceDescriptor:
-		node = containingFileResolver.ServiceNode(protoutil.ProtoFromServiceDescriptor(desc))
-	case protoreflect.MethodDescriptor:
-		node = containingFileResolver.MethodNode(protoutil.ProtoFromMethodDescriptor(desc))
-	case protoreflect.FieldDescriptor:
-		node = containingFileResolver.FieldNode(protoutil.ProtoFromFieldDescriptor(desc))
-	case protoreflect.EnumValueDescriptor:
-		node = containingFileResolver.EnumValueNode(protoutil.ProtoFromEnumValueDescriptor(desc))
-	case protoreflect.OneofDescriptor:
-		node = containingFileResolver.OneofNode(protoutil.ProtoFromOneofDescriptor(desc))
-	case protoreflect.FileDescriptor:
-		node = containingFileResolver.FileNode()
-		s.lg.Debug("definition is an import: ", zap.String("import", containingFileResolver.Path()))
-	default:
-		return nil, fmt.Errorf("unexpected descriptor type %T", desc)
-	}
-
-	info := containingFileResolver.AST().NodeInfo(node)
-	uri, err := s.c.resolver.PathToURI(containingFileResolver.Path()) // todo: make PathToURI available in cache as well?
+	loc, err := s.c.FindDefinitionForTypeDescriptor(desc)
 	if err != nil {
 		return nil, err
 	}
-	return []protocol.Location{
-		{
-			URI: protocol.URIFromSpanURI(uri),
-			Range: protocol.Range{
-				Start: protocol.Position{
-					Line:      uint32(info.Start().Line - 1),
-					Character: uint32(info.Start().Col - 1),
-				},
-				End: protocol.Position{
-					Line:      uint32(info.End().Line - 1),
-					Character: uint32(info.End().Col - 1),
-				},
-			},
-		},
-	}, nil
+	return loc, nil
 }
 
 // Hover implements protocol.Server.
 func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (result *protocol.Hover, err error) {
 	return s.c.ComputeHover(params.TextDocumentPositionParams)
-
-	// todo: this implementation kinda sucks
-	s.lg.Debug("Hover Request", zap.String("uri", string(params.TextDocument.URI)), zap.Int("line", int(params.Position.Line)), zap.Int("col", int(params.Position.Character)))
-	d, rng, err := findRelevantDescriptorAtLocation(&params.TextDocumentPositionParams, s.c, s.lg)
-	if err != nil {
-		return nil, err
-	}
-
-	// special case: hovers for file imports
-	if fd, ok := d.(protoreflect.FileImport); ok {
-		return &protocol.Hover{
-			Range: rng,
-			Contents: protocol.MarkupContent{
-				Kind:  protocol.Markdown,
-				Value: fmt.Sprintf("```protobuf\nimport %q;\n```", fd.Path()),
-			},
-		}, nil
-	}
-
-	wrap, err := desc.WrapDescriptor(d)
-	if err != nil {
-		return nil, err
-	}
-	printer := protoprint.Printer{
-		SortElements:       true,
-		CustomSortFunction: SortElements,
-		Indent:             "  ",
-		Compact:            protoprint.CompactDefault,
-	}
-	str, err := printer.PrintProtoToString(wrap)
-	if err != nil {
-		return nil, err
-	}
-
-	return &protocol.Hover{
-		Range: rng,
-		Contents: protocol.MarkupContent{
-			Kind:  protocol.Markdown,
-			Value: fmt.Sprintf("```protobuf\n%s\n```", str),
-		},
-	}, nil
 }
 
 // DidOpen implements protocol.Server.
@@ -328,9 +226,10 @@ func (s *Server) DidCreateFiles(ctx context.Context, params *protocol.CreateFile
 	for _, f := range params.Files {
 		uri := f.URI
 		modifications = append(modifications, source.FileModification{
-			URI:    span.URIFromURI(uri),
-			Action: source.Create,
-			OnDisk: true,
+			URI:     span.URIFromURI(uri),
+			Action:  source.Create,
+			OnDisk:  true,
+			Version: -1,
 		})
 	}
 	return s.c.DidModifyFiles(ctx, modifications)
@@ -342,9 +241,9 @@ func (s *Server) DidDeleteFiles(ctx context.Context, params *protocol.DeleteFile
 	for _, f := range params.Files {
 		uri := f.URI
 		modifications = append(modifications, source.FileModification{
-			URI:    span.URIFromURI(uri),
-			Action: source.Delete,
-			OnDisk: true,
+			URI:     span.URIFromURI(uri),
+			Action:  source.Delete,
+			Version: -1,
 		})
 	}
 	return s.c.DidModifyFiles(ctx, modifications)
@@ -356,14 +255,16 @@ func (s *Server) DidRenameFiles(ctx context.Context, params *protocol.RenameFile
 	for _, f := range params.Files {
 		modifications = append(modifications,
 			source.FileModification{
-				URI:    span.URIFromURI(f.OldURI),
-				Action: source.Delete,
-				OnDisk: true,
+				URI:     span.URIFromURI(f.OldURI),
+				Action:  source.Delete,
+				OnDisk:  true,
+				Version: -1,
 			},
 			source.FileModification{
-				URI:    span.URIFromURI(f.NewURI),
-				Action: source.Create,
-				OnDisk: true,
+				URI:     span.URIFromURI(f.NewURI),
+				Action:  source.Create,
+				OnDisk:  true,
+				Version: -1,
 			},
 		)
 	}
@@ -716,8 +617,8 @@ func (s *Server) RangeFormatting(ctx context.Context, params *protocol.DocumentR
 }
 
 // References implements protocol.Server.
-func (*Server) References(context.Context, *protocol.ReferenceParams) ([]protocol.Location, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+func (s *Server) References(ctx context.Context, params *protocol.ReferenceParams) ([]protocol.Location, error) {
+	return s.c.FindReferences(ctx, params.TextDocumentPositionParams, params.Context)
 }
 
 // Rename implements protocol.Server.

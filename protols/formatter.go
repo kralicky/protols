@@ -619,6 +619,9 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 			if fieldInfo.Start().Line == prevFieldInfo.Start().Line+1 {
 				currentGroup = append(currentGroup, e)
 				continue
+			} else {
+				startNewGroup()
+				currentGroup = append(currentGroup, e)
 			}
 		} else {
 			startNewGroup()
@@ -626,9 +629,7 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 			startNewGroup()
 		}
 	}
-	if len(currentGroup) > 0 {
-		groups = append(groups, currentGroup)
-	}
+	startNewGroup()
 
 	type segmentedField struct {
 		contextBytesStart []byte

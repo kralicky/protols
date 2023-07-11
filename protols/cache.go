@@ -20,8 +20,8 @@ import (
 	"github.com/bufbuild/protocompile/ast"
 	"github.com/bufbuild/protocompile/linker"
 	"github.com/bufbuild/protocompile/parser"
+	"github.com/bufbuild/protocompile/protoutil"
 	"github.com/bufbuild/protocompile/reporter"
-	"github.com/bufbuild/protocompile/walk"
 	"github.com/jhump/protoreflect/desc"
 	"github.com/jhump/protoreflect/desc/protoprint"
 	gsync "github.com/kralicky/gpkg/sync"
@@ -1042,22 +1042,22 @@ func (c *Cache) GetSyntheticFileContents(ctx context.Context, uri string) (strin
 	}
 }
 
-func (c *Cache) ComputeHover(params protocol.TextDocumentPositionParams) (*protocol.Hover, error) {
+func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositionParams) (protoreflect.Descriptor, protocol.Range, error) {
 	enc, err := computeSemanticTokens(c, params.TextDocument, &protocol.Range{
 		Start: params.Position,
 		End:   params.Position,
 	})
 	if err != nil {
-		return nil, err
+		return nil, protocol.Range{}, err
 	}
 
 	item, found := findNarrowestSemanticToken(enc.items, params.Position)
 	if !found {
-		return nil, nil
+		return nil, protocol.Range{}, nil
 	}
 	parseRes, err := c.FindParseResultByURI(params.TextDocument.URI.SpanURI())
 	if err != nil {
-		return nil, err
+		return nil, protocol.Range{}, err
 	}
 
 	switch node := item.node.(type) {
@@ -1083,39 +1083,136 @@ func (c *Cache) ComputeHover(params protocol.TextDocumentPositionParams) (*proto
 			}
 		}
 		if desc == nil {
-			return nil, nil
+			return nil, protocol.Range{}, nil
 		}
-		tooltip := makeTooltip(desc)
-		return &protocol.Hover{
-			Contents: tooltip.Value.(protocol.MarkupContent),
-			Range:    rng,
-		}, nil
+		return desc, rng, nil
 	default:
+		return nil, protocol.Range{}, nil
+	}
+}
+
+func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([]protocol.Location, error) {
+	parentFile := desc.ParentFile()
+	if parentFile == nil {
+		return nil, errors.New("no parent file found for descriptor")
+	}
+	containingFileResolver, err := c.FindResultByPath(parentFile.Path())
+	if err != nil {
+		return nil, fmt.Errorf("failed to find containing file for %q: %w", parentFile.Path(), err)
+	}
+	var node ast.Node
+	switch desc := desc.(type) {
+	case protoreflect.MessageDescriptor:
+		node = containingFileResolver.MessageNode(protoutil.ProtoFromMessageDescriptor(desc))
+	case protoreflect.EnumDescriptor:
+		node = containingFileResolver.EnumNode(protoutil.ProtoFromEnumDescriptor(desc))
+	case protoreflect.ServiceDescriptor:
+		node = containingFileResolver.ServiceNode(protoutil.ProtoFromServiceDescriptor(desc))
+	case protoreflect.MethodDescriptor:
+		node = containingFileResolver.MethodNode(protoutil.ProtoFromMethodDescriptor(desc))
+	case protoreflect.FieldDescriptor:
+		node = containingFileResolver.FieldNode(protoutil.ProtoFromFieldDescriptor(desc))
+	case protoreflect.EnumValueDescriptor:
+		node = containingFileResolver.EnumValueNode(protoutil.ProtoFromEnumValueDescriptor(desc))
+	case protoreflect.OneofDescriptor:
+		node = containingFileResolver.OneofNode(protoutil.ProtoFromOneofDescriptor(desc))
+	case protoreflect.FileDescriptor:
+		node = containingFileResolver.FileNode()
+		c.lg.Debug("definition is an import: ", zap.String("import", containingFileResolver.Path()))
+	default:
+		return nil, fmt.Errorf("unexpected descriptor type %T", desc)
+	}
+
+	info := containingFileResolver.AST().NodeInfo(node)
+	uri, err := c.resolver.PathToURI(containingFileResolver.Path())
+	if err != nil {
+		return nil, err
+	}
+	return []protocol.Location{
+		{
+			URI:   protocol.URIFromSpanURI(uri),
+			Range: toRange(info),
+		},
+	}, nil
+}
+
+func (c *Cache) FindReferencesForTypeDescriptor(desc protoreflect.Descriptor) ([]protocol.Location, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+
+	var wg sync.WaitGroup
+	referencePositions := make(chan ast.SourcePosInfo, len(c.results))
+	for _, res := range c.results {
+		res := res
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for _, ref := range res.(linker.Result).FindReferences(desc) {
+				ref := ref
+				referencePositions <- ref
+			}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(referencePositions)
+	}()
+
+	var locations []protocol.Location
+	for posInfo := range referencePositions {
+		filename := posInfo.Start().Filename
+		uri, err := c.resolver.PathToURI(filename)
+		if err != nil {
+			continue
+		}
+		locations = append(locations, protocol.Location{
+			URI:   protocol.URIFromSpanURI(uri),
+			Range: toRange(posInfo),
+		})
+	}
+
+	return locations, nil
+}
+
+func (c *Cache) ComputeHover(params protocol.TextDocumentPositionParams) (*protocol.Hover, error) {
+	desc, rng, err := c.FindTypeDescriptorAtLocation(params)
+	if err != nil {
+		return nil, err
+	}
+	tooltip := makeTooltip(desc)
+	if tooltip == nil {
+		return nil, nil
+	}
+	return &protocol.Hover{
+		Contents: tooltip.Value.(protocol.MarkupContent),
+		Range:    rng,
+	}, nil
+}
+
+func (c *Cache) FindReferences(ctx context.Context, params protocol.TextDocumentPositionParams, refCtx protocol.ReferenceContext) ([]protocol.Location, error) {
+	desc, _, err := c.FindTypeDescriptorAtLocation(params)
+	if err != nil {
+		return nil, err
+	}
+	if desc == nil {
 		return nil, nil
 	}
 
-	// var msg proto.Message
-	// var rng protocol.Range
-	// if res, err := c.FindResultByURI(params.TextDocument.URI.SpanURI()); err != nil {
+	var locations []protocol.Location
 
-	// } else {
-	// 	msg = res.Descriptor(item.node)
-	// 	rng = toRange(res.AST().NodeInfo(item.node))
-	// }
+	if refCtx.IncludeDeclaration {
+		locations, err = c.FindDefinitionForTypeDescriptor(desc)
+		if err != nil {
+			return nil, err
+		}
+	}
 
-	// if msg == nil {
-	// 	return nil, nil
-	// }
-
-	// desc, ok := msg.(protoreflect.Descriptor)
-	// if !ok {
-	// 	return nil, nil
-	// }
-	// tooltip := makeTooltip(desc)
-	// return &protocol.Hover{
-	// 	Contents: tooltip.Value.(protocol.MarkupContent),
-	// 	Range:    rng,
-	// }, nil
+	refs, err := c.FindReferencesForTypeDescriptor(desc)
+	if err != nil {
+		return nil, err
+	}
+	locations = append(locations, refs...)
+	return locations, nil
 }
 
 func buildMessageLiteralHints(lit *ast.MessageLiteralNode, msg protoreflect.MessageDescriptor, a *ast.FileNode) []protocol.InlayHint {
@@ -1259,25 +1356,6 @@ func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options prot
 
 	edits := diff.Bytes(mapper.Content, buf.Bytes())
 	return source.ToProtocolEdits(mapper, edits)
-}
-
-func findDescriptorWithinRangeOffsets(res parser.Result, start, end int) (output protoreflect.Descriptor, err error) {
-	ast := res.AST()
-
-	err = walk.DescriptorProtos(res.FileDescriptorProto(), func(fn protoreflect.FullName, m proto.Message) error {
-		node := res.Node(m)
-		tokenStart := ast.TokenInfo(node.Start())
-		tokenEnd := ast.TokenInfo(node.End())
-		if tokenStart.Start().Offset >= start && tokenEnd.End().Offset <= end {
-			output = res.Descriptor(node).ProtoReflect().Descriptor()
-			return sentinel
-		}
-		return nil
-	})
-	if err == sentinel {
-		err = nil
-	}
-	return
 }
 
 func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, localPackage protoreflect.FullName) []protoreflect.Descriptor {

@@ -32,4 +32,16 @@ Features in progress:
   - [x] VSCode
   - [ ] Neovim
 
-Built using modified versions of bufbuild/protocompile, jhump/protoreflect, and golang/tools.
+# Installing
+
+1. Clone this repo
+2. `go install ./protols`
+3. Install `vsce` if you don't have it: `npm install --global @vscode/vsce`
+4. cd to editors/vscode, then run `vsce package`
+5. Install the vsix plugin
+
+# Special Thanks
+
+This project is derived from [bufbuild/protocompile](https://github.com/bufbuild/protocompile) and [jhump/protoreflect](https://github.com/jhump/protoreflect). Thanks to the buf developers for their fantastic work.
+
+Many of the components of [gopls](https://github.com/golang/tools/tree/master/gopls) are used to build the language server. A fork of golang/tools is maintained [here](https://github.com/kralicky/tools).

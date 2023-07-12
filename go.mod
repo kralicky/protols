@@ -24,12 +24,16 @@ require (
 
 require (
 	github.com/golang/protobuf v1.5.3 // indirect
+	github.com/plar/go-adaptive-radix-tree v1.0.5 // indirect
 	golang.org/x/sys v0.10.0 // indirect
 	golang.org/x/text v0.11.0 // indirect
 	golang.org/x/vuln v0.0.0-20230110180137-6ad3e3d07815 // indirect
 	google.golang.org/genproto v0.0.0-20230525234025-438c736192d0 // indirect
 )
 
-replace golang.org/x/tools => ../tools
-
-replace golang.org/x/tools/gopls => ../tools/gopls
+replace (
+	github.com/bufbuild/protocompile => github.com/kralicky/protocompile v0.0.0-20230711023843-20ebac5ec1ec
+	github.com/jhump/protoreflect => github.com/kralicky/protoreflect v0.0.0-20230708190847-6393c39ef464
+	golang.org/x/tools => github.com/kralicky/tools v0.0.0-20230709215314-5ff1feb7fc58
+	golang.org/x/tools/gopls => github.com/kralicky/tools/gopls v0.0.0-20230709215314-5ff1feb7fc58
+)

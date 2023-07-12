@@ -86,6 +86,12 @@ export function activate(context: ExtensionContext) {
 	workspace.registerTextDocumentContentProvider('proto', client);
 	// Start the client. This will also launch the server
 	client.start();
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('protols.restart', async () => {
+			await client.restart();
+		}
+	));
 }
 
 export function deactivate(): Thenable<void> | undefined {

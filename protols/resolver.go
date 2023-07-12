@@ -194,9 +194,9 @@ func (r *Resolver) checkWellKnownImportPath(path string) (protocompile.SearchRes
 }
 
 func (r *Resolver) checkFS(path string) (protocompile.SearchResult, error) {
-	uri, err := r.PathToURI(path)
-	if err != nil {
-		return protocompile.SearchResult{}, err
+	uri, ok := r.fileURIsByPath[path]
+	if !ok {
+		return protocompile.SearchResult{}, os.ErrNotExist
 	}
 	if fh, err := r.ReadFile(context.TODO(), uri); err == nil {
 		content, err := fh.Content()

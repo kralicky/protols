@@ -668,7 +668,7 @@ func (*Server) SetTrace(context.Context, *protocol.SetTraceParams) error {
 
 // Shutdown implements protocol.Server.
 func (*Server) Shutdown(context.Context) error {
-	return jsonrpc2.ErrMethodNotFound
+	return nil
 }
 
 // SignatureHelp implements protocol.Server.

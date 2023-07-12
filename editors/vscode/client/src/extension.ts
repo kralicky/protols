@@ -64,7 +64,7 @@ export function buildLanguageClient(
 		'protobuf',
 		'protols',
 		{
-			command: '/home/joe/protols/protols/protols',
+			command: path.join(process.env.HOME, 'go', 'bin', 'protols'),
 			args: [],
 			transport: TransportKind.pipe,
 		} as ServerOptions,
@@ -72,7 +72,7 @@ export function buildLanguageClient(
 			initializationOptions: {},
 			documentSelector,
 			synchronize: {fileEvents: workspace.createFileSystemWatcher('**/*.proto')},
-			revealOutputChannelOn: RevealOutputChannelOn.Info,
+			revealOutputChannelOn: RevealOutputChannelOn.Never,
 			outputChannel: vscode.window.createOutputChannel('Protobuf Language Server'),
 		} as LanguageClientOptions,
 	);

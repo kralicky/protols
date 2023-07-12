@@ -18,7 +18,7 @@
 		"vscode": "^1.75.0"
 	},
 	"activationEvents": [
-		"onLanguage:protobuf"
+		"workspaceContains:**/*.proto"
 	],
 	"main": "./client/out/extension",
 	"contributes": {
@@ -48,7 +48,7 @@
 			"type": "object",
 			"title": "Protobuf Language Server",
 			"properties": {
-				"languageServerExample.trace.server": {
+				"protols.trace.server": {
 					"scope": "window",
 					"type": "string",
 					"enum": [
@@ -56,7 +56,7 @@
 						"messages",
 						"verbose"
 					],
-					"default": "verbose",
+					"default": "off",
 					"description": "Traces the communication between VS Code and the language server."
 				}
 			}

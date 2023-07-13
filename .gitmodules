@@ -1,0 +1,9 @@
+[submodule "protocompile"]
+	path = protocompile
+	url = https://github.com/kralicky/protocompile
+[submodule "protoreflect"]
+	path = protoreflect
+	url = https://github.com/kralicky/protoreflect
+[submodule "tools"]
+	path = tools
+	url = https://github.com/kralicky/tools

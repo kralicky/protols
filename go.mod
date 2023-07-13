@@ -32,8 +32,8 @@ require (
 )
 
 replace (
-	github.com/bufbuild/protocompile => github.com/kralicky/protocompile v0.0.0-20230711023843-20ebac5ec1ec
-	github.com/jhump/protoreflect => github.com/kralicky/protoreflect v0.0.0-20230708190847-6393c39ef464
-	golang.org/x/tools => github.com/kralicky/tools v0.0.0-20230709215314-5ff1feb7fc58
-	golang.org/x/tools/gopls => github.com/kralicky/tools/gopls v0.0.0-20230709215314-5ff1feb7fc58
+	github.com/bufbuild/protocompile => ./protocompile
+	github.com/jhump/protoreflect => ./protoreflect
+	golang.org/x/tools => ./tools
+	golang.org/x/tools/gopls => ./tools/gopls
 )

@@ -13,14 +13,6 @@ github.com/google/go-cmp v0.5.5/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/
 github.com/google/go-cmp v0.5.9 h1:O2Tfq5qg4qc4AmwVlvv0oLiVAGB7enBSJ2x2DqQFi38=
 github.com/kralicky/gpkg v0.0.0-20220311205216-0d8ea9557555 h1:w/v9aYd9gdL0pEofCiOM7MWNroB9+HWxHT29Wj2NMYc=
 github.com/kralicky/gpkg v0.0.0-20220311205216-0d8ea9557555/go.mod h1:EJrGSfmocDg2CBjHDm3zy9oxNKCSGhf+MNTiN1DRbKA=
-github.com/kralicky/protocompile v0.0.0-20230711023843-20ebac5ec1ec h1:7LcQQIEf6Yl6vZeOaRQAZkFZrCzalJtRLANvzrcwOKg=
-github.com/kralicky/protocompile v0.0.0-20230711023843-20ebac5ec1ec/go.mod h1:KNRvZRPPQS1qbqiapydt1mU2eqBCurP53sWxlN1o5xo=
-github.com/kralicky/protoreflect v0.0.0-20230708190847-6393c39ef464 h1:ctr8tNPjapZoeUQ/UIpZhcEzapX1QMAWqcz6lnTa9FI=
-github.com/kralicky/protoreflect v0.0.0-20230708190847-6393c39ef464/go.mod h1:ZKGLhjFPH/lclZvgyDAm30wTytNif95w4gfplGtZ62g=
-github.com/kralicky/tools v0.0.0-20230709215314-5ff1feb7fc58 h1:knfNsqo1P/sNkAf1aD3V4bxPotU4yaLbdA+pPA7LKHs=
-github.com/kralicky/tools v0.0.0-20230709215314-5ff1feb7fc58/go.mod h1:anzJrxPjNtfgiYQYirP2CPGzGLxrH2u2QBhn6Bf3qY8=
-github.com/kralicky/tools/gopls v0.0.0-20230709215314-5ff1feb7fc58 h1:bp5UEasp3CQQNkU0ol9/kdwLFgPuw6hRirekAqn+jcc=
-github.com/kralicky/tools/gopls v0.0.0-20230709215314-5ff1feb7fc58/go.mod h1:1atfqbt0UD4mmRZO93FfvG9fmm0UyKbMERddF+XFP38=
 github.com/pkg/errors v0.8.1 h1:iURUrRGxPUNPdy5/HRSm+Yj6okJ6UtLINN0Q9M4+h3I=
 github.com/plar/go-adaptive-radix-tree v1.0.5 h1:rHR89qy/6c24TBAHullFMrJsU9hGlKmPibdBGU6/gbM=
 github.com/plar/go-adaptive-radix-tree v1.0.5/go.mod h1:15VOUO7R9MhJL8HOJdpydR0rvanrtRE6fA6XSa/tqWE=

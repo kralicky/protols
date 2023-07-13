@@ -43,6 +43,7 @@ import (
 // Cache is responsible for keeping track of all the known proto source files
 // and definitions.
 type Cache struct {
+	workspace      protocol.WorkspaceFolder
 	lg             *zap.Logger
 	compiler       *Compiler
 	resolver       *Resolver
@@ -172,12 +173,12 @@ type Compiler struct {
 
 var requiredGoEnvVars = []string{"GO111MODULE", "GOFLAGS", "GOINSECURE", "GOMOD", "GOMODCACHE", "GONOPROXY", "GONOSUMDB", "GOPATH", "GOPROXY", "GOROOT", "GOSUMDB", "GOWORK"}
 
-func NewCache(workdir string, lg *zap.Logger) *Cache {
-	fmt.Println("SourceAccessor", workdir)
+func NewCache(workspace protocol.WorkspaceFolder, lg *zap.Logger) *Cache {
+	workdir := span.URIFromURI(workspace.URI).Filename()
 	// NewCache creates a new cache.
 	diagHandler := NewDiagnosticHandler()
 	reporter := reporter.NewReporter(diagHandler.HandleError, diagHandler.HandleWarning)
-	resolver := NewResolver(workdir, lg)
+	resolver := NewResolver(workspace, lg)
 
 	compiler := &Compiler{
 		fs: resolver.OverlayFS,
@@ -192,6 +193,7 @@ func NewCache(workdir string, lg *zap.Logger) *Cache {
 		workdir: workdir,
 	}
 	cache := &Cache{
+		workspace:   workspace,
 		lg:          lg,
 		compiler:    compiler,
 		resolver:    resolver,
@@ -303,6 +305,10 @@ func (c *Cache) Reindex() {
 	c.resolver.ResetPathMappings()
 
 	allProtos, _ := doublestar.Glob(path.Join(c.compiler.workdir, "**/*.proto"))
+	if len(allProtos) == 0 {
+		c.lg.Debug("no protos found")
+		return
+	}
 	c.lg.Debug("found protos", zap.Strings("protos", allProtos))
 	created := make([]source.FileModification, len(allProtos))
 	for i, proto := range allProtos {
@@ -1015,11 +1021,9 @@ func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]p
 }
 
 func (c *Cache) GetSyntheticFileContents(ctx context.Context, uri string) (string, error) {
-	if !strings.HasPrefix(uri, "proto://") {
-		return "", fmt.Errorf("not a synthetic file: %s", uri)
-	}
-	name := strings.TrimPrefix(uri, "proto://")
-	fh, err := c.resolver.FindFileByPath(name)
+	uri = strings.TrimSuffix(uri, "#"+c.workspace.Name)
+	uri = strings.TrimPrefix(strings.TrimPrefix(uri, "proto:///"), "proto://")
+	fh, err := c.resolver.FindFileByPath(uri)
 	if err != nil {
 		return "", err
 	}

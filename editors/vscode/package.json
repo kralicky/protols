@@ -42,6 +42,10 @@
 			{
 				"command": "protols.restart",
 				"title": "Protols: Restart Language Server"
+			},
+			{
+				"command": "protols.stop",
+				"title": "Protols: Stop Language Server"
 			}
 		],
 		"configuration": {

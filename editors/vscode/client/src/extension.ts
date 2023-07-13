@@ -44,7 +44,6 @@ export class RaguLanguageClient extends LanguageClient implements vscode.TextDoc
 		super(id, name, serverOptions, clientOptions);
 	}
 	onDidChange?: vscode.Event<vscode.Uri>;
-
 	provideTextDocumentContent(uri: vscode.Uri, token: vscode.CancellationToken): vscode.ProviderResult<string> {
 		return this.sendRequest('protols/synthetic-file-contents', uri.toString()).then((result: string) => {
 			return result;
@@ -89,8 +88,16 @@ export function activate(context: ExtensionContext) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('protols.restart', async () => {
-			await client.restart();
-		}
+			try {
+				await client.restart();
+			} catch (e) {
+				// if it's already stopped, restart will throw an error.
+				await client.start();
+			}
+		},
+		vscode.commands.registerCommand('protols.stop', async () => {
+			await client.stop();
+		})
 	));
 }
 

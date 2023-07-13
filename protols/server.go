@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
+	"net/url"
+	"path/filepath"
+	"sync"
 
 	"github.com/samber/lo"
 	"go.uber.org/zap"
+	"golang.org/x/exp/maps"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/lsp/source"
 	"golang.org/x/tools/gopls/pkg/span"
@@ -14,25 +18,29 @@ import (
 )
 
 type Server struct {
-	lg *zap.Logger
-	c  *Cache
+	lg       *zap.Logger
+	cachesMu sync.RWMutex
+	caches   map[string]*Cache
 }
 
 func NewServer(lg *zap.Logger) *Server {
 	return &Server{
-		lg: lg,
+		lg:     lg,
+		caches: map[string]*Cache{},
 	}
 }
 
 // Initialize implements protocol.Server.
 func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitialize) (result *protocol.InitializeResult, err error) {
 	folders := params.WorkspaceFolders
-	if len(folders) != 1 {
-		return nil, errors.New("multi-folder workspaces are not supported yet") // TODO
+	s.cachesMu.Lock()
+	for _, folder := range folders {
+		path := span.URIFromURI(folder.URI).Filename()
+		s.lg.Info("adding workspace folder", zap.String("path", path))
+		c := NewCache(folder, s.lg.Named("cache."+folder.Name))
+		s.caches[path] = c
 	}
-
-	s.c = NewCache(params.RootURI.SpanURI().Filename(), s.lg.Named("cache"))
-
+	s.cachesMu.Unlock()
 	filters := []protocol.FileOperationFilter{
 		{
 			Scheme: "file",
@@ -41,14 +49,13 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			},
 		},
 	}
-	s.lg.Debug("Initialize", zap.String("workdir", params.RootURI.SpanURI().Filename()), zap.Any("initOpts", params.InitializationOptions))
+	s.lg.Debug("Initialize", zap.Any("folders", folders))
 	return &protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
 			TextDocumentSync: protocol.TextDocumentSyncOptions{
 				OpenClose: true,
 				Change:    protocol.Incremental,
-				// WillSaveWaitUntil: true,
-				Save: &protocol.SaveOptions{IncludeText: false},
+				Save:      &protocol.SaveOptions{IncludeText: false},
 			},
 
 			HoverProvider: &protocol.Or_ServerCapabilities_hoverProvider{Value: true},
@@ -60,7 +67,8 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			},
 			Workspace: &protocol.Workspace6Gn{
 				WorkspaceFolders: &protocol.WorkspaceFolders5Gn{
-					Supported: false, // TODO
+					Supported:           true,
+					ChangeNotifications: "workspace/didChangeWorkspaceFolders",
 				},
 				FileOperations: &protocol.FileOperationOptions{
 					DidCreate: &protocol.FileOperationRegistrationOptions{
@@ -104,12 +112,39 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			Version: "0.0.1",
 		},
 	}, nil
+}
 
+func (s *Server) CacheForURI(uri protocol.DocumentURI) (*Cache, error) {
+	s.cachesMu.RLock()
+	caches := maps.Clone(s.caches)
+	s.cachesMu.RUnlock()
+	u, err := url.Parse(string(uri))
+	if err != nil {
+		return nil, fmt.Errorf("invalid uri: %w", err)
+	}
+	if u.Fragment != "" {
+		for _, c := range caches {
+			if c.workspace.Name == u.Fragment {
+				return c, nil
+			}
+		}
+		return nil, fmt.Errorf("%w: workspace %s does not exist", jsonrpc2.ErrMethodNotFound, u.Fragment)
+	}
+	for path, c := range caches {
+		if filepath.HasPrefix(u.Path, path) {
+			return c, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: uri %s does not belong to any workspace folder", jsonrpc2.ErrMethodNotFound, uri)
 }
 
 // Completion implements protocol.Server.
 func (s *Server) Completion(ctx context.Context, params *protocol.CompletionParams) (result *protocol.CompletionList, err error) {
-	return s.c.GetCompletions(params)
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+	return c.GetCompletions(params)
 }
 
 // Initialized implements protocol.Server.
@@ -118,45 +153,20 @@ func (s *Server) Initialized(ctx context.Context, params *protocol.InitializedPa
 	return nil
 }
 
-// CodeAction implements protocol.Server.
-func (s *Server) CodeAction(ctx context.Context, params *protocol.CodeActionParams) (result []protocol.CodeAction, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// CodeLens implements protocol.Server.
-func (s *Server) CodeLens(ctx context.Context, params *protocol.CodeLensParams) (result []protocol.CodeLens, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// CodeLensRefresh implements protocol.Server.
-func (s *Server) CodeLensRefresh(ctx context.Context) (err error) {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// CodeLensResolve implements protocol.Server.
-func (s *Server) CodeLensResolve(ctx context.Context, params *protocol.CodeLens) (result *protocol.CodeLens, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// ColorPresentation implements protocol.Server.
-func (s *Server) ColorPresentation(ctx context.Context, params *protocol.ColorPresentationParams) (result []protocol.ColorPresentation, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// CompletionResolve implements protocol.Server.
-func (s *Server) CompletionResolve(ctx context.Context, params *protocol.CompletionItem) (result *protocol.CompletionItem, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
 // Definition implements protocol.Server.
 func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionParams) (result []protocol.Location, err error) {
-	desc, _, err := s.c.FindTypeDescriptorAtLocation(params.TextDocumentPositionParams)
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+
+	desc, _, err := c.FindTypeDescriptorAtLocation(params.TextDocumentPositionParams)
 	if err != nil {
 		return nil, err
 	} else if desc == nil {
 		return nil, nil
 	}
-	loc, err := s.c.FindDefinitionForTypeDescriptor(desc)
+	loc, err := c.FindDefinitionForTypeDescriptor(desc)
 	if err != nil {
 		return nil, err
 	}
@@ -165,16 +175,26 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 
 // Hover implements protocol.Server.
 func (s *Server) Hover(ctx context.Context, params *protocol.HoverParams) (result *protocol.Hover, err error) {
-	return s.c.ComputeHover(params.TextDocumentPositionParams)
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.ComputeHover(params.TextDocumentPositionParams)
 }
 
 // DidOpen implements protocol.Server.
 func (s *Server) DidOpen(ctx context.Context, params *protocol.DidOpenTextDocumentParams) (err error) {
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return err
+	}
+
 	uri := params.TextDocument.URI.SpanURI()
 	if !uri.IsFile() {
 		return nil
 	}
-	return s.c.DidModifyFiles(ctx, []source.FileModification{
+	return c.DidModifyFiles(ctx, []source.FileModification{
 		{
 			URI:        uri,
 			Action:     source.Open,
@@ -187,11 +207,16 @@ func (s *Server) DidOpen(ctx context.Context, params *protocol.DidOpenTextDocume
 
 // DidClose implements protocol.Server.
 func (s *Server) DidClose(ctx context.Context, params *protocol.DidCloseTextDocumentParams) (err error) {
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return err
+	}
+
 	uri := params.TextDocument.URI.SpanURI()
 	if !uri.IsFile() {
 		return nil
 	}
-	return s.c.DidModifyFiles(ctx, []source.FileModification{
+	return c.DidModifyFiles(ctx, []source.FileModification{
 		{
 			URI:     uri,
 			Action:  source.Close,
@@ -203,93 +228,127 @@ func (s *Server) DidClose(ctx context.Context, params *protocol.DidCloseTextDocu
 
 // DidChange implements protocol.Server.
 func (s *Server) DidChange(ctx context.Context, params *protocol.DidChangeTextDocumentParams) (err error) {
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return err
+	}
+
 	uri := params.TextDocument.URI.SpanURI()
 	if !uri.IsFile() {
 		return nil
 	}
-	text, err := s.c.ChangedText(ctx, uri, params.ContentChanges)
+	text, err := c.ChangedText(ctx, uri, params.ContentChanges)
 	if err != nil {
 		return err
 	}
-	c := source.FileModification{
+	return c.DidModifyFiles(ctx, []source.FileModification{{
 		URI:     uri,
 		Action:  source.Change,
 		Version: params.TextDocument.Version,
 		Text:    text,
-	}
-	return s.c.DidModifyFiles(ctx, []source.FileModification{c})
+	}})
 }
 
 // DidCreateFiles implements protocol.Server.
 func (s *Server) DidCreateFiles(ctx context.Context, params *protocol.CreateFilesParams) (err error) {
-	var modifications []source.FileModification
+	modifications := map[*Cache][]source.FileModification{}
+
 	for _, f := range params.Files {
 		uri := f.URI
-		modifications = append(modifications, source.FileModification{
+		c, err := s.CacheForURI(protocol.DocumentURI(uri))
+		if err != nil {
+			return err
+		}
+		modifications[c] = append(modifications[c], source.FileModification{
 			URI:     span.URIFromURI(uri),
 			Action:  source.Create,
 			OnDisk:  true,
 			Version: -1,
 		})
 	}
-	return s.c.DidModifyFiles(ctx, modifications)
+	for c, mods := range modifications {
+		c.DidModifyFiles(ctx, mods)
+	}
+	return nil
 }
 
 // DidDeleteFiles implements protocol.Server.
 func (s *Server) DidDeleteFiles(ctx context.Context, params *protocol.DeleteFilesParams) (err error) {
-	var modifications []source.FileModification
+	modifications := map[*Cache][]source.FileModification{}
+
 	for _, f := range params.Files {
 		uri := f.URI
-		modifications = append(modifications, source.FileModification{
+		c, err := s.CacheForURI(protocol.DocumentURI(uri))
+		if err != nil {
+			return err
+		}
+		modifications[c] = append(modifications[c], source.FileModification{
 			URI:     span.URIFromURI(uri),
 			Action:  source.Delete,
 			Version: -1,
 		})
 	}
-	return s.c.DidModifyFiles(ctx, modifications)
+	for c, mods := range modifications {
+		c.DidModifyFiles(ctx, mods)
+	}
+	return nil
 }
 
 // DidRenameFiles implements protocol.Server.
 func (s *Server) DidRenameFiles(ctx context.Context, params *protocol.RenameFilesParams) (err error) {
-	var modifications []source.FileModification
+	modifications := map[*Cache][]source.FileModification{}
+
 	for _, f := range params.Files {
-		modifications = append(modifications,
-			source.FileModification{
-				URI:     span.URIFromURI(f.OldURI),
-				Action:  source.Delete,
-				OnDisk:  true,
-				Version: -1,
-			},
-			source.FileModification{
-				URI:     span.URIFromURI(f.NewURI),
-				Action:  source.Create,
-				OnDisk:  true,
-				Version: -1,
-			},
-		)
+		oldC, err := s.CacheForURI(protocol.DocumentURI(f.OldURI))
+		if err != nil {
+			return err
+		}
+		newC, err := s.CacheForURI(protocol.DocumentURI(f.NewURI))
+		if err != nil {
+			return err
+		}
+		modifications[oldC] = append(modifications[oldC], source.FileModification{
+			URI:     span.URIFromURI(f.OldURI),
+			Action:  source.Delete,
+			OnDisk:  true,
+			Version: -1,
+		})
+		modifications[newC] = append(modifications[newC], source.FileModification{
+			URI:     span.URIFromURI(f.NewURI),
+			Action:  source.Create,
+			OnDisk:  true,
+			Version: -1,
+		})
 	}
-	return s.c.DidModifyFiles(ctx, modifications)
+	for c, mods := range modifications {
+		c.DidModifyFiles(ctx, mods)
+	}
+	return nil
 }
 
 // DidSave implements protocol.Server.
 func (s *Server) DidSave(ctx context.Context, params *protocol.DidSaveTextDocumentParams) (err error) {
-	uri := params.TextDocument.URI.SpanURI()
-	if !uri.IsFile() {
-		return nil
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return err
 	}
-	c := source.FileModification{
-		URI:    uri,
+	mod := source.FileModification{
+		URI:    params.TextDocument.URI.SpanURI(),
 		Action: source.Save,
 	}
 	if params.Text != nil {
-		c.Text = []byte(*params.Text)
+		mod.Text = []byte(*params.Text)
 	}
-	return s.c.DidModifyFiles(ctx, []source.FileModification{c})
+	return c.DidModifyFiles(ctx, []source.FileModification{mod})
 }
 
 // SemanticTokensFull implements protocol.Server.
 func (s *Server) SemanticTokensFull(ctx context.Context, params *protocol.SemanticTokensParams) (result *protocol.SemanticTokens, err error) {
-	tokens, err := s.c.ComputeSemanticTokens(params.TextDocument)
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+	tokens, err := c.ComputeSemanticTokens(params.TextDocument)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +364,11 @@ func (s *Server) SemanticTokensFullDelta(ctx context.Context, params *protocol.S
 
 // SemanticTokensRange implements protocol.Server.
 func (s *Server) SemanticTokensRange(ctx context.Context, params *protocol.SemanticTokensRangeParams) (result *protocol.SemanticTokens, err error) {
-	tokens, err := s.c.ComputeSemanticTokensRange(params.TextDocument, params.Range)
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+	tokens, err := c.ComputeSemanticTokensRange(params.TextDocument, params.Range)
 	if err != nil {
 		return nil, err
 	}
@@ -321,7 +384,11 @@ func (s *Server) SemanticTokensRefresh(ctx context.Context) (err error) {
 
 // DocumentSymbol implements protocol.Server.
 func (s *Server) DocumentSymbol(ctx context.Context, params *protocol.DocumentSymbolParams) (result []interface{}, err error) {
-	symbols, err := s.c.DocumentSymbolsForFile(params.TextDocument)
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+	symbols, err := c.DocumentSymbolsForFile(params.TextDocument)
 	if err != nil {
 		return nil, err
 	}
@@ -369,14 +436,14 @@ var semanticTokenModifiers = []string{
 	string(protocol.ModDefaultLibrary),
 }
 
-// Declaration implements protocol.Server.
-func (*Server) Declaration(context.Context, *protocol.DeclarationParams) (*protocol.Or_textDocument_declaration, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
 // Diagnostic implements protocol.Server.
 func (s *Server) Diagnostic(ctx context.Context, params *protocol.DocumentDiagnosticParams) (*protocol.Or_DocumentDiagnosticReport, error) {
-	reports, kind, resultId, err := s.c.ComputeDiagnosticReports(params.TextDocument.URI.SpanURI(), params.PreviousResultID)
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+
+	reports, kind, resultId, err := c.ComputeDiagnosticReports(params.TextDocument.URI.SpanURI(), params.PreviousResultID)
 	if err != nil {
 		s.lg.Error("failed to compute diagnostic reports", zap.Error(err))
 		return nil, err
@@ -415,38 +482,45 @@ func (*Server) DiagnosticRefresh(context.Context) error {
 
 // DiagnosticWorkspace implements protocol.Server.
 func (s *Server) DiagnosticWorkspace(ctx context.Context, params *protocol.WorkspaceDiagnosticParams) (*protocol.WorkspaceDiagnosticReport, error) {
+	var ok bool
 	report := &protocol.WorkspaceDiagnosticReport{
 		Items: []protocol.Or_WorkspaceDocumentDiagnosticReport{},
 	}
+	s.cachesMu.RLock()
+	for _, c := range s.caches {
+		workspaceOk := c.ComputeWorkspaceDiagnosticReports(ctx, params.PreviousResultIds,
+			func(uri span.URI, reports []protocol.Diagnostic, kind protocol.DocumentDiagnosticReportKind, resultId string) {
 
-	ok := s.c.ComputeWorkspaceDiagnosticReports(ctx, params.PreviousResultIds,
-		func(uri span.URI, reports []protocol.Diagnostic, kind protocol.DocumentDiagnosticReportKind, resultId string) {
+				if kind == protocol.DiagnosticUnchanged {
+					report.Items = append(report.Items, protocol.Or_WorkspaceDocumentDiagnosticReport{
+						Value: protocol.WorkspaceUnchangedDocumentDiagnosticReport{
+							URI: protocol.URIFromSpanURI(uri),
+							UnchangedDocumentDiagnosticReport: protocol.UnchangedDocumentDiagnosticReport{
+								Kind:     string(protocol.DiagnosticUnchanged),
+								ResultID: resultId,
+							},
+						},
+					})
+					return
+				}
 
-			if kind == protocol.DiagnosticUnchanged {
 				report.Items = append(report.Items, protocol.Or_WorkspaceDocumentDiagnosticReport{
-					Value: protocol.WorkspaceUnchangedDocumentDiagnosticReport{
+					Value: protocol.WorkspaceFullDocumentDiagnosticReport{
 						URI: protocol.URIFromSpanURI(uri),
-						UnchangedDocumentDiagnosticReport: protocol.UnchangedDocumentDiagnosticReport{
-							Kind:     string(protocol.DiagnosticUnchanged),
+						FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
+							Kind:     string(protocol.DiagnosticFull),
 							ResultID: resultId,
+							Items:    reports,
 						},
 					},
 				})
-				return
-			}
-
-			report.Items = append(report.Items, protocol.Or_WorkspaceDocumentDiagnosticReport{
-				Value: protocol.WorkspaceFullDocumentDiagnosticReport{
-					URI: protocol.URIFromSpanURI(uri),
-					FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
-						Kind:     string(protocol.DiagnosticFull),
-						ResultID: resultId,
-						Items:    reports,
-					},
-				},
-			})
-		},
-	)
+			},
+		)
+		ok = ok || workspaceOk
+		if ctx.Err() != nil {
+			break
+		}
+	}
 
 	if ok {
 		return report, nil
@@ -458,41 +532,6 @@ func (s *Server) DiagnosticWorkspace(ctx context.Context, params *protocol.Works
 		RetriggerRequest: false,
 	})
 	return nil, jsonrpc2.NewErrorWithData(int64(protocol.ServerCancelled), "", json.RawMessage(data))
-}
-
-// DidChangeConfiguration implements protocol.Server.
-func (*Server) DidChangeConfiguration(context.Context, *protocol.DidChangeConfigurationParams) error {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// DidChangeNotebookDocument implements protocol.Server.
-func (*Server) DidChangeNotebookDocument(context.Context, *protocol.DidChangeNotebookDocumentParams) error {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// DidChangeWatchedFiles implements protocol.Server.
-func (*Server) DidChangeWatchedFiles(context.Context, *protocol.DidChangeWatchedFilesParams) error {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// DidChangeWorkspaceFolders implements protocol.Server.
-func (*Server) DidChangeWorkspaceFolders(context.Context, *protocol.DidChangeWorkspaceFoldersParams) error {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// DidCloseNotebookDocument implements protocol.Server.
-func (*Server) DidCloseNotebookDocument(context.Context, *protocol.DidCloseNotebookDocumentParams) error {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// DidOpenNotebookDocument implements protocol.Server.
-func (*Server) DidOpenNotebookDocument(context.Context, *protocol.DidOpenNotebookDocumentParams) error {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// DidSaveNotebookDocument implements protocol.Server.
-func (*Server) DidSaveNotebookDocument(context.Context, *protocol.DidSaveNotebookDocumentParams) error {
-	return jsonrpc2.ErrMethodNotFound
 }
 
 // DocumentColor implements protocol.Server.
@@ -507,168 +546,88 @@ func (*Server) DocumentHighlight(context.Context, *protocol.DocumentHighlightPar
 
 // DocumentLink implements protocol.Server.
 func (s *Server) DocumentLink(ctx context.Context, params *protocol.DocumentLinkParams) ([]protocol.DocumentLink, error) {
-	return s.c.ComputeDocumentLinks(params.TextDocument)
-}
-
-// ExecuteCommand implements protocol.Server.
-func (*Server) ExecuteCommand(context.Context, *protocol.ExecuteCommandParams) (interface{}, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// Exit implements protocol.Server.
-func (*Server) Exit(context.Context) error {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// FoldingRange implements protocol.Server.
-func (*Server) FoldingRange(context.Context, *protocol.FoldingRangeParams) ([]protocol.FoldingRange, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+	return c.ComputeDocumentLinks(params.TextDocument)
 }
 
 // Formatting implements protocol.Server.
 func (s *Server) Formatting(ctx context.Context, params *protocol.DocumentFormattingParams) ([]protocol.TextEdit, error) {
-	return s.c.FormatDocument(params.TextDocument, params.Options)
-}
-
-// Implementation implements protocol.Server.
-func (*Server) Implementation(context.Context, *protocol.ImplementationParams) ([]protocol.Location, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// IncomingCalls implements protocol.Server.
-func (*Server) IncomingCalls(context.Context, *protocol.CallHierarchyIncomingCallsParams) ([]protocol.CallHierarchyIncomingCall, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+	return c.FormatDocument(params.TextDocument, params.Options)
 }
 
 // InlayHint implements protocol.Server.
 func (s *Server) InlayHint(ctx context.Context, params *protocol.InlayHintParams) ([]protocol.InlayHint, error) {
-	return s.c.ComputeInlayHints(params.TextDocument, params.Range)
-}
-
-// InlayHintRefresh implements protocol.Server.
-func (*Server) InlayHintRefresh(context.Context) error {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// InlineValue implements protocol.Server.
-func (*Server) InlineValue(context.Context, *protocol.InlineValueParams) ([]protocol.Or_InlineValue, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// InlineValueRefresh implements protocol.Server.
-func (*Server) InlineValueRefresh(context.Context) error {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// LinkedEditingRange implements protocol.Server.
-func (*Server) LinkedEditingRange(context.Context, *protocol.LinkedEditingRangeParams) (*protocol.LinkedEditingRanges, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// Moniker implements protocol.Server.
-func (*Server) Moniker(context.Context, *protocol.MonikerParams) ([]protocol.Moniker, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+	return c.ComputeInlayHints(params.TextDocument, params.Range)
 }
 
 // NonstandardRequest implements protocol.Server.
 func (s *Server) NonstandardRequest(ctx context.Context, method string, params interface{}) (interface{}, error) {
 	switch method {
 	case "protols/synthetic-file-contents":
-		return s.c.GetSyntheticFileContents(ctx, params.([]any)[0].(string))
+		u := params.([]any)[0].(string)
+		c, err := s.CacheForURI(protocol.DocumentURI(u))
+		if err != nil {
+			return nil, err
+		}
+
+		return c.GetSyntheticFileContents(ctx, u)
 	default:
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
 }
 
-// OnTypeFormatting implements protocol.Server.
-func (*Server) OnTypeFormatting(context.Context, *protocol.DocumentOnTypeFormattingParams) ([]protocol.TextEdit, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// OutgoingCalls implements protocol.Server.
-func (*Server) OutgoingCalls(context.Context, *protocol.CallHierarchyOutgoingCallsParams) ([]protocol.CallHierarchyOutgoingCall, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// PrepareCallHierarchy implements protocol.Server.
-func (*Server) PrepareCallHierarchy(context.Context, *protocol.CallHierarchyPrepareParams) ([]protocol.CallHierarchyItem, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// PrepareRename implements protocol.Server.
-func (*Server) PrepareRename(context.Context, *protocol.PrepareRenameParams) (*protocol.Msg_PrepareRename2Gn, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// PrepareTypeHierarchy implements protocol.Server.
-func (*Server) PrepareTypeHierarchy(context.Context, *protocol.TypeHierarchyPrepareParams) ([]protocol.TypeHierarchyItem, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// Progress implements protocol.Server.
-func (*Server) Progress(context.Context, *protocol.ProgressParams) error {
-	return jsonrpc2.ErrMethodNotFound
-}
-
-// RangeFormatting implements protocol.Server.
-func (s *Server) RangeFormatting(ctx context.Context, params *protocol.DocumentRangeFormattingParams) ([]protocol.TextEdit, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-	// return s.c.FormatDocument(params.TextDocument, params.Options, params.Range)
-}
-
 // References implements protocol.Server.
 func (s *Server) References(ctx context.Context, params *protocol.ReferenceParams) ([]protocol.Location, error) {
-	return s.c.FindReferences(ctx, params.TextDocumentPositionParams, params.Context)
-}
-
-// Rename implements protocol.Server.
-func (*Server) Rename(context.Context, *protocol.RenameParams) (*protocol.WorkspaceEdit, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// Resolve implements protocol.Server.
-func (*Server) Resolve(context.Context, *protocol.InlayHint) (*protocol.InlayHint, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// ResolveCodeAction implements protocol.Server.
-func (*Server) ResolveCodeAction(context.Context, *protocol.CodeAction) (*protocol.CodeAction, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// ResolveCodeLens implements protocol.Server.
-func (*Server) ResolveCodeLens(context.Context, *protocol.CodeLens) (*protocol.CodeLens, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// ResolveCompletionItem implements protocol.Server.
-func (*Server) ResolveCompletionItem(context.Context, *protocol.CompletionItem) (*protocol.CompletionItem, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// ResolveDocumentLink implements protocol.Server.
-func (*Server) ResolveDocumentLink(context.Context, *protocol.DocumentLink) (*protocol.DocumentLink, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// ResolveWorkspaceSymbol implements protocol.Server.
-func (*Server) ResolveWorkspaceSymbol(context.Context, *protocol.WorkspaceSymbol) (*protocol.WorkspaceSymbol, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// SelectionRange implements protocol.Server.
-func (*Server) SelectionRange(context.Context, *protocol.SelectionRangeParams) ([]protocol.SelectionRange, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
-}
-
-// SetTrace implements protocol.Server.
-func (*Server) SetTrace(context.Context, *protocol.SetTraceParams) error {
-	return jsonrpc2.ErrMethodNotFound
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+	return c.FindReferences(ctx, params.TextDocumentPositionParams, params.Context)
 }
 
 // Shutdown implements protocol.Server.
 func (*Server) Shutdown(context.Context) error {
 	return nil
+}
+
+// DidChangeWorkspaceFolders implements protocol.Server.
+func (s *Server) DidChangeWorkspaceFolders(ctx context.Context, params *protocol.DidChangeWorkspaceFoldersParams) error {
+	added := params.Event.Added
+	removed := params.Event.Removed
+	s.cachesMu.Lock()
+	for _, folder := range added {
+		path := span.URIFromURI(folder.URI).Filename()
+		s.lg.Info("adding workspace folder", zap.String("path", path))
+		c := NewCache(folder, s.lg.Named("cache."+folder.Name))
+		s.caches[path] = c
+	}
+	for _, folder := range removed {
+		path := span.URIFromURI(folder.URI).Filename()
+		s.lg.Info("removing workspace folder", zap.String("path", path))
+		delete(s.caches, path)
+	}
+	s.cachesMu.Unlock()
+	return nil
+}
+
+// =====================
+// Unimplemented Methods
+// =====================
+
+// Declaration implements protocol.Server.
+func (*Server) Declaration(context.Context, *protocol.DeclarationParams) (*protocol.Or_textDocument_declaration, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
 }
 
 // SignatureHelp implements protocol.Server.
@@ -724,4 +683,194 @@ func (s *Server) WillSaveWaitUntil(ctx context.Context, params *protocol.WillSav
 // WorkDoneProgressCancel implements protocol.Server.
 func (*Server) WorkDoneProgressCancel(context.Context, *protocol.WorkDoneProgressCancelParams) error {
 	return jsonrpc2.ErrMethodNotFound
+}
+
+// CodeAction implements protocol.Server.
+func (s *Server) CodeAction(ctx context.Context, params *protocol.CodeActionParams) (result []protocol.CodeAction, err error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// CodeLens implements protocol.Server.
+func (s *Server) CodeLens(ctx context.Context, params *protocol.CodeLensParams) (result []protocol.CodeLens, err error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// CodeLensRefresh implements protocol.Server.
+func (s *Server) CodeLensRefresh(ctx context.Context) (err error) {
+	return jsonrpc2.ErrMethodNotFound
+}
+
+// CodeLensResolve implements protocol.Server.
+func (s *Server) CodeLensResolve(ctx context.Context, params *protocol.CodeLens) (result *protocol.CodeLens, err error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// ColorPresentation implements protocol.Server.
+func (s *Server) ColorPresentation(ctx context.Context, params *protocol.ColorPresentationParams) (result []protocol.ColorPresentation, err error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// CompletionResolve implements protocol.Server.
+func (s *Server) CompletionResolve(ctx context.Context, params *protocol.CompletionItem) (result *protocol.CompletionItem, err error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// Rename implements protocol.Server.
+func (*Server) Rename(context.Context, *protocol.RenameParams) (*protocol.WorkspaceEdit, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// Resolve implements protocol.Server.
+func (*Server) Resolve(context.Context, *protocol.InlayHint) (*protocol.InlayHint, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// ResolveCodeAction implements protocol.Server.
+func (*Server) ResolveCodeAction(context.Context, *protocol.CodeAction) (*protocol.CodeAction, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// ResolveCodeLens implements protocol.Server.
+func (*Server) ResolveCodeLens(context.Context, *protocol.CodeLens) (*protocol.CodeLens, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// ResolveCompletionItem implements protocol.Server.
+func (*Server) ResolveCompletionItem(context.Context, *protocol.CompletionItem) (*protocol.CompletionItem, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// ResolveDocumentLink implements protocol.Server.
+func (*Server) ResolveDocumentLink(context.Context, *protocol.DocumentLink) (*protocol.DocumentLink, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// ResolveWorkspaceSymbol implements protocol.Server.
+func (*Server) ResolveWorkspaceSymbol(context.Context, *protocol.WorkspaceSymbol) (*protocol.WorkspaceSymbol, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// SelectionRange implements protocol.Server.
+func (*Server) SelectionRange(context.Context, *protocol.SelectionRangeParams) ([]protocol.SelectionRange, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// SetTrace implements protocol.Server.
+func (*Server) SetTrace(context.Context, *protocol.SetTraceParams) error {
+	return jsonrpc2.ErrMethodNotFound
+}
+
+// OnTypeFormatting implements protocol.Server.
+func (*Server) OnTypeFormatting(context.Context, *protocol.DocumentOnTypeFormattingParams) ([]protocol.TextEdit, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// OutgoingCalls implements protocol.Server.
+func (*Server) OutgoingCalls(context.Context, *protocol.CallHierarchyOutgoingCallsParams) ([]protocol.CallHierarchyOutgoingCall, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// PrepareCallHierarchy implements protocol.Server.
+func (*Server) PrepareCallHierarchy(context.Context, *protocol.CallHierarchyPrepareParams) ([]protocol.CallHierarchyItem, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// PrepareRename implements protocol.Server.
+func (*Server) PrepareRename(context.Context, *protocol.PrepareRenameParams) (*protocol.Msg_PrepareRename2Gn, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// PrepareTypeHierarchy implements protocol.Server.
+func (*Server) PrepareTypeHierarchy(context.Context, *protocol.TypeHierarchyPrepareParams) ([]protocol.TypeHierarchyItem, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// Progress implements protocol.Server.
+func (*Server) Progress(context.Context, *protocol.ProgressParams) error {
+	return jsonrpc2.ErrMethodNotFound
+}
+
+// RangeFormatting implements protocol.Server.
+func (s *Server) RangeFormatting(ctx context.Context, params *protocol.DocumentRangeFormattingParams) ([]protocol.TextEdit, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// InlayHintRefresh implements protocol.Server.
+func (*Server) InlayHintRefresh(context.Context) error {
+	return jsonrpc2.ErrMethodNotFound
+}
+
+// InlineValue implements protocol.Server.
+func (*Server) InlineValue(context.Context, *protocol.InlineValueParams) ([]protocol.Or_InlineValue, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// InlineValueRefresh implements protocol.Server.
+func (*Server) InlineValueRefresh(context.Context) error {
+	return jsonrpc2.ErrMethodNotFound
+}
+
+// LinkedEditingRange implements protocol.Server.
+func (*Server) LinkedEditingRange(context.Context, *protocol.LinkedEditingRangeParams) (*protocol.LinkedEditingRanges, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// Moniker implements protocol.Server.
+func (*Server) Moniker(context.Context, *protocol.MonikerParams) ([]protocol.Moniker, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// Implementation implements protocol.Server.
+func (*Server) Implementation(context.Context, *protocol.ImplementationParams) ([]protocol.Location, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// IncomingCalls implements protocol.Server.
+func (*Server) IncomingCalls(context.Context, *protocol.CallHierarchyIncomingCallsParams) ([]protocol.CallHierarchyIncomingCall, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// DidChangeConfiguration implements protocol.Server.
+func (*Server) DidChangeConfiguration(context.Context, *protocol.DidChangeConfigurationParams) error {
+	return jsonrpc2.ErrMethodNotFound
+}
+
+// DidChangeNotebookDocument implements protocol.Server.
+func (*Server) DidChangeNotebookDocument(context.Context, *protocol.DidChangeNotebookDocumentParams) error {
+	return jsonrpc2.ErrMethodNotFound
+}
+
+// DidChangeWatchedFiles implements protocol.Server.
+func (*Server) DidChangeWatchedFiles(context.Context, *protocol.DidChangeWatchedFilesParams) error {
+	return jsonrpc2.ErrMethodNotFound
+}
+
+// DidCloseNotebookDocument implements protocol.Server.
+func (*Server) DidCloseNotebookDocument(context.Context, *protocol.DidCloseNotebookDocumentParams) error {
+	return jsonrpc2.ErrMethodNotFound
+}
+
+// DidOpenNotebookDocument implements protocol.Server.
+func (*Server) DidOpenNotebookDocument(context.Context, *protocol.DidOpenNotebookDocumentParams) error {
+	return jsonrpc2.ErrMethodNotFound
+}
+
+// DidSaveNotebookDocument implements protocol.Server.
+func (*Server) DidSaveNotebookDocument(context.Context, *protocol.DidSaveNotebookDocumentParams) error {
+	return jsonrpc2.ErrMethodNotFound
+}
+
+// ExecuteCommand implements protocol.Server.
+func (*Server) ExecuteCommand(context.Context, *protocol.ExecuteCommandParams) (interface{}, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
+}
+
+// Exit implements protocol.Server.
+func (*Server) Exit(context.Context) error {
+	return jsonrpc2.ErrMethodNotFound
+}
+
+// FoldingRange implements protocol.Server.
+func (*Server) FoldingRange(context.Context, *protocol.FoldingRangeParams) ([]protocol.FoldingRange, error) {
+	return nil, jsonrpc2.ErrMethodNotFound
 }

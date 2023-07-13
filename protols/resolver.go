@@ -17,12 +17,14 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/exp/maps"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
+	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/lsp/source"
 	"golang.org/x/tools/gopls/pkg/span"
 )
 
 type Resolver struct {
 	*cache.OverlayFS
+	folder         protocol.WorkspaceFolder
 	synthesizer    *ProtoSourceSynthesizer
 	lg             *zap.Logger
 	pathsMu        sync.RWMutex
@@ -32,11 +34,12 @@ type Resolver struct {
 	syntheticFiles map[span.URI]string
 }
 
-func NewResolver(workdir string, lg *zap.Logger) *Resolver {
+func NewResolver(folder protocol.WorkspaceFolder, lg *zap.Logger) *Resolver {
 	return &Resolver{
 		lg:             lg,
+		folder:         folder,
 		OverlayFS:      cache.NewOverlayFS(cache.NewMemoizedFS()),
-		synthesizer:    NewProtoSourceSynthesizer(workdir),
+		synthesizer:    NewProtoSourceSynthesizer(span.URIFromURI(folder.URI).Filename()),
 		filePathsByURI: make(map[span.URI]string),
 		fileURIsByPath: make(map[string]span.URI),
 		syntheticFiles: make(map[span.URI]string),
@@ -222,8 +225,9 @@ func (r *Resolver) checkGoModule(path string) (protocompile.SearchResult, error)
 	if dir != "" {
 		if synthesized, err := r.synthesizer.SynthesizeFromGoSource(path, dir); err == nil {
 			syntheticURI := url.URL{
-				Scheme: "proto",
-				Path:   path,
+				Scheme:   "proto",
+				Path:     path,
+				Fragment: r.folder.Name,
 			}
 			uri := span.URI(syntheticURI.String())
 			r.filePathsByURI[uri] = path
@@ -244,8 +248,9 @@ func (r *Resolver) checkGlobalCache(path string) (protocompile.SearchResult, err
 		return protocompile.SearchResult{}, err
 	}
 	syntheticURI := url.URL{
-		Scheme: "proto",
-		Path:   path,
+		Scheme:   "proto",
+		Path:     path,
+		Fragment: r.folder.Name,
 	}
 	uri := span.URI(syntheticURI.String())
 	r.filePathsByURI[uri] = path

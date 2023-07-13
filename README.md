@@ -22,6 +22,7 @@ Features in progress:
   - [ ] Code Actions
   - [ ] Code Lens
   - [ ] Rename symbols
+  - [x] Multi-workspace support
 - Code completion:
   - [x] Message and enum types (with automatic import management)
   - [ ] Import paths 

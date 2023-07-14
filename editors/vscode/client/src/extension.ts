@@ -64,7 +64,7 @@ export function buildLanguageClient(
 		'protols',
 		{
 			command: path.join(process.env.HOME, 'go', 'bin', 'protols'),
-			args: [],
+			args: ['serve'],
 			transport: TransportKind.pipe,
 		} as ServerOptions,
 		{

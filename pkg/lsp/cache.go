@@ -1,4 +1,4 @@
-package main
+package lsp
 
 import (
 	"bufio"
@@ -305,6 +305,7 @@ func (c *Cache) Reindex() {
 	c.resolver.ResetPathMappings()
 
 	allProtos, _ := doublestar.Glob(path.Join(c.compiler.workdir, "**/*.proto"))
+
 	if len(allProtos) == 0 {
 		c.lg.Debug("no protos found")
 		return

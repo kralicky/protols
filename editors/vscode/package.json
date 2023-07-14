@@ -31,13 +31,6 @@
 				]
 			}
 		],
-		"grammars": [
-			{
-				"language": "protobuf",
-				"scopeName": "source.protobuf",
-				"path": "./syntaxes/protobuf.tmLanguage.json"
-			}
-		],
 		"commands": [
 			{
 				"command": "protols.restart",

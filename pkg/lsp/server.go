@@ -2,7 +2,6 @@ package lsp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -11,6 +10,8 @@ import (
 	"github.com/samber/lo"
 	"go.uber.org/zap"
 	"golang.org/x/exp/maps"
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/tools/gopls/pkg/lsp/progress"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/lsp/source"
 	"golang.org/x/tools/gopls/pkg/span"
@@ -21,18 +22,28 @@ type Server struct {
 	lg       *zap.Logger
 	cachesMu sync.RWMutex
 	caches   map[string]*Cache
+	client   protocol.Client
+
+	trackerMu sync.Mutex
+	tracker   *progress.Tracker
+
+	diagnosticStreamMu     sync.RWMutex
+	diagnosticStreamCancel func()
 }
 
-func NewServer(lg *zap.Logger) *Server {
+func NewServer(lg *zap.Logger, client protocol.Client) *Server {
 	return &Server{
-		lg:     lg,
-		caches: map[string]*Cache{},
+		lg:      lg,
+		caches:  map[string]*Cache{},
+		client:  client,
+		tracker: progress.NewTracker(client),
 	}
 }
 
 // Initialize implements protocol.Server.
 func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitialize) (result *protocol.InitializeResult, err error) {
 	folders := params.WorkspaceFolders
+	s.tracker.SetSupportsWorkDoneProgress(params.Capabilities.Window.WorkDoneProgress)
 	s.cachesMu.Lock()
 	for _, folder := range folders {
 		path := span.URIFromURI(folder.URI).Filename()
@@ -452,7 +463,6 @@ func (s *Server) Diagnostic(ctx context.Context, params *protocol.DocumentDiagno
 	case protocol.DiagnosticFull:
 		return &protocol.Or_DocumentDiagnosticReport{
 			Value: protocol.RelatedFullDocumentDiagnosticReport{
-				RelatedDocuments: map[protocol.DocumentURI]interface{}{},
 				FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
 					Kind:     string(protocol.DiagnosticFull),
 					ResultID: resultId,
@@ -463,7 +473,6 @@ func (s *Server) Diagnostic(ctx context.Context, params *protocol.DocumentDiagno
 	case protocol.DiagnosticUnchanged:
 		return &protocol.Or_DocumentDiagnosticReport{
 			Value: protocol.RelatedUnchangedDocumentDiagnosticReport{
-				RelatedDocuments: map[protocol.DocumentURI]interface{}{},
 				UnchangedDocumentDiagnosticReport: protocol.UnchangedDocumentDiagnosticReport{
 					Kind:     string(protocol.DiagnosticUnchanged),
 					ResultID: resultId,
@@ -482,56 +491,54 @@ func (*Server) DiagnosticRefresh(context.Context) error {
 
 // DiagnosticWorkspace implements protocol.Server.
 func (s *Server) DiagnosticWorkspace(ctx context.Context, params *protocol.WorkspaceDiagnosticParams) (*protocol.WorkspaceDiagnosticReport, error) {
-	var ok bool
-	report := &protocol.WorkspaceDiagnosticReport{
-		Items: []protocol.Or_WorkspaceDocumentDiagnosticReport{},
+	if params.PartialResultToken == nil {
+		return nil, jsonrpc2.ErrInvalidRequest
 	}
+
+	s.diagnosticStreamMu.RLock()
+	if s.diagnosticStreamCancel != nil {
+		s.diagnosticStreamCancel()
+	}
+	s.diagnosticStreamMu.RUnlock()
+
+	s.diagnosticStreamMu.Lock()
+	ctx, s.diagnosticStreamCancel = context.WithCancel(context.Background())
+	s.diagnosticStreamMu.Unlock()
+
 	s.cachesMu.RLock()
-	for _, c := range s.caches {
-		workspaceOk := c.ComputeWorkspaceDiagnosticReports(ctx, params.PreviousResultIds,
-			func(uri span.URI, reports []protocol.Diagnostic, kind protocol.DocumentDiagnosticReportKind, resultId string) {
+	caches := maps.Clone(s.caches)
+	s.cachesMu.RUnlock()
 
-				if kind == protocol.DiagnosticUnchanged {
-					report.Items = append(report.Items, protocol.Or_WorkspaceDocumentDiagnosticReport{
-						Value: protocol.WorkspaceUnchangedDocumentDiagnosticReport{
-							URI: protocol.URIFromSpanURI(uri),
-							UnchangedDocumentDiagnosticReport: protocol.UnchangedDocumentDiagnosticReport{
-								Kind:     string(protocol.DiagnosticUnchanged),
-								ResultID: resultId,
-							},
-						},
-					})
-					return
-				}
+	s.diagnosticStreamMu.RLock()
+	defer s.diagnosticStreamMu.RUnlock()
 
-				report.Items = append(report.Items, protocol.Or_WorkspaceDocumentDiagnosticReport{
-					Value: protocol.WorkspaceFullDocumentDiagnosticReport{
-						URI: protocol.URIFromSpanURI(uri),
-						FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
-							Kind:     string(protocol.DiagnosticFull),
-							ResultID: resultId,
-							Items:    reports,
-						},
-					},
+	eg, ctx := errgroup.WithContext(ctx)
+	reportsC := make(chan protocol.WorkspaceDiagnosticReportPartialResult, 100)
+	for _, c := range caches {
+		c := c
+		eg.Go(func() error {
+			c.StreamWorkspaceDiagnostics(ctx, reportsC)
+			return nil
+		})
+	}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case report := <-reportsC:
+				s.client.Progress(ctx, &protocol.ProgressParams{
+					Token: params.PartialResultToken,
+					Value: report,
 				})
-			},
-		)
-		ok = ok || workspaceOk
-		if ctx.Err() != nil {
-			break
+			}
 		}
-	}
+	}()
+	eg.Wait()
 
-	if ok {
-		return report, nil
-	}
-
-	// TODO: this doesn't seem to work
-	// https://github.com/microsoft/vscode-languageserver-node/issues/1261
-	data, _ := json.Marshal(protocol.DiagnosticServerCancellationData{
-		RetriggerRequest: false,
-	})
-	return nil, jsonrpc2.NewErrorWithData(int64(protocol.ServerCancelled), "", json.RawMessage(data))
+	return &protocol.WorkspaceDiagnosticReport{
+		Items: []protocol.Or_WorkspaceDocumentDiagnosticReport{},
+	}, nil
 }
 
 // DocumentColor implements protocol.Server.

@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,8 +11,7 @@ import (
 	"github.com/bufbuild/protocompile/ast"
 	"github.com/bufbuild/protocompile/linker"
 	"github.com/bufbuild/protocompile/reporter"
-	gsync "github.com/kralicky/gpkg/sync"
-	"go.uber.org/atomic"
+	"golang.org/x/exp/slices"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 )
 
@@ -24,7 +24,7 @@ type ProtoDiagnostic struct {
 
 func NewDiagnosticHandler() *DiagnosticHandler {
 	return &DiagnosticHandler{
-		modified: atomic.NewBool(false),
+		diagnostics: map[string]*DiagnosticList{},
 	}
 }
 
@@ -35,6 +35,9 @@ type DiagnosticList struct {
 }
 
 func (dl *DiagnosticList) Add(d *ProtoDiagnostic) {
+	if d == nil {
+		panic("bug: DiagnosticList: attempted to add nil diagnostic")
+	}
 	dl.lock.Lock()
 	defer dl.lock.Unlock()
 	dl.Diagnostics = append(dl.Diagnostics, d)
@@ -44,10 +47,14 @@ func (dl *DiagnosticList) Add(d *ProtoDiagnostic) {
 func (dl *DiagnosticList) Get(prevResultId ...string) (diagnostics []*ProtoDiagnostic, resultId string, unchanged bool) {
 	dl.lock.RLock()
 	defer dl.lock.RUnlock()
+	return dl.getLocked(prevResultId...)
+}
+
+func (dl *DiagnosticList) getLocked(prevResultId ...string) (diagnostics []*ProtoDiagnostic, resultId string, unchanged bool) {
 	if len(prevResultId) == 1 && dl.ResultId == prevResultId[0] {
 		return []*ProtoDiagnostic{}, dl.ResultId, true
 	}
-	return dl.Diagnostics, dl.ResultId, false
+	return slices.Clone(dl.Diagnostics), dl.ResultId, false
 }
 
 func (dl *DiagnosticList) Clear() []*ProtoDiagnostic {
@@ -63,9 +70,21 @@ func (dl *DiagnosticList) resetResultId() {
 	dl.ResultId = time.Now().Format(time.RFC3339Nano)
 }
 
+type (
+	DiagnosticEvent int
+	ListenerFunc    = func(event DiagnosticEvent, path string, diagnostics ...*ProtoDiagnostic)
+)
+
+const (
+	DiagnosticEventAdd DiagnosticEvent = iota
+	DiagnosticEventClear
+)
+
 type DiagnosticHandler struct {
-	diagnostics gsync.Map[string, *DiagnosticList]
-	modified    *atomic.Bool
+	diagnosticsMu sync.RWMutex
+	diagnostics   map[string]*DiagnosticList
+	listenerMu    sync.RWMutex
+	listener      ListenerFunc
 }
 
 func tagsForError(err error) []protocol.DiagnosticTag {
@@ -75,6 +94,15 @@ func tagsForError(err error) []protocol.DiagnosticTag {
 	default:
 		return []protocol.DiagnosticTag{}
 	}
+}
+
+func (dr *DiagnosticHandler) getOrCreateDiagnosticListLocked(filename string) (dl *DiagnosticList, existing bool) {
+	dl, existing = dr.diagnostics[filename]
+	if !existing {
+		dl = &DiagnosticList{}
+		dr.diagnostics[filename] = dl
+	}
+	return
 }
 
 func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
@@ -87,18 +115,23 @@ func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
 	pos := err.GetPosition()
 	filename := pos.Start().Filename
 
-	empty := DiagnosticList{
-		Diagnostics: []*ProtoDiagnostic{},
-	}
-	dl, _ := dr.diagnostics.LoadOrStore(filename, &empty)
-	dl.Add(&ProtoDiagnostic{
+	dr.diagnosticsMu.Lock()
+	dl, _ := dr.getOrCreateDiagnosticListLocked(filename)
+	dr.diagnosticsMu.Unlock()
+
+	newDiagnostic := &ProtoDiagnostic{
 		Pos:      pos,
 		Severity: protocol.SeverityError,
 		Error:    err.Unwrap(),
 		Tags:     tagsForError(err),
-	})
+	}
+	dl.Add(newDiagnostic)
 
-	dr.modified.CompareAndSwap(false, true)
+	dr.listenerMu.RLock()
+	if dr.listener != nil {
+		dr.listener(DiagnosticEventAdd, filename, newDiagnostic)
+	}
+	dr.listenerMu.RUnlock()
 
 	return nil // allow the compiler to continue
 }
@@ -113,22 +146,29 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 	pos := err.GetPosition()
 	filename := pos.Start().Filename
 
-	empty := DiagnosticList{
-		Diagnostics: []*ProtoDiagnostic{},
-	}
-	dl, _ := dr.diagnostics.LoadOrStore(filename, &empty)
-	dl.Add(&ProtoDiagnostic{
+	dr.diagnosticsMu.Lock()
+	dl, _ := dr.getOrCreateDiagnosticListLocked(filename)
+	dr.diagnosticsMu.Unlock()
+
+	newDiagnostic := &ProtoDiagnostic{
 		Pos:      pos,
 		Severity: protocol.SeverityWarning,
 		Error:    err.Unwrap(),
 		Tags:     tagsForError(err),
-	})
+	}
+	dl.Add(newDiagnostic)
 
-	dr.modified.CompareAndSwap(false, true)
+	dr.listenerMu.RLock()
+	if dr.listener != nil {
+		dr.listener(DiagnosticEventAdd, filename, newDiagnostic)
+	}
+	dr.listenerMu.RUnlock()
 }
 
 func (dr *DiagnosticHandler) GetDiagnosticsForPath(path string, prevResultId ...string) ([]*ProtoDiagnostic, string, bool) {
-	dl, ok := dr.diagnostics.Load(path)
+	dr.diagnosticsMu.RLock()
+	defer dr.diagnosticsMu.RUnlock()
+	dl, ok := dr.diagnostics[path]
 	if !ok {
 		return []*ProtoDiagnostic{}, "", false
 	}
@@ -139,20 +179,40 @@ func (dr *DiagnosticHandler) GetDiagnosticsForPath(path string, prevResultId ...
 }
 
 func (dr *DiagnosticHandler) ClearDiagnosticsForPath(path string) {
-	dl, ok := dr.diagnostics.Load(path)
-	if !ok {
-		return
+	dr.diagnosticsMu.Lock()
+	defer dr.diagnosticsMu.Unlock()
+	var prev []*ProtoDiagnostic
+	if dl, ok := dr.diagnostics[path]; ok {
+		prev = dl.Clear()
 	}
-	prev := dl.Clear()
 
 	fmt.Printf("[diagnostic] clearing %d diagnostics for %s\n", len(prev), path)
+
+	dr.listenerMu.RLock()
+	if dr.listener != nil {
+		dr.listener(DiagnosticEventClear, path, prev...)
+	}
+	dr.listenerMu.RUnlock()
 }
 
-func (dr *DiagnosticHandler) MaybeRange(setup func(), fn func(string, *DiagnosticList) bool) bool {
-	if dr.modified.CompareAndSwap(true, false) {
-		setup()
-		dr.diagnostics.Range(fn)
-		return true
+func (dr *DiagnosticHandler) Stream(ctx context.Context, callback ListenerFunc) {
+	dr.diagnosticsMu.RLock()
+
+	dr.listenerMu.Lock()
+	dr.listener = callback
+	dr.listenerMu.Unlock()
+
+	dr.listenerMu.RLock()
+	for path, dl := range dr.diagnostics {
+		callback(DiagnosticEventAdd, path, dl.Diagnostics...)
 	}
-	return false
+	dr.listenerMu.RUnlock()
+
+	dr.diagnosticsMu.RUnlock()
+
+	<-ctx.Done()
+
+	dr.listenerMu.Lock()
+	dr.listener = nil
+	dr.listenerMu.Unlock()
 }

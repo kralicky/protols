@@ -554,6 +554,9 @@ func (c *Cache) ComputeDiagnosticReports(uri span.URI, prevResultId string) ([]p
 		return nil, protocol.DiagnosticUnchanged, resultId, nil
 	}
 	protocolReports := c.toProtocolDiagnostics(rawReports)
+	if protocolReports == nil {
+		protocolReports = []protocol.Diagnostic{}
+	}
 
 	return protocolReports, protocol.DiagnosticFull, resultId, nil
 }
@@ -574,36 +577,54 @@ func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.
 
 type workspaceDiagnosticCallbackFunc = func(uri span.URI, reports []protocol.Diagnostic, kind protocol.DocumentDiagnosticReportKind, resultId string)
 
-func (c *Cache) ComputeWorkspaceDiagnosticReports(ctx context.Context, previousResultIds []protocol.PreviousResultID, callback workspaceDiagnosticCallbackFunc) bool {
-	c.resultsMu.RLock()
-	defer c.resultsMu.RUnlock()
-	var prevResultMapByPath map[string]string
-	return c.diagHandler.MaybeRange(func() {
-		prevResultMapByPath = make(map[string]string, len(previousResultIds))
-		for _, prevResult := range previousResultIds {
-			if p, err := c.resolver.URIToPath(prevResult.URI.SpanURI()); err == nil {
-				prevResultMapByPath[p] = prevResult.Value
+func (c *Cache) StreamWorkspaceDiagnostics(ctx context.Context, ch chan<- protocol.WorkspaceDiagnosticReportPartialResult) {
+	currentDiagnostics := make(map[span.URI][]protocol.Diagnostic)
+	diagnosticVersions := make(map[span.URI]int32)
+	c.diagHandler.Stream(ctx, func(event DiagnosticEvent, path string, diagnostics ...*ProtoDiagnostic) {
+		uri, err := c.resolver.PathToURI(path)
+		if err != nil {
+			return
+		}
+
+		version := diagnosticVersions[uri]
+		version++
+		diagnosticVersions[uri] = version
+
+		switch event {
+		case DiagnosticEventAdd:
+			protocolDiagnostics := c.toProtocolDiagnostics(diagnostics)
+			currentDiagnostics[uri] = append(currentDiagnostics[uri], protocolDiagnostics...)
+			ch <- protocol.WorkspaceDiagnosticReportPartialResult{
+				Items: []protocol.Or_WorkspaceDocumentDiagnosticReport{
+					{
+						Value: protocol.WorkspaceFullDocumentDiagnosticReport{
+							Version: version,
+							URI:     protocol.URIFromSpanURI(uri),
+							FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
+								Kind:  string(protocol.DiagnosticFull),
+								Items: currentDiagnostics[uri],
+							},
+						},
+					},
+				},
+			}
+		case DiagnosticEventClear:
+			delete(currentDiagnostics, uri)
+			ch <- protocol.WorkspaceDiagnosticReportPartialResult{
+				Items: []protocol.Or_WorkspaceDocumentDiagnosticReport{
+					{
+						Value: protocol.WorkspaceFullDocumentDiagnosticReport{
+							Version: version,
+							URI:     protocol.URIFromSpanURI(uri),
+							FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
+								Kind:  string(protocol.DiagnosticFull),
+								Items: []protocol.Diagnostic{},
+							},
+						},
+					},
+				},
 			}
 		}
-	}, func(s string, dl *DiagnosticList) bool {
-		var maybePrevResultId []string
-		prevResultId, ok := prevResultMapByPath[s]
-		if ok {
-			maybePrevResultId = append(maybePrevResultId, prevResultId)
-		}
-		uri, err := c.resolver.PathToURI(s)
-		if err != nil {
-			return true // ???
-		}
-		rawResults, resultId, unchanged := dl.Get(maybePrevResultId...)
-		if unchanged {
-			callback(uri, []protocol.Diagnostic{}, protocol.DiagnosticUnchanged, resultId)
-		} else {
-			protocolResults := c.toProtocolDiagnostics(rawResults)
-
-			callback(uri, protocolResults, protocol.DiagnosticFull, resultId)
-		}
-		return true
 	})
 }
 

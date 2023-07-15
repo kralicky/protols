@@ -96,29 +96,33 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 					zap.String("filename", filename),
 					zap.Error(err),
 				).Error("failed to lookup go module")
+				r.filePathsByURI[m.URI] = ""
 				continue
 			}
 			path := filepath.Join(mod, filepath.Base(filename))
 			r.filePathsByURI[m.URI] = path
 		case source.Close:
-		case source.Save:
-		case source.Change:
-			if m.OnDisk {
-				// check for go_package modification
-				existingPath := r.filePathsByURI[m.URI]
-				filename := m.URI.Filename()
-				mod, err := FastLookupGoModule(filename)
-				if err != nil {
-					r.lg.With(
-						zap.String("filename", filename),
-						zap.Error(err),
-					).Error("failed to lookup go module")
-					continue
-				}
-				updatedPath := filepath.Join(mod, filepath.Base(filename))
-				if updatedPath != existingPath {
-					r.filePathsByURI[m.URI] = updatedPath
-					r.fileURIsByPath[updatedPath] = m.URI
+		case source.Change, source.Save:
+			// check for go_package modification
+			existingPath := r.filePathsByURI[m.URI]
+			filename := m.URI.Filename()
+			mod, err := FastLookupGoModule(filename)
+			if err != nil {
+				r.lg.With(
+					zap.String("filename", filename),
+					zap.Error(err),
+				).Error("failed to lookup go module")
+				continue
+			}
+			updatedPath := filepath.Join(mod, filepath.Base(filename))
+			if updatedPath != existingPath {
+				r.lg.With(
+					zap.String("existingPath", existingPath),
+					zap.String("updatedPath", updatedPath),
+				).Debug("updating path mapping")
+				r.filePathsByURI[m.URI] = updatedPath
+				r.fileURIsByPath[updatedPath] = m.URI
+				if existingPath != "" {
 					delete(r.fileURIsByPath, existingPath)
 				}
 			}
@@ -130,6 +134,7 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 					zap.String("filename", filename),
 					zap.Error(err),
 				).Error("failed to lookup go module")
+				r.filePathsByURI[m.URI] = ""
 				continue
 			}
 			canonicalName := filepath.Join(goPkg, filepath.Base(filename))
@@ -150,8 +155,8 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 // 3.5. Check if the path is a go module path containing generated code, but no proto sources
 // 4. Check if the path is found in the global message cache
 func (r *Resolver) FindFileByPath(path string) (protocompile.SearchResult, error) {
-	r.pathsMu.RLock()
-	defer r.pathsMu.RUnlock()
+	r.pathsMu.Lock()
+	defer r.pathsMu.Unlock()
 
 	if result, err := r.checkWellKnownImportPath(path); err == nil {
 		r.lg.With(zap.String("path", path)).Debug("resolved to well-known import path")

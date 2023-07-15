@@ -16,10 +16,11 @@ import (
 )
 
 type ProtoDiagnostic struct {
-	Pos      ast.SourcePosInfo
-	Severity protocol.DiagnosticSeverity
-	Error    error
-	Tags     []protocol.DiagnosticTag
+	Pos                ast.SourcePosInfo
+	Severity           protocol.DiagnosticSeverity
+	Error              error
+	Tags               []protocol.DiagnosticTag
+	RelatedInformation []protocol.DiagnosticRelatedInformation
 }
 
 func NewDiagnosticHandler() *DiagnosticHandler {
@@ -96,6 +97,22 @@ func tagsForError(err error) []protocol.DiagnosticTag {
 	}
 }
 
+func relatedInformationForError(err error) []protocol.DiagnosticRelatedInformation {
+	var alreadyDefined reporter.AlreadyDefinedError
+	if ok := errors.As(err, &alreadyDefined); ok {
+		return []protocol.DiagnosticRelatedInformation{
+			{
+				Location: protocol.Location{
+					URI:   protocol.DocumentURI(alreadyDefined.PreviousDefinition.Start().Filename),
+					Range: toRange(alreadyDefined.PreviousDefinition),
+				},
+				Message: "previous definition",
+			},
+		}
+	}
+	return nil
+}
+
 func (dr *DiagnosticHandler) getOrCreateDiagnosticListLocked(filename string) (dl *DiagnosticList, existing bool) {
 	dl, existing = dr.diagnostics[filename]
 	if !existing {
@@ -120,10 +137,11 @@ func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
 	dr.diagnosticsMu.Unlock()
 
 	newDiagnostic := &ProtoDiagnostic{
-		Pos:      pos,
-		Severity: protocol.SeverityError,
-		Error:    err.Unwrap(),
-		Tags:     tagsForError(err),
+		Pos:                pos,
+		Severity:           protocol.SeverityError,
+		Error:              err.Unwrap(),
+		Tags:               tagsForError(err),
+		RelatedInformation: relatedInformationForError(err),
 	}
 	dl.Add(newDiagnostic)
 
@@ -161,6 +179,22 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 	dr.listenerMu.RLock()
 	if dr.listener != nil {
 		dr.listener(DiagnosticEventAdd, filename, newDiagnostic)
+	}
+	dr.listenerMu.RUnlock()
+}
+
+func (dr *DiagnosticHandler) PostDiagnostic(d ProtoDiagnostic) {
+	filename := d.Pos.Start().Filename
+
+	dr.diagnosticsMu.Lock()
+	dl, _ := dr.getOrCreateDiagnosticListLocked(filename)
+	dr.diagnosticsMu.Unlock()
+
+	dl.Add(&d)
+
+	dr.listenerMu.RLock()
+	if dr.listener != nil {
+		dr.listener(DiagnosticEventAdd, filename, &d)
 	}
 	dr.listenerMu.RUnlock()
 }

@@ -564,12 +564,19 @@ func (c *Cache) ComputeDiagnosticReports(uri span.URI, prevResultId string) ([]p
 func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.Diagnostic {
 	var reports []protocol.Diagnostic
 	for _, rawReport := range rawReports {
+		for i, info := range rawReport.RelatedInformation {
+			u, err := c.resolver.PathToURI(string(info.Location.URI))
+			if err == nil {
+				rawReport.RelatedInformation[i].Location.URI = protocol.URIFromSpanURI(u)
+			}
+		}
 		reports = append(reports, protocol.Diagnostic{
-			Range:    toRange(rawReport.Pos),
-			Severity: rawReport.Severity,
-			Message:  rawReport.Error.Error(),
-			Tags:     rawReport.Tags,
-			Source:   "protols",
+			Range:              toRange(rawReport.Pos),
+			Severity:           rawReport.Severity,
+			Message:            rawReport.Error.Error(),
+			Tags:               rawReport.Tags,
+			RelatedInformation: rawReport.RelatedInformation,
+			Source:             "protols",
 		})
 	}
 	return reports

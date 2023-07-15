@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/bufbuild/protocompile/ast"
+	"github.com/bufbuild/protocompile/linker"
 	"github.com/bufbuild/protocompile/parser"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 )
@@ -65,7 +66,8 @@ type encoded struct {
 	// the generated data
 	items []semItem
 
-	res        parser.Result
+	parseRes   parser.Result
+	res        linker.Result
 	mapper     *protocol.Mapper
 	rng        *protocol.Range
 	start, end ast.Token
@@ -94,7 +96,7 @@ func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng 
 }
 
 func computeSemanticTokens(cache *Cache, td protocol.TextDocumentIdentifier, rng *protocol.Range) (*encoded, error) {
-	file, err := cache.FindParseResultByURI(td.URI.SpanURI())
+	parseRes, err := cache.FindParseResultByURI(td.URI.SpanURI())
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +105,7 @@ func computeSemanticTokens(cache *Cache, td protocol.TextDocumentIdentifier, rng
 	if err != nil {
 		return nil, err
 	}
-	a := file.AST()
+	a := parseRes.AST()
 	var startToken, endToken ast.Token
 	if rng == nil {
 		startToken = a.Start()
@@ -115,11 +117,15 @@ func computeSemanticTokens(cache *Cache, td protocol.TextDocumentIdentifier, rng
 	}
 
 	e := &encoded{
-		rng:    rng,
-		res:    file,
-		mapper: mapper,
-		start:  startToken,
-		end:    endToken,
+		rng:      rng,
+		parseRes: parseRes,
+		mapper:   mapper,
+		start:    startToken,
+		end:      endToken,
+	}
+
+	if res, err := cache.FindResultByURI(td.URI.SpanURI()); err == nil {
+		e.res = res
 	}
 	if a.Syntax != nil {
 		start, end := a.Syntax.Start(), a.Syntax.End()
@@ -136,7 +142,7 @@ func computeSemanticTokens(cache *Cache, td protocol.TextDocumentIdentifier, rng
 		if end < e.start || start > e.end {
 			continue
 		}
-		e.inspect(node)
+		e.inspect(cache, node)
 	}
 	if endToken == a.End() {
 		e.mkcomments(a.EOF)
@@ -169,7 +175,7 @@ func findNarrowestSemanticToken(tokens []semItem, pos protocol.Position) (narrow
 }
 
 func (s *encoded) mktokens(node ast.Node, tt tokenType, mods tokenModifier) {
-	info := s.res.AST().NodeInfo(node)
+	info := s.parseRes.AST().NodeInfo(node)
 	if !info.IsValid() {
 		return
 	}
@@ -190,7 +196,7 @@ func (s *encoded) mktokens(node ast.Node, tt tokenType, mods tokenModifier) {
 }
 
 func (s *encoded) mkcomments(node ast.Node) {
-	info := s.res.AST().NodeInfo(node)
+	info := s.parseRes.AST().NodeInfo(node)
 	leadingComments := info.LeadingComments()
 	for i := 0; i < leadingComments.Len(); i++ {
 		comment := leadingComments.Index(i)
@@ -216,7 +222,7 @@ func (s *encoded) mkcomments(node ast.Node) {
 	}
 }
 
-func (s *encoded) inspect(node ast.Node) {
+func (s *encoded) inspect(cache *Cache, node ast.Node) {
 	ast.Walk(node, &ast.SimpleVisitor{
 		DoVisitStringLiteralNode: func(node *ast.StringLiteralNode) error {
 			s.mktokens(node, semanticTypeString, 0)

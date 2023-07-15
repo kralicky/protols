@@ -1,7 +1,0 @@
-syntax = "proto3";
-
-option go_package = "github.com/kralicky/protols/pkg/lsp/testdata";
-
-message Foo {
-  string bar = 1;
-}

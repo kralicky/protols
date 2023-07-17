@@ -1075,53 +1075,468 @@ func (c *Cache) GetSyntheticFileContents(ctx context.Context, uri string) (strin
 	}
 }
 
-func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositionParams) (protoreflect.Descriptor, protocol.Range, error) {
-	enc, err := computeSemanticTokens(c, params.TextDocument, &protocol.Range{
-		Start: params.Position,
-		End:   params.Position,
-	})
-	if err != nil {
-		return nil, protocol.Range{}, err
-	}
+type list[T protoreflect.Descriptor] interface {
+	Len() int
+	Get(i int) T
+}
 
-	item, found := findNarrowestSemanticToken(enc.items, params.Position)
-	if !found {
-		return nil, protocol.Range{}, nil
+func findByName[T protoreflect.Descriptor](l list[T], name string) (entry T) {
+	isFullName := strings.Contains(name, ".")
+	for i := 0; i < l.Len(); i++ {
+		if isFullName {
+			if string(l.Get(i).FullName()) == name {
+				entry = l.Get(i)
+				break
+			}
+		} else {
+			if string(l.Get(i).Name()) == name {
+				entry = l.Get(i)
+				break
+			}
+		}
 	}
+	return
+}
+
+type stackEntry struct {
+	node ast.Node
+	desc protoreflect.Descriptor
+	prev *stackEntry
+}
+
+func (s *stackEntry) isResolved() bool {
+	return s.desc != nil
+}
+
+func (s *stackEntry) nextResolved() *stackEntry {
+	res := s
+	for {
+		if res == nil {
+			panic("bug: stackEntry.nextResolved() called with no resolved entry")
+		}
+		if res.isResolved() {
+			return res
+		}
+		res = res.prev
+	}
+}
+
+type stack []*stackEntry
+
+func (s *stack) push(node ast.Node, desc protoreflect.Descriptor) {
+	e := &stackEntry{
+		node: node,
+		desc: desc,
+	}
+	if len(*s) > 0 {
+		(*s)[len(*s)-1].prev = e
+	}
+	*s = append(*s, e)
+}
+
+func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositionParams) (protoreflect.Descriptor, protocol.Range, error) {
 	parseRes, err := c.FindParseResultByURI(params.TextDocument.URI.SpanURI())
 	if err != nil {
 		return nil, protocol.Range{}, err
 	}
+	linkRes, err := c.FindResultByURI(params.TextDocument.URI.SpanURI())
+	if err != nil {
+		return nil, protocol.Range{}, err
+	}
 
-	switch node := item.node.(type) {
-	case ast.IdentValueNode:
-		rng := toRange(parseRes.AST().NodeInfo(node))
-		name := string(node.AsIdentifier())
-		var desc protoreflect.Descriptor
-		var unqualifiedName protoreflect.Name
-		var pkg protoreflect.FullName
-		if strings.Contains(name, ".") {
-			// treat as fully qualified name
-			fn := protoreflect.FullName(name)
-			unqualifiedName = fn.Name()
-			pkg = fn.Parent()
-		} else {
-			unqualifiedName = protoreflect.Name(name)
-			pkg = protoreflect.FullName(parseRes.FileDescriptorProto().GetPackage())
-		}
-		if desc == nil {
-			descs := c.FindAllDescriptorsByPrefix(context.TODO(), string(unqualifiedName), pkg)
-			if len(descs) > 0 {
-				desc = descs[0]
-			}
-		}
-		if desc == nil {
-			return nil, protocol.Range{}, nil
-		}
-		return desc, rng, nil
-	default:
+	mapper, err := c.GetMapper(params.TextDocument.URI.SpanURI())
+	if err != nil {
+		return nil, protocol.Range{}, err
+	}
+
+	enc := semanticItems{
+		parseRes: parseRes,
+		linkRes:  linkRes,
+	}
+	offset, err := mapper.PositionOffset(params.Position)
+	if err != nil {
+		return nil, protocol.Range{}, err
+	}
+	root := parseRes.AST()
+
+	token := root.TokenAtOffset(offset)
+	computeSemanticTokens(c, &enc, ast.WithIntersection(token))
+
+	item, found := findNarrowestSemanticToken(parseRes, enc.items, params.Position)
+	if !found {
 		return nil, protocol.Range{}, nil
 	}
+
+	// traverse the path backwards to find the closest top-level mapped descriptor,
+	// then traverse forwards to find the deeply nested descriptor for the original
+	// ast node
+	stack := stack{}
+	// var haveDescriptor protoreflect.Descriptor
+
+	for i := len(item.path) - 1; i >= 0; i-- {
+		currentNode := item.path[i]
+		nodeDescriptor := parseRes.Descriptor(currentNode)
+		if nodeDescriptor == nil {
+			// this node does not directly map to a descriptor. push it on the stack
+			// and go up one level
+			stack.push(currentNode, nil)
+		} else {
+			// this node does directly map to a descriptor.
+			var desc protoreflect.Descriptor
+			switch nodeDescriptor := nodeDescriptor.(type) {
+			case *descriptorpb.FileDescriptorProto:
+				desc = linkRes.ParentFile()
+			case *descriptorpb.DescriptorProto:
+				var typeName string
+				// check if it's a synthetic map field
+				if nodeDescriptor.GetOptions().GetMapEntry() {
+					// if it is, we're looking for the value message
+					typeName = strings.TrimPrefix(nodeDescriptor.Field[1].GetTypeName(), ".")
+				} else {
+					typeName = nodeDescriptor.GetName()
+				}
+				desc = findByName[protoreflect.MessageDescriptor](linkRes.Messages(), typeName)
+			case *descriptorpb.EnumDescriptorProto:
+				desc = findByName[protoreflect.EnumDescriptor](linkRes.Enums(), nodeDescriptor.GetName())
+			case *descriptorpb.ServiceDescriptorProto:
+				desc = linkRes.Services().ByName(protoreflect.Name(nodeDescriptor.GetName()))
+			case *descriptorpb.UninterpretedOption_NamePart:
+				desc = linkRes.FindOptionNameFieldDescriptor(nodeDescriptor)
+			case *descriptorpb.UninterpretedOption:
+				desc = linkRes.FindOptionMessageDescriptor(nodeDescriptor)
+			// case *descriptorpb.FieldDescriptorProto:
+
+			default:
+				// not a top-level descriptor. push it on the stack and go up one level
+				stack.push(currentNode, nil)
+				continue
+			}
+			if desc == nil {
+				return nil, protocol.Range{}, fmt.Errorf("could not find descriptor for %T", nodeDescriptor)
+			}
+			stack.push(currentNode, desc)
+			break
+		}
+	}
+
+	// fmt.Printf("descriptor: [%T] %v\n", haveDescriptor, haveDescriptor.FullName())
+
+	// fast path: the node is directly mapped to a resolved top-level descriptor
+	if len(stack) == 1 && stack[0].desc != nil {
+		return stack[0].desc, toRange(root.NodeInfo(stack[0].node)), nil
+	}
+
+	for i := len(stack) - 1; i >= 0; i-- {
+		want := stack[i]
+		if want.isResolved() {
+			continue
+		}
+		have := want.nextResolved()
+		switch haveDesc := have.desc.(type) {
+		case protoreflect.FileDescriptor:
+			switch wantNode := want.node.(type) {
+			case ast.FileElement:
+				switch wantNode := wantNode.(type) {
+				case *ast.OptionNode:
+					want.desc = haveDesc.Options().(*descriptorpb.FileOptions).ProtoReflect().Descriptor()
+				case *ast.ImportNode:
+					want.desc = findByName[protoreflect.FileImport](haveDesc.Imports(), wantNode.Name.AsString())
+				case *ast.MessageNode:
+					want.desc = findByName[protoreflect.MessageDescriptor](haveDesc.Messages(), string(wantNode.Name.AsIdentifier()))
+				case *ast.EnumNode:
+					want.desc = findByName[protoreflect.EnumDescriptor](haveDesc.Enums(), string(wantNode.Name.AsIdentifier()))
+				case *ast.ExtendNode:
+					want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Extensions(), string(wantNode.Extendee.AsIdentifier()))
+				case *ast.ServiceNode:
+					want.desc = findByName[protoreflect.ServiceDescriptor](haveDesc.Services(), string(wantNode.Name.AsIdentifier()))
+				}
+			}
+		case protoreflect.MessageDescriptor:
+			switch wantNode := want.node.(type) {
+			case ast.MessageElement:
+				switch wantNode := wantNode.(type) {
+				case *ast.OptionNode:
+					want.desc = haveDesc.Options().(*descriptorpb.MessageOptions).ProtoReflect().Descriptor()
+				case *ast.FieldNode:
+					want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Fields(), string(wantNode.Name.AsIdentifier()))
+				case *ast.MapFieldNode:
+					want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Fields(), string(wantNode.Name.AsIdentifier()))
+				case *ast.OneofNode:
+					want.desc = findByName[protoreflect.OneofDescriptor](haveDesc.Oneofs(), string(wantNode.Name.AsIdentifier()))
+				case *ast.GroupNode:
+					want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Fields(), string(wantNode.Name.AsIdentifier()))
+				case *ast.MessageNode:
+					want.desc = findByName[protoreflect.MessageDescriptor](haveDesc.Messages(), string(wantNode.Name.AsIdentifier()))
+				case *ast.EnumNode:
+					want.desc = findByName[protoreflect.EnumDescriptor](haveDesc.Enums(), string(wantNode.Name.AsIdentifier()))
+				case *ast.ExtendNode:
+					want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Extensions(), string(wantNode.Extendee.AsIdentifier()))
+				case *ast.ExtensionRangeNode:
+				case *ast.ReservedNode:
+				}
+			case *ast.MapTypeNode:
+				want.desc = haveDesc
+			case *ast.FieldReferenceNode:
+				if wantNode.IsAnyTypeReference() {
+					want.desc = linkRes.FindMessageDescriptorByTypeReferenceURLNode(wantNode)
+				} else {
+					want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Fields(), string(wantNode.Name.AsIdentifier()))
+				}
+			case *ast.MessageLiteralNode:
+				want.desc = haveDesc
+			case *ast.MessageFieldNode:
+				name := wantNode.Name
+				if name.IsAnyTypeReference() {
+					want.desc = linkRes.FindMessageDescriptorByTypeReferenceURLNode(name)
+				} else {
+					want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Fields(), string(wantNode.Name.Value()))
+				}
+			case ast.IdentValueNode:
+				want.desc = haveDesc
+			}
+		case protoreflect.ExtensionTypeDescriptor:
+			switch wantNode := want.node.(type) {
+			case ast.IdentValueNode:
+				id := wantNode.AsIdentifier()
+				exts := haveDesc.ParentFile().Extensions()
+				for i := 0; i < exts.Len(); i++ {
+					ext := exts.Get(i)
+					if ext.FullName() == protoreflect.FullName(id) {
+						want.desc = ext
+						break
+					}
+				}
+			}
+		case protoreflect.FieldDescriptor:
+			switch wantNode := want.node.(type) {
+			case ast.FieldDeclNode:
+				switch wantNode := wantNode.(type) {
+				case *ast.FieldNode:
+					want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Message().Fields(), string(wantNode.Name.AsIdentifier()))
+				case *ast.GroupNode:
+					want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Message().Fields(), string(wantNode.Name.AsIdentifier()))
+				case *ast.MapFieldNode:
+					want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Message().Fields(), string(wantNode.Name.AsIdentifier()))
+				case *ast.SyntheticMapField:
+					want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Message().Fields(), string(wantNode.Ident.AsIdentifier()))
+				}
+			case *ast.FieldReferenceNode:
+				want.desc = haveDesc
+				// if wantNode.IsAnyTypeReference() {
+				// 	want.desc = linkRes.FindMessageDescriptorByTypeReferenceURLNode(wantNode)
+				// } else {
+				// 	want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Message().Fields(), string(wantNode.Name.AsIdentifier()))
+				// }
+			case *ast.MessageLiteralNode:
+				want.desc = haveDesc
+			case *ast.MessageFieldNode:
+				name := wantNode.Name
+				if name.IsAnyTypeReference() {
+					want.desc = linkRes.FindMessageDescriptorByTypeReferenceURLNode(name)
+				} else {
+					want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Message().Fields(), string(wantNode.Name.Value()))
+				}
+			case *ast.CompactOptionsNode:
+				want.desc = haveDesc.Options().(*descriptorpb.FieldOptions).ProtoReflect().Descriptor()
+			case ast.IdentValueNode:
+				// need to disambiguate
+				switch haveNode := have.node.(type) {
+				case *ast.FieldReferenceNode:
+					want.desc = haveDesc
+				case ast.FieldDeclNode:
+					switch want.node {
+					case haveNode.FieldType():
+						switch {
+						case haveDesc.IsExtension():
+							// keep the field descriptor
+						case haveDesc.IsMap():
+							want.desc = haveDesc.MapValue()
+						case haveDesc.Kind() == protoreflect.MessageKind:
+							want.desc = haveDesc.Message()
+						case haveDesc.Kind() == protoreflect.EnumKind:
+							want.desc = haveDesc.Enum()
+						}
+					case haveNode.FieldName():
+						// keep the field descriptor
+					}
+				}
+			}
+		case protoreflect.EnumDescriptor:
+			switch wantNode := want.node.(type) {
+			case ast.EnumElement:
+				switch wantNode := wantNode.(type) {
+				case *ast.OptionNode:
+					want.desc = haveDesc.Options().(*descriptorpb.EnumOptions).ProtoReflect().Descriptor()
+				case *ast.EnumValueNode:
+					want.desc = findByName[protoreflect.EnumValueDescriptor](haveDesc.Values(), string(wantNode.Name.AsIdentifier()))
+				case *ast.ReservedNode:
+				}
+				// default:
+				// if enumNode, ok := parentNode.(*ast.EnumValueNode); ok {
+				// 	if want == enumNode.Name {
+				// 		want.resolved = have.Values().ByName(protoreflect.Name(enumNode.Name.AsIdentifier()))
+				// 	}
+				// }
+			case ast.IdentValueNode:
+				want.desc = haveDesc
+			}
+		case protoreflect.EnumValueDescriptor:
+			switch wantNode := want.node.(type) {
+			case ast.EnumValueDeclNode:
+				switch wantNode.(type) {
+				case *ast.EnumValueNode:
+					want.desc = haveDesc // ??
+				case ast.NoSourceNode:
+				}
+			case *ast.CompactOptionsNode:
+				want.desc = haveDesc.Options().(*descriptorpb.EnumValueOptions).ProtoReflect().Descriptor()
+			case ast.IdentValueNode:
+				want.desc = haveDesc
+			}
+		case protoreflect.ServiceDescriptor:
+			switch wantNode := want.node.(type) {
+			case ast.ServiceElement:
+				switch wantNode := wantNode.(type) {
+				case *ast.OptionNode:
+					want.desc = haveDesc.Options().(*descriptorpb.ServiceOptions).ProtoReflect().Descriptor()
+				case *ast.RPCNode:
+					want.desc = findByName[protoreflect.MethodDescriptor](haveDesc.Methods(), string(wantNode.Name.AsIdentifier()))
+				}
+			case ast.IdentValueNode:
+				want.desc = haveDesc
+			}
+		case protoreflect.MethodDescriptor:
+			switch wantNode := want.node.(type) {
+			case ast.RPCElement:
+				switch wantNode.(type) {
+				case *ast.OptionNode:
+					want.desc = haveDesc.Options().(*descriptorpb.MethodOptions).ProtoReflect().Descriptor()
+				default:
+				}
+			case *ast.RPCTypeNode:
+				if haveNode, ok := have.node.(*ast.RPCNode); ok {
+					switch want.node {
+					case haveNode.Input:
+						want.desc = haveDesc.Input()
+					case haveNode.Output:
+						want.desc = haveDesc.Output()
+					}
+				}
+			case *ast.CompactOptionsNode:
+				want.desc = haveDesc.Options().(*descriptorpb.MethodOptions).ProtoReflect().Descriptor()
+			case ast.IdentValueNode:
+				want.desc = haveDesc
+			}
+		default:
+			return nil, protocol.Range{}, fmt.Errorf("unknown descriptor type %T", want.desc)
+		}
+		if want.desc == nil {
+			return nil, protocol.Range{}, fmt.Errorf("failed to find descriptor for %T/%T", want.desc, want.node)
+		}
+
+	}
+
+	return stack[0].desc, toRange(parseRes.AST().NodeInfo(stack[0].node)), nil
+
+	// rng := toRange(parseRes.AST().NodeInfo(item.node))
+	// switch item.typ {
+	// case semanticTypeType, semanticTypeClass, semanticTypeEnum, semanticTypeEnumMember,
+	// 	semanticTypeInterface, semanticTypeStruct, semanticTypeTypeParameter:
+	// 	switch node := item.node.(type) {
+	// 	case ast.IdentValueNode:
+	// 		name := string(node.AsIdentifier())
+	// 		var desc protoreflect.Descriptor
+	// 		var unqualifiedName protoreflect.Name
+	// 		var pkg protoreflect.FullName
+	// 		if strings.Contains(name, ".") {
+	// 			// treat as fully qualified name
+	// 			fn := protoreflect.FullName(name)
+	// 			unqualifiedName = fn.Name()
+	// 			pkg = fn.Parent()
+	// 		} else {
+	// 			unqualifiedName = protoreflect.Name(name)
+	// 			pkg = protoreflect.FullName(parseRes.FileDescriptorProto().GetPackage())
+	// 		}
+	// 		if desc == nil {
+	// 			descs := c.FindAllDescriptorsByPrefix(context.TODO(), string(unqualifiedName), pkg)
+	// 			for _, d := range descs {
+	// 				// only show if the name matches exactly
+	// 				if strings.HasSuffix(string(d.FullName()), name) {
+	// 					desc = d
+	// 					break
+	// 				}
+	// 			}
+	// 		}
+	// 		if desc == nil {
+	// 			return nil, protocol.Range{}, nil
+	// 		}
+	// 		switch desc := desc.(type) {
+	// 		case protoreflect.FieldDescriptor:
+	// 			// For field descriptors that are part of options, show the underlying message type
+	// 			if desc.IsExtension() && desc.Kind() == protoreflect.MessageKind {
+	// 				m := desc.Message()
+	// 				if m != nil {
+	// 					return m, rng, nil
+	// 				}
+	// 			}
+	// 		}
+	// 		return desc, rng, nil
+	// 	default:
+	// 		return nil, protocol.Range{}, nil
+	// 	}
+
+	// case semanticTypeProperty:
+	// 	d := parseRes.Descriptor(item.node)
+	// 	if d == nil {
+	// 		return nil, protocol.Range{}, nil
+	// 	}
+	// 	if item.path == nil {
+	// 		return nil, protocol.Range{}, nil
+	// 	}
+
+	// 	switch d := d.(type) {
+	// 	case *descriptorpb.UninterpretedOption:
+	// 		optionNode, ok := parseRes.OptionNode(d).(*ast.OptionNode)
+	// 		if !ok {
+	// 			return nil, protocol.Range{}, nil
+	// 		}
+	// 		// we're hovering over an option. to continue, we need linker results for this file
+	// 		linkRes, err := c.FindResultByURI(params.TextDocument.URI.SpanURI())
+	// 		if err != nil {
+	// 			return nil, protocol.Range{}, err
+	// 		}
+	// 		for i := len(item.path) - 2; i >= 0; i-- {
+	// 			parent := item.path[i]
+	// 			if fieldDescNode, ok := parent.(ast.FieldDeclNode); ok {
+	// 				fieldDescriptor := linkRes.FieldDescriptor(fieldDescNode)
+	// 				if fieldDescriptor != nil {
+	// 					opts := fieldDescriptor.GetOptions()
+	// 					opts = opts
+	// 				}
+	// 			}
+	// 		}
+	// 		srcInfo := linkRes.FindOptionSourceInfo(optionNode)
+	// 		if srcInfo == nil {
+	// 			return nil, protocol.Range{}, nil
+	// 		}
+	// 		// the field we are looking for is one of the child elements of this option
+	// 		switch info := srcInfo.Children.(type) {
+	// 		case *sourceinfo.ArrayLiteralSourceInfo:
+	// 		case *sourceinfo.MessageLiteralSourceInfo:
+	// 			for fieldNode, srcInfo := range info.Fields {
+	// 				if fieldNode.Name.Name == item.node {
+	// 					srcInfo = srcInfo
+	// 				}
+	// 			}
+	// 		}
+
+	// 	}
+
+	// 	return nil, protocol.Range{}, nil
+	// default:
+	// 	return nil, protocol.Range{}, nil
+	// }
+
 }
 
 func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([]protocol.Location, error) {
@@ -1144,7 +1559,17 @@ func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([
 	case protoreflect.MethodDescriptor:
 		node = containingFileResolver.MethodNode(protoutil.ProtoFromMethodDescriptor(desc))
 	case protoreflect.FieldDescriptor:
-		node = containingFileResolver.FieldNode(protoutil.ProtoFromFieldDescriptor(desc))
+		if !desc.IsExtension() {
+			node = containingFileResolver.FieldNode(protoutil.ProtoFromFieldDescriptor(desc))
+		} else {
+			exts := desc.ParentFile().Extensions()
+			for i := 0; i < exts.Len(); i++ {
+				ext := exts.Get(i)
+				if ext.FullName() == desc.FullName() {
+					node = containingFileResolver.FieldNode(protoutil.ProtoFromFieldDescriptor(ext))
+				}
+			}
+		}
 	case protoreflect.EnumValueDescriptor:
 		node = containingFileResolver.EnumValueNode(protoutil.ProtoFromEnumValueDescriptor(desc))
 	case protoreflect.OneofDescriptor:
@@ -1154,6 +1579,9 @@ func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([
 		c.lg.Debug("definition is an import: ", zap.String("import", containingFileResolver.Path()))
 	default:
 		return nil, fmt.Errorf("unexpected descriptor type %T", desc)
+	}
+	if node == nil {
+		return nil, fmt.Errorf("failed to find node for %q", desc.FullName())
 	}
 
 	info := containingFileResolver.AST().NodeInfo(node)

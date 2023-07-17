@@ -73,6 +73,10 @@ export function buildLanguageClient(
 			synchronize: {fileEvents: workspace.createFileSystemWatcher('**/*.proto')},
 			revealOutputChannelOn: RevealOutputChannelOn.Never,
 			outputChannel: vscode.window.createOutputChannel('Protobuf Language Server'),
+			markdown: {
+				isTrusted: true,
+				supportHtml: true,
+			}
 		} as LanguageClientOptions,
 	);
 	return c;

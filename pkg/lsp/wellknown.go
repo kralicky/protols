@@ -1,8 +1,10 @@
 package lsp
 
-// import all well-known types
+// import some extra well-known types
 import (
 	_ "google.golang.org/genproto/googleapis/api/annotations"
+	_ "google.golang.org/genproto/googleapis/api/httpbody"
+	_ "google.golang.org/genproto/googleapis/api/label"
 	_ "google.golang.org/genproto/googleapis/rpc/code"
 	_ "google.golang.org/genproto/googleapis/rpc/context"
 	_ "google.golang.org/genproto/googleapis/rpc/context/attribute_context"

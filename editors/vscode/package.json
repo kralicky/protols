@@ -39,8 +39,22 @@
 			{
 				"command": "protols.stop",
 				"title": "Protols: Stop Language Server"
+			},
+			{
+				"command": "protols.ast",
+				"title": "Protols: Show Document AST",
+				"icon": "$(open-preview)"
 			}
 		],
+		"menus": {
+			"editor/title": [
+				{
+					"when": "resourceLangId == protobuf",
+					"command": "protols.ast",
+					"group": "navigation@100"
+				}
+			]
+		},
 		"configuration": {
 			"type": "object",
 			"title": "Protobuf Language Server",
@@ -74,10 +88,13 @@
 	"devDependencies": {
 		"@types/mocha": "^9.1.0",
 		"@types/node": "^16.11.7",
-		"@typescript-eslint/eslint-plugin": "^5.54.0",
-		"@typescript-eslint/parser": "^5.54.0",
-		"eslint": "^8.35.0",
+		"@typescript-eslint/eslint-plugin": "^5.62.0",
+		"@typescript-eslint/parser": "^5.62.0",
+		"eslint": "^8.45.0",
+		"eslint-config-prettier": "^8.8.0",
+		"eslint-plugin-prettier": "^5.0.0",
 		"mocha": "^9.2.1",
-		"typescript": "^5.0.2"
+		"typescript": "^5.1.6",
+		"prettier": "^3.0.0"
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +22,20 @@ type ProtoDiagnostic struct {
 	Error              error
 	Tags               []protocol.DiagnosticTag
 	RelatedInformation []protocol.DiagnosticRelatedInformation
+	CodeActions        []CodeAction
+}
+
+type CodeActions struct {
+	Items []CodeAction `json:"items"`
+}
+
+type CodeAction struct {
+	Title       string                  `json:"title"`
+	Path        string                  `json:"path,omitempty"`
+	Kind        protocol.CodeActionKind `json:"kind,omitempty"`
+	IsPreferred bool                    `json:"isPreferred,omitempty"`
+	Edits       []protocol.TextEdit     `json:"edit,omitempty"`
+	Command     *protocol.Command       `json:"command,omitempty"`
 }
 
 func NewDiagnosticHandler() *DiagnosticHandler {
@@ -88,13 +103,109 @@ type DiagnosticHandler struct {
 	listener      ListenerFunc
 }
 
-func tagsForError(err error) []protocol.DiagnosticTag {
-	switch errors.Unwrap(err).(type) {
+func tagsForError(errWithPos reporter.ErrorWithPos) []protocol.DiagnosticTag {
+	err := errWithPos.Unwrap()
+
+	switch err.(type) {
 	case linker.ErrorUnusedImport:
 		return []protocol.DiagnosticTag{protocol.Unnecessary}
 	default:
 		return []protocol.DiagnosticTag{}
 	}
+}
+
+func codeActionsForError(errWithPos reporter.ErrorWithPos) []CodeAction {
+	err := errWithPos.Unwrap()
+	pos := errWithPos.GetPosition()
+	switch err := err.(type) {
+	case linker.ErrorUnusedImport:
+		return []CodeAction{
+			{
+				Title:       "Remove unused import",
+				Kind:        protocol.QuickFix,
+				Path:        pos.Start().Filename,
+				IsPreferred: true,
+				Edits: []protocol.TextEdit{
+					{
+						// delete the line (column 0 of the current line to column 0 of the next line)
+						Range: protocol.Range{
+							Start: protocol.Position{
+								Line:      uint32(pos.Start().Line - 1),
+								Character: 0,
+							},
+							End: protocol.Position{
+								Line:      uint32(pos.End().Line), // the next line
+								Character: 0,
+							},
+						},
+						NewText: "",
+					},
+				},
+			},
+		}
+	case linker.ErrorUndeclaredName:
+		name := err.UndeclaredName()
+		if strings.Contains(name, ".") {
+			break
+		}
+		f := err.ParentFile().(*ast.FileNode)
+		tokens := f.Tokens()
+		eof, _ := tokens.Last()
+		last, _ := tokens.Previous(eof)
+		info := f.TokenInfo(last)
+		end := info.End()
+
+		// insert the new message between the last non-comment token and the EOF token
+		insertPos := protocol.Position{
+			Line:      uint32(end.Line - 1),
+			Character: uint32(end.Col - 1),
+		}
+
+		textToInsert := fmt.Sprintf("\n\nmessage %s {\n  \n}", name)
+		// figure out where to trigger a range selection, after the text would be inserted
+		revealRange := protocol.Range{
+			Start: protocol.Position{
+				Line:      uint32(end.Line + 1), // 2 lines after the end of the last token
+				Character: 0,                    // column 0
+			},
+			End: protocol.Position{
+				Line:      uint32(end.Line + 3),
+				Character: 1,
+			},
+		}
+		selectRange := protocol.Range{
+			Start: protocol.Position{
+				Line:      uint32(end.Line + 2),
+				Character: 2,
+			},
+			End: protocol.Position{
+				Line:      uint32(end.Line + 2),
+				Character: 2,
+			},
+		}
+		return []CodeAction{
+			{
+				Title:       "Add definition for " + name + " in this file",
+				Kind:        protocol.QuickFix,
+				Path:        f.Name(),
+				IsPreferred: true,
+				Edits: []protocol.TextEdit{
+					{
+						Range: protocol.Range{
+							Start: insertPos,
+							End:   insertPos,
+						},
+						NewText: textToInsert,
+					},
+				},
+				Command: NewSelectRangeCommand(SelectRangeParams{
+					SelectRange: selectRange,
+					RevealRange: revealRange,
+				}),
+			},
+		}
+	}
+	return []CodeAction{}
 }
 
 func relatedInformationForError(err error) []protocol.DiagnosticRelatedInformation {
@@ -142,6 +253,7 @@ func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
 		Error:              err.Unwrap(),
 		Tags:               tagsForError(err),
 		RelatedInformation: relatedInformationForError(err),
+		CodeActions:        codeActionsForError(err),
 	}
 	dl.Add(newDiagnostic)
 
@@ -169,10 +281,11 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 	dr.diagnosticsMu.Unlock()
 
 	newDiagnostic := &ProtoDiagnostic{
-		Pos:      pos,
-		Severity: protocol.SeverityWarning,
-		Error:    err.Unwrap(),
-		Tags:     tagsForError(err),
+		Pos:         pos,
+		Severity:    protocol.SeverityWarning,
+		Error:       err.Unwrap(),
+		Tags:        tagsForError(err),
+		CodeActions: codeActionsForError(err),
 	}
 	dl.Add(newDiagnostic)
 

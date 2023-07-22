@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -101,6 +102,13 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			CompletionProvider: &protocol.CompletionOptions{
 				TriggerCharacters: []string{"."},
 			},
+			CodeActionProvider: &protocol.CodeActionOptions{
+				CodeActionKinds: []protocol.CodeActionKind{
+					protocol.QuickFix,
+					protocol.Refactor,
+					protocol.RefactorExtract,
+				},
+			},
 			// DeclarationProvider: &protocol.Or_ServerCapabilities_declarationProvider{Value: true},
 			// TypeDefinitionProvider: true,
 			ReferencesProvider: &protocol.Or_ServerCapabilities_referencesProvider{Value: true},
@@ -143,6 +151,12 @@ func (s *Server) CacheForURI(uri protocol.DocumentURI) (*Cache, error) {
 	}
 	for path, c := range caches {
 		if filepath.HasPrefix(u.Path, path) {
+			return c, nil
+		}
+	}
+	// worst case, use the first cache that tracks the given uri (todo: this can be improved)
+	for _, c := range caches {
+		if c.TracksURI(uri) {
 			return c, nil
 		}
 	}
@@ -589,6 +603,17 @@ func (s *Server) NonstandardRequest(ctx context.Context, method string, params i
 		}
 
 		return c.GetSyntheticFileContents(ctx, u)
+	case "protols/ast":
+		u := params.([]any)[0].(string)
+		c, err := s.CacheForURI(protocol.DocumentURI(u))
+		if err != nil {
+			return nil, err
+		}
+		parseRes, err := c.FindParseResultByURI(span.URIFromURI(u))
+		if err != nil {
+			return nil, err
+		}
+		return DumpAST(parseRes.AST(), parseRes), nil
 	default:
 		return nil, jsonrpc2.ErrMethodNotFound
 	}
@@ -626,6 +651,31 @@ func (s *Server) DidChangeWorkspaceFolders(ctx context.Context, params *protocol
 	}
 	s.cachesMu.Unlock()
 	return nil
+}
+
+// CodeAction implements protocol.Server.
+func (s *Server) CodeAction(ctx context.Context, params *protocol.CodeActionParams) ([]protocol.CodeAction, error) {
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+	diagnostics := params.Context.Diagnostics
+	var result []protocol.CodeAction
+	for _, d := range diagnostics {
+		if d.Data == nil {
+			continue
+		}
+		data, err := d.Data.MarshalJSON()
+		if err != nil {
+			return nil, err
+		}
+		codeActions := CodeActions{}
+		if err := json.Unmarshal(data, &codeActions); err != nil {
+			return nil, err
+		}
+		result = append(result, c.ToProtocolCodeActions(codeActions.Items, &d)...)
+	}
+	return result, nil
 }
 
 // =====================
@@ -690,11 +740,6 @@ func (s *Server) WillSaveWaitUntil(ctx context.Context, params *protocol.WillSav
 // WorkDoneProgressCancel implements protocol.Server.
 func (*Server) WorkDoneProgressCancel(context.Context, *protocol.WorkDoneProgressCancelParams) error {
 	return jsonrpc2.ErrMethodNotFound
-}
-
-// CodeAction implements protocol.Server.
-func (s *Server) CodeAction(ctx context.Context, params *protocol.CodeActionParams) (result []protocol.CodeAction, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
 }
 
 // CodeLens implements protocol.Server.

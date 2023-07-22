@@ -65,7 +65,14 @@ type semanticItem struct {
 	path []ast.Node
 }
 
+type semanticItemsOptions struct {
+	skipComments bool
+}
+
 type semanticItems struct {
+	// options used when computing semantic tokens
+	options semanticItemsOptions
+
 	// the generated data
 	items []semanticItem
 
@@ -177,6 +184,10 @@ func (s *semanticItems) mktokens(node ast.Node, path []ast.Node, tt tokenType, m
 }
 
 func (s *semanticItems) mkcomments(node ast.Node) {
+	if s.options.skipComments {
+		return
+	}
+
 	info := s.parseRes.AST().NodeInfo(node)
 	leadingComments := info.LeadingComments()
 	for i := 0; i < leadingComments.Len(); i++ {
@@ -211,10 +222,9 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 	// - ensure tokens for child nodes are created in the correct order
 	ast.Walk(node, &ast.SimpleVisitor{
 		DoVisitSyntaxNode: func(node *ast.SyntaxNode) error {
-			s.mkcomments(node.Syntax)
-			s.mktokens(node.Keyword, nil, semanticTypeKeyword, 0)
-			s.mktokens(node.Equals, nil, semanticTypeOperator, 0)
-			s.mktokens(node.Syntax, nil, semanticTypeString, 0)
+			s.mktokens(node.Keyword, append(tracker.Path(), node.Keyword), semanticTypeKeyword, 0)
+			s.mktokens(node.Equals, append(tracker.Path(), node.Equals), semanticTypeOperator, 0)
+			s.mktokens(node.Syntax, append(tracker.Path(), node.Syntax), semanticTypeString, 0)
 			return nil
 		},
 		DoVisitFileNode: func(node *ast.FileNode) error {

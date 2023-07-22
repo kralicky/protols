@@ -1,10 +1,12 @@
 package lsp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,42 +17,45 @@ import (
 	"github.com/bufbuild/protocompile"
 	"github.com/jhump/protoreflect/desc"
 	"go.uber.org/zap"
-	"golang.org/x/exp/maps"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/lsp/source"
 	"golang.org/x/tools/gopls/pkg/span"
 )
 
+type ImportSource int
+
+const (
+	SourceWellKnown ImportSource = iota + 1
+	SourceRelativePath
+	SourceLocalGoModule
+	SourceGoModuleCache
+	SourceSynthetic
+)
+
 type Resolver struct {
 	*cache.OverlayFS
-	folder         protocol.WorkspaceFolder
-	synthesizer    *ProtoSourceSynthesizer
-	lg             *zap.Logger
-	pathsMu        sync.RWMutex
-	filePathsByURI map[span.URI]string // URI -> canonical file path (go package + file name)
-	fileURIsByPath map[string]span.URI // canonical file path (go package + file name) -> URI
-
-	syntheticFiles map[span.URI]string
+	folder             protocol.WorkspaceFolder
+	synthesizer        *ProtoSourceSynthesizer
+	lg                 *zap.Logger
+	pathsMu            sync.RWMutex
+	filePathsByURI     map[span.URI]string // URI -> canonical file path (go package + file name)
+	fileURIsByPath     map[string]span.URI // canonical file path (go package + file name) -> URI
+	importSourcesByURI map[span.URI]ImportSource
+	syntheticFiles     map[span.URI]string
 }
 
 func NewResolver(folder protocol.WorkspaceFolder, lg *zap.Logger) *Resolver {
 	return &Resolver{
-		lg:             lg,
-		folder:         folder,
-		OverlayFS:      cache.NewOverlayFS(cache.NewMemoizedFS()),
-		synthesizer:    NewProtoSourceSynthesizer(span.URIFromURI(folder.URI).Filename()),
-		filePathsByURI: make(map[span.URI]string),
-		fileURIsByPath: make(map[string]span.URI),
-		syntheticFiles: make(map[span.URI]string),
+		lg:                 lg,
+		folder:             folder,
+		OverlayFS:          cache.NewOverlayFS(cache.NewMemoizedFS()),
+		synthesizer:        NewProtoSourceSynthesizer(span.URIFromURI(folder.URI).Filename()),
+		filePathsByURI:     make(map[span.URI]string),
+		fileURIsByPath:     make(map[string]span.URI),
+		syntheticFiles:     make(map[span.URI]string),
+		importSourcesByURI: map[span.URI]ImportSource{},
 	}
-}
-
-func (r *Resolver) ResetPathMappings() {
-	r.pathsMu.Lock()
-	defer r.pathsMu.Unlock()
-	maps.Clear(r.filePathsByURI)
-	maps.Clear(r.fileURIsByPath)
 }
 
 func (r *Resolver) PathToURI(path string) (span.URI, error) {
@@ -88,47 +93,58 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 	defer r.pathsMu.Unlock()
 	for _, m := range modifications {
 		switch m.Action {
-		case source.Open:
-			filename := m.URI.Filename()
-			mod, err := FastLookupGoModule(filename)
-			if err != nil {
-				r.lg.With(
-					zap.String("filename", filename),
-					zap.Error(err),
-				).Error("failed to lookup go module")
-				r.filePathsByURI[m.URI] = ""
-				continue
-			}
-			path := filepath.Join(mod, filepath.Base(filename))
-			r.filePathsByURI[m.URI] = path
 		case source.Close:
 		case source.Change, source.Save:
 			// check for go_package modification
-			existingPath := r.filePathsByURI[m.URI]
-			filename := m.URI.Filename()
-			mod, err := FastLookupGoModule(filename)
-			if err != nil {
-				r.lg.With(
-					zap.String("filename", filename),
-					zap.Error(err),
-				).Error("failed to lookup go module")
-				continue
-			}
-			updatedPath := filepath.Join(mod, filepath.Base(filename))
-			if updatedPath != existingPath {
-				r.lg.With(
-					zap.String("existingPath", existingPath),
-					zap.String("updatedPath", updatedPath),
-				).Debug("updating path mapping")
-				r.filePathsByURI[m.URI] = updatedPath
-				r.fileURIsByPath[updatedPath] = m.URI
-				if existingPath != "" {
-					delete(r.fileURIsByPath, existingPath)
+			if r.importSourcesByURI[m.URI] == SourceLocalGoModule {
+				existingPath := r.filePathsByURI[m.URI]
+				filename := m.URI.Filename()
+				var f io.ReadCloser
+				if m.Text != nil {
+					f = io.NopCloser(bytes.NewReader(m.Text))
+				} else {
+					var err error
+					f, err = os.Open(filename)
+					if err != nil {
+						r.lg.With(
+							zap.String("filename", filename),
+							zap.Error(err),
+						).Error("failed to open file")
+						continue
+					}
+				}
+				mod, err := FastLookupGoModule(f)
+				if err != nil {
+					r.lg.With(
+						zap.String("filename", filename),
+						zap.Error(err),
+					).Error("failed to lookup go module")
+					continue
+				}
+				updatedPath := filepath.Join(mod, filepath.Base(filename))
+				if updatedPath != existingPath {
+					r.lg.With(
+						zap.String("existingPath", existingPath),
+						zap.String("updatedPath", updatedPath),
+					).Debug("updating path mapping")
+					r.filePathsByURI[m.URI] = updatedPath
+					r.fileURIsByPath[updatedPath] = m.URI
+					if existingPath != "" {
+						delete(r.fileURIsByPath, existingPath)
+					}
 				}
 			}
 		case source.Create:
 			filename := m.URI.Filename()
-			goPkg, err := FastLookupGoModule(filename)
+			f, err := os.Open(filename)
+			if err != nil {
+				r.lg.With(
+					zap.String("filename", filename),
+					zap.Error(err),
+				).Error("failed to open file")
+				continue
+			}
+			goPkg, err := FastLookupGoModule(f)
 			if err != nil {
 				r.lg.With(
 					zap.String("filename", filename),
@@ -143,7 +159,11 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 		case source.Delete:
 			path := r.filePathsByURI[m.URI]
 			delete(r.filePathsByURI, m.URI)
+			delete(r.importSourcesByURI, m.URI)
 			delete(r.fileURIsByPath, path)
+		case source.Open:
+			// not necessarily a local go module
+
 		}
 	}
 }
@@ -158,19 +178,27 @@ func (r *Resolver) FindFileByPath(path string) (protocompile.SearchResult, error
 	r.pathsMu.Lock()
 	defer r.pathsMu.Unlock()
 
-	if result, err := r.checkWellKnownImportPath(path); err == nil {
-		r.lg.With(zap.String("path", path)).Debug("resolved to well-known import path")
-		return result, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		r.lg.With(zap.String("path", path)).Error("failed to check well-known import path")
-		return protocompile.SearchResult{}, err
+	var isSynthetic bool
+	if uri, ok := r.fileURIsByPath[path]; ok {
+		if strings.HasPrefix(string(uri), "proto://") {
+			isSynthetic = true
+		}
 	}
-	if result, err := r.checkFS(path); err == nil {
-		r.lg.With(zap.String("path", path)).Debug("resolved to cached file")
-		return result, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		r.lg.With(zap.String("path", path), zap.Error(err)).Debug("failed to check cached file")
-		return protocompile.SearchResult{}, err
+	if !isSynthetic {
+		if result, err := r.checkWellKnownImportPath(path); err == nil {
+			r.lg.With(zap.String("path", path)).Debug("resolved to well-known import path")
+			return result, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			r.lg.With(zap.String("path", path)).Error("failed to check well-known import path")
+			return protocompile.SearchResult{}, err
+		}
+		if result, err := r.checkFS(path); err == nil {
+			r.lg.With(zap.String("path", path)).Debug("resolved to cached file")
+			return result, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			r.lg.With(zap.String("path", path), zap.Error(err)).Debug("failed to check cached file")
+			return protocompile.SearchResult{}, err
+		}
 	}
 	if result, err := r.checkGoModule(path); err == nil {
 		r.lg.With(zap.String("path", path)).Debug("resolved to go module")
@@ -196,7 +224,7 @@ func (r *Resolver) checkWellKnownImportPath(path string) (protocompile.SearchRes
 		return r.checkGlobalCache(path)
 	}
 	if strings.HasPrefix(path, "gogoproto/") {
-		return r.checkGlobalCache("github.com/gogo/protobuf/" + path)
+		return r.checkGoModule("github.com/gogo/protobuf/" + path)
 	}
 	return protocompile.SearchResult{}, os.ErrNotExist
 }
@@ -218,17 +246,21 @@ func (r *Resolver) checkFS(path string) (protocompile.SearchResult, error) {
 }
 
 func (r *Resolver) checkGoModule(path string) (protocompile.SearchResult, error) {
-	f, dir, err := r.synthesizer.ImportFromGoModule(path)
+	filePath, pkgData, err := r.synthesizer.ImportFromGoModule(path)
 	if err == nil {
-		src, err := os.Open(f)
+		src, err := os.Open(filePath)
 		if err == nil {
+			uri := span.URIFromPath(filePath)
+			r.filePathsByURI[uri] = path
+			r.fileURIsByPath[path] = uri
+			// todo: need to fix the incomplete go_package values in some imports
 			return protocompile.SearchResult{
 				Source: src,
 			}, nil
 		}
 	}
-	if dir != "" {
-		if synthesized, err := r.synthesizer.SynthesizeFromGoSource(path, dir); err == nil {
+	if pkgData != nil {
+		if synthesized, err := r.synthesizer.SynthesizeFromGoSource(path, pkgData); err == nil {
 			syntheticURI := url.URL{
 				Scheme:   "proto",
 				Path:     path,
@@ -279,4 +311,40 @@ func (r *Resolver) SyntheticFiles() []span.URI {
 		return string(uris[i]) < string(uris[j])
 	})
 	return uris
+}
+
+func FastLookupGoModule(f io.ReadCloser) (string, error) {
+	// Search the .proto file for `option go_package = "...";`
+	// We know this will be somewhere at the top of the file.
+	scan := bufio.NewScanner(f)
+	for scan.Scan() {
+		line := scan.Text()
+		if !strings.HasPrefix(line, "option") {
+			continue
+		}
+		index := strings.Index(line, "go_package")
+		if index == -1 {
+			continue
+		}
+		for ; index < len(line); index++ {
+			if line[index] == '=' {
+				break
+			}
+		}
+		for ; index < len(line); index++ {
+			if line[index] == '"' {
+				break
+			}
+		}
+		if index == len(line) {
+			continue
+		}
+		startIdx := index + 1
+		endIdx := strings.LastIndexByte(line, '"')
+		if endIdx <= startIdx {
+			continue
+		}
+		return line[startIdx:endIdx], nil
+	}
+	return "", fmt.Errorf("no go_package option found")
 }

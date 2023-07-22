@@ -1,13 +1,12 @@
 package lsp
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path"
 	"runtime"
 	"strings"
@@ -149,6 +148,11 @@ func (c *Cache) FindFileByURI(uri span.URI) (protoreflect.FileDescriptor, error)
 	return c.results.AsResolver().FindFileByPath(path)
 }
 
+func (c *Cache) TracksURI(uri protocol.DocumentURI) bool {
+	_, err := c.resolver.URIToPath(span.URIFromURI(string(uri)))
+	return err == nil
+}
+
 // FindMessageByName implements linker.Resolver.
 func (c *Cache) FindMessageByName(name protoreflect.FullName) (protoreflect.MessageType, error) {
 	c.resultsMu.RLock()
@@ -210,7 +214,7 @@ func NewCache(workspace protocol.WorkspaceFolder, lg *zap.Logger) *Cache {
 		PreCompile:     cache.preCompile,
 		PostCompile:    cache.postCompile,
 	}
-	cache.Reindex()
+	cache.Initialize()
 	return cache
 }
 
@@ -299,10 +303,9 @@ func (c *Cache) postCompile(path string) {
 	}
 }
 
-func (c *Cache) Reindex() {
-	c.lg.Debug("reindexing")
-
-	c.resolver.ResetPathMappings()
+func (c *Cache) Initialize() {
+	c.lg.Debug("initializing")
+	defer c.lg.Debug("done initializing")
 
 	allProtos, _ := doublestar.Glob(path.Join(c.compiler.workdir, "**/*.proto"))
 
@@ -570,16 +573,60 @@ func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.
 				rawReport.RelatedInformation[i].Location.URI = protocol.URIFromSpanURI(u)
 			}
 		}
-		reports = append(reports, protocol.Diagnostic{
+		report := protocol.Diagnostic{
 			Range:              toRange(rawReport.Pos),
 			Severity:           rawReport.Severity,
 			Message:            rawReport.Error.Error(),
 			Tags:               rawReport.Tags,
 			RelatedInformation: rawReport.RelatedInformation,
 			Source:             "protols",
-		})
+		}
+		if len(rawReport.CodeActions) > 0 {
+			jsonData, err := json.Marshal(CodeActions{Items: rawReport.CodeActions})
+			if err != nil {
+				c.lg.With(
+					zap.Error(err),
+					zap.String("sourcePos", rawReport.Pos.String()),
+				).Error("failed to marshal suggested fixes")
+				continue
+			}
+			rawMsg := json.RawMessage(jsonData)
+			report.Data = &rawMsg
+		}
+		reports = append(reports, report)
 	}
 	return reports
+}
+
+func (c *Cache) ToProtocolCodeActions(rawCodeActions []CodeAction, associatedDiagnostic *protocol.Diagnostic) []protocol.CodeAction {
+	if len(rawCodeActions) == 0 {
+		return []protocol.CodeAction{}
+	}
+	var codeActions []protocol.CodeAction
+	for _, rawCodeAction := range rawCodeActions {
+		u, err := c.resolver.PathToURI(string(rawCodeAction.Path))
+		if err != nil {
+			c.lg.With(
+				zap.Error(err),
+				zap.String("path", string(rawCodeAction.Path)),
+			).Error("failed to resolve path to uri")
+			continue
+		}
+		uri := protocol.URIFromSpanURI(u)
+		codeActions = append(codeActions, protocol.CodeAction{
+			Title:       rawCodeAction.Title,
+			Kind:        rawCodeAction.Kind,
+			Diagnostics: []protocol.Diagnostic{*associatedDiagnostic},
+			IsPreferred: rawCodeAction.IsPreferred,
+			Edit: &protocol.WorkspaceEdit{
+				Changes: map[protocol.DocumentURI][]protocol.TextEdit{
+					uri: rawCodeAction.Edits,
+				},
+			},
+			Command: rawCodeAction.Command,
+		})
+	}
+	return codeActions
 }
 
 type workspaceDiagnosticCallbackFunc = func(uri span.URI, reports []protocol.Diagnostic, kind protocol.DocumentDiagnosticReportKind, resultId string)
@@ -641,7 +688,7 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
 
-	res, err := c.FindResultByURI(doc.URI.SpanURI())
+	res, err := c.FindParseResultByURI(doc.URI.SpanURI())
 	if err != nil {
 		return nil, err
 	}
@@ -1150,6 +1197,9 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 	}
 
 	enc := semanticItems{
+		options: semanticItemsOptions{
+			skipComments: true,
+		},
 		parseRes: parseRes,
 		linkRes:  linkRes,
 	}
@@ -1434,6 +1484,11 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 			return nil, protocol.Range{}, fmt.Errorf("failed to find descriptor for %T/%T", want.desc, want.node)
 		}
 
+	}
+
+	if len(stack) == 0 {
+		// nothing relevant found
+		return nil, protocol.Range{}, nil
 	}
 
 	return stack[0].desc, toRange(parseRes.AST().NodeInfo(stack[0].node)), nil
@@ -1931,45 +1986,4 @@ func editAddImport(parseRes parser.Result, path string) protocol.TextEdit {
 		},
 		NewText: text,
 	}
-}
-
-func FastLookupGoModule(filename string) (string, error) {
-	// Search the .proto file for `option go_package = "...";`
-	// We know this will be somewhere at the top of the file.
-	f, err := os.Open(filename)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	scan := bufio.NewScanner(f)
-	for scan.Scan() {
-		line := scan.Text()
-		if !strings.HasPrefix(line, "option") {
-			continue
-		}
-		index := strings.Index(line, "go_package")
-		if index == -1 {
-			continue
-		}
-		for ; index < len(line); index++ {
-			if line[index] == '=' {
-				break
-			}
-		}
-		for ; index < len(line); index++ {
-			if line[index] == '"' {
-				break
-			}
-		}
-		if index == len(line) {
-			continue
-		}
-		startIdx := index + 1
-		endIdx := strings.LastIndexByte(line, '"')
-		if endIdx <= startIdx {
-			continue
-		}
-		return line[startIdx:endIdx], nil
-	}
-	return "", fmt.Errorf("no go_package option found")
 }

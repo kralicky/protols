@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/bmatcuk/doublestar"
 	"github.com/bufbuild/protocompile"
@@ -707,7 +706,7 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 		if uri, err := c.resolver.PathToURI(path); err == nil {
 			links = append(links, protocol.DocumentLink{
 				Range:  toRange(nameInfo),
-				Target: string(uri),
+				Target: (*string)(&uri),
 			})
 		}
 	}
@@ -739,31 +738,6 @@ func collectOptions[V proto.Message, T ast.OptionDeclNode, U optionGetter[V]](t 
 		return true
 	})
 }
-
-var (
-	wellKnownFileOptions = map[string]string{
-		"java_package":                  "string",
-		"java_outer_classname":          "string",
-		"java_multiple_files":           "bool",
-		"java_generate_equals_and_hash": "bool",
-		"java_string_check_utf8":        "bool",
-		"optimize_for":                  "google.protobuf.FileOptions.OptimizeMode",
-		"go_package":                    "string",
-		"cc_generic_services":           "bool",
-		"java_generic_services":         "bool",
-		"py_generic_services":           "bool",
-		"php_generic_services":          "bool",
-		"deprecated":                    "bool",
-		"cc_enable_arenas":              "bool",
-		"objc_class_prefix":             "string",
-		"csharp_namespace":              "string",
-		"swift_prefix":                  "string",
-		"php_class_prefix":              "string",
-		"php_namespace":                 "string",
-		"php_metadata_namespace":        "string",
-		"ruby_package":                  "string",
-	}
-)
 
 func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, rng protocol.Range) []protocol.InlayHint {
 	var hints []protocol.InlayHint
@@ -1492,106 +1466,6 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 	}
 
 	return stack[0].desc, toRange(parseRes.AST().NodeInfo(stack[0].node)), nil
-
-	// rng := toRange(parseRes.AST().NodeInfo(item.node))
-	// switch item.typ {
-	// case semanticTypeType, semanticTypeClass, semanticTypeEnum, semanticTypeEnumMember,
-	// 	semanticTypeInterface, semanticTypeStruct, semanticTypeTypeParameter:
-	// 	switch node := item.node.(type) {
-	// 	case ast.IdentValueNode:
-	// 		name := string(node.AsIdentifier())
-	// 		var desc protoreflect.Descriptor
-	// 		var unqualifiedName protoreflect.Name
-	// 		var pkg protoreflect.FullName
-	// 		if strings.Contains(name, ".") {
-	// 			// treat as fully qualified name
-	// 			fn := protoreflect.FullName(name)
-	// 			unqualifiedName = fn.Name()
-	// 			pkg = fn.Parent()
-	// 		} else {
-	// 			unqualifiedName = protoreflect.Name(name)
-	// 			pkg = protoreflect.FullName(parseRes.FileDescriptorProto().GetPackage())
-	// 		}
-	// 		if desc == nil {
-	// 			descs := c.FindAllDescriptorsByPrefix(context.TODO(), string(unqualifiedName), pkg)
-	// 			for _, d := range descs {
-	// 				// only show if the name matches exactly
-	// 				if strings.HasSuffix(string(d.FullName()), name) {
-	// 					desc = d
-	// 					break
-	// 				}
-	// 			}
-	// 		}
-	// 		if desc == nil {
-	// 			return nil, protocol.Range{}, nil
-	// 		}
-	// 		switch desc := desc.(type) {
-	// 		case protoreflect.FieldDescriptor:
-	// 			// For field descriptors that are part of options, show the underlying message type
-	// 			if desc.IsExtension() && desc.Kind() == protoreflect.MessageKind {
-	// 				m := desc.Message()
-	// 				if m != nil {
-	// 					return m, rng, nil
-	// 				}
-	// 			}
-	// 		}
-	// 		return desc, rng, nil
-	// 	default:
-	// 		return nil, protocol.Range{}, nil
-	// 	}
-
-	// case semanticTypeProperty:
-	// 	d := parseRes.Descriptor(item.node)
-	// 	if d == nil {
-	// 		return nil, protocol.Range{}, nil
-	// 	}
-	// 	if item.path == nil {
-	// 		return nil, protocol.Range{}, nil
-	// 	}
-
-	// 	switch d := d.(type) {
-	// 	case *descriptorpb.UninterpretedOption:
-	// 		optionNode, ok := parseRes.OptionNode(d).(*ast.OptionNode)
-	// 		if !ok {
-	// 			return nil, protocol.Range{}, nil
-	// 		}
-	// 		// we're hovering over an option. to continue, we need linker results for this file
-	// 		linkRes, err := c.FindResultByURI(params.TextDocument.URI.SpanURI())
-	// 		if err != nil {
-	// 			return nil, protocol.Range{}, err
-	// 		}
-	// 		for i := len(item.path) - 2; i >= 0; i-- {
-	// 			parent := item.path[i]
-	// 			if fieldDescNode, ok := parent.(ast.FieldDeclNode); ok {
-	// 				fieldDescriptor := linkRes.FieldDescriptor(fieldDescNode)
-	// 				if fieldDescriptor != nil {
-	// 					opts := fieldDescriptor.GetOptions()
-	// 					opts = opts
-	// 				}
-	// 			}
-	// 		}
-	// 		srcInfo := linkRes.FindOptionSourceInfo(optionNode)
-	// 		if srcInfo == nil {
-	// 			return nil, protocol.Range{}, nil
-	// 		}
-	// 		// the field we are looking for is one of the child elements of this option
-	// 		switch info := srcInfo.Children.(type) {
-	// 		case *sourceinfo.ArrayLiteralSourceInfo:
-	// 		case *sourceinfo.MessageLiteralSourceInfo:
-	// 			for fieldNode, srcInfo := range info.Fields {
-	// 				if fieldNode.Name.Name == item.node {
-	// 					srcInfo = srcInfo
-	// 				}
-	// 			}
-	// 		}
-
-	// 	}
-
-	// 	return nil, protocol.Range{}, nil
-	// default:
-	// 	return nil, protocol.Range{}, nil
-	// }
-
 }
 
 func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([]protocol.Location, error) {
@@ -1810,12 +1684,6 @@ func makeTooltip(d protoreflect.Descriptor) *protocol.OrPTooltipPLabel {
 }
 
 func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options protocol.FormattingOptions, maybeRange ...protocol.Range) ([]protocol.TextEdit, error) {
-	// printer := protoprint.Printer{
-	// 	CustomSortFunction: SortElements,
-	// 	Indent:             "  ", // todo: tabs break semantic tokens
-	// 	Compact:            protoprint.CompactDefault,
-	// }
-
 	mapper, err := c.GetMapper(doc.URI.SpanURI())
 	if err != nil {
 		return nil, err
@@ -1825,44 +1693,6 @@ func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options prot
 		return nil, err
 	}
 
-	// if len(maybeRange) == 1 {
-	// 	rng := maybeRange[0]
-	// 	// format range
-	// 	start, end, err := mapper.RangeOffsets(rng)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-
-	// 	// Try to map the range to a single top-level element. If the range overlaps
-	// 	// multiple top level elements, we'll just format the whole file.
-
-	// 	targetDesc, err := findDescriptorWithinRangeOffsets(res, start, end)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	splicedBuffer := bytes.NewBuffer(bytes.Clone(mapper.Content[:start]))
-
-	// 	wrap, err := desc.WrapDescriptor(targetDesc)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-
-	// 	err = printer.PrintProto(wrap, splicedBuffer)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	splicedBuffer.Write(mapper.Content[end:])
-	// 	spliced := splicedBuffer.Bytes()
-	// 	// fmt.Printf("old:\n%s\nnew:\n%s\n", string(mapper.Content), string(spliced))
-
-	// 	edits := diff.Bytes(mapper.Content, spliced)
-	// 	return source.ToProtocolEdits(mapper, edits)
-	// }
-
-	// wrap, err := desc.WrapFile(res.Descriptor(res.FileNode()).(protoreflect.FileDescriptor))
-	// if err != nil {
-	// 	return nil, err
-	// }
 	// format whole file
 	buf := bytes.NewBuffer(make([]byte, 0, len(mapper.Content)))
 	format := newFormatter(buf, res.AST())
@@ -1896,94 +1726,4 @@ func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, l
 		combined = append(combined, results...)
 	}
 	return combined
-}
-
-func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *protocol.CompletionList, err error) {
-	doc := params.TextDocument
-	parseRes, err := c.FindParseResultByURI(doc.URI.SpanURI())
-	if err != nil {
-		return nil, err
-	}
-	mapper, err := c.GetMapper(doc.URI.SpanURI())
-	if err != nil {
-		return nil, err
-	}
-	posOffset, err := mapper.PositionOffset(params.Position)
-	if err != nil {
-		return nil, err
-	}
-
-	fileNode := parseRes.AST()
-
-	completions := []protocol.CompletionItem{}
-	thisPackage := parseRes.FileDescriptorProto().GetPackage()
-
-	ast.Walk(fileNode, &ast.SimpleVisitor{
-		DoVisitMessageNode: func(node *ast.MessageNode) error {
-			scopeBegin := fileNode.NodeInfo(node.OpenBrace).Start().Offset
-			scopeEnd := fileNode.NodeInfo(node.CloseBrace).End().Offset
-
-			if posOffset < scopeBegin || posOffset > scopeEnd {
-				return nil
-			}
-
-			// find the text from the start of the line to the cursor
-			startOffset, err := mapper.PositionOffset(protocol.Position{
-				Line:      params.Position.Line,
-				Character: 0,
-			})
-			if err != nil {
-				return err
-			}
-
-			ctx, ca := context.WithTimeout(context.Background(), 1*time.Second)
-			defer ca()
-			text := strings.TrimLeftFunc(string(mapper.Content[startOffset:posOffset]), unicode.IsSpace)
-			fmt.Println("finding completions for", text)
-			matches := c.FindAllDescriptorsByPrefix(ctx, text, protoreflect.FullName(thisPackage))
-			for _, match := range matches {
-				var compl protocol.CompletionItem
-				parent := match.ParentFile()
-				pkg := parent.Package()
-				if pkg != protoreflect.FullName(thisPackage) {
-					compl.Label = string(pkg) + "." + string(match.Name())
-					compl.AdditionalTextEdits = []protocol.TextEdit{editAddImport(parseRes, parent.Path())}
-				} else {
-					compl.Label = string(match.Name())
-				}
-				switch match.(type) {
-				case protoreflect.MessageDescriptor:
-					compl.Kind = protocol.ClassCompletion
-				case protoreflect.EnumDescriptor:
-					compl.Kind = protocol.EnumCompletion
-				default:
-					continue
-				}
-				completions = append(completions, compl)
-			}
-			return nil
-		},
-	})
-
-	return &protocol.CompletionList{
-		Items: completions,
-	}, nil
-}
-
-func editAddImport(parseRes parser.Result, path string) protocol.TextEdit {
-	insertionPoint := parseRes.ImportInsertionPoint()
-	text := fmt.Sprintf("import \"%s\";\n", path)
-	return protocol.TextEdit{
-		Range: protocol.Range{
-			Start: protocol.Position{
-				Line:      uint32(insertionPoint.Line - 1),
-				Character: uint32(insertionPoint.Col - 1),
-			},
-			End: protocol.Position{
-				Line:      uint32(insertionPoint.Line - 1),
-				Character: uint32(insertionPoint.Col - 1),
-			},
-		},
-		NewText: text,
-	}
 }

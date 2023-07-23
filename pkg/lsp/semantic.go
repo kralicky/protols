@@ -4,11 +4,13 @@ import (
 	"math"
 	"sort"
 
+	"github.com/bufbuild/protocompile"
 	"github.com/bufbuild/protocompile/ast"
 	"github.com/bufbuild/protocompile/linker"
 	"github.com/bufbuild/protocompile/parser"
 	"golang.org/x/exp/slices"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 type tokenType uint32
@@ -253,7 +255,7 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 		},
 		DoVisitRuneNode: func(node *ast.RuneNode) error {
 			switch node.Rune {
-			case '}', ';', '{', '.', ',', '<', '>', '(', ')':
+			case '}', '{', '.', ',', '<', '>', '(', ')', '[', ']', ';':
 				s.mkcomments(node)
 			default:
 				s.mktokens(node, tracker.Path(), semanticTypeOperator, 0)
@@ -261,26 +263,33 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			return nil
 		},
 		DoVisitOneofNode: func(node *ast.OneofNode) error {
-			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeClass, 0)
+			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeInterface, semanticModifierDefinition)
 			return nil
 		},
 		DoVisitMessageNode: func(node *ast.MessageNode) error {
-			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeClass, 0)
+			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeType, semanticModifierDefinition)
 			return nil
 		},
 		DoVisitFieldNode: func(node *ast.FieldNode) error {
-			s.mktokens(node.FldType, append(tracker.Path(), node.FldType), semanticTypeType, 0)
-			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeProperty, 0)
+			var modifier tokenModifier
+			if id := string(node.FldType.AsIdentifier()); protocompile.IsScalarType(id) || protocompile.IsWellKnownType(protoreflect.FullName(id)) {
+				modifier = semanticModifierDefaultLibrary
+			}
+			s.mktokens(node.FldType, append(tracker.Path(), node.FldType), semanticTypeType, modifier)
+			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeVariable, semanticModifierDefinition)
 			return nil
 		},
 		DoVisitFieldReferenceNode: func(node *ast.FieldReferenceNode) error {
 			if node.IsAnyTypeReference() {
-				s.mktokens(node.URLPrefix, append(tracker.Path(), node.URLPrefix), semanticTypeNamespace, 0)
+				s.mktokens(node.URLPrefix, append(tracker.Path(), node.URLPrefix), semanticTypeType, semanticModifierDefaultLibrary)
+				s.mktokens(node.Slash, append(tracker.Path(), node.Slash), semanticTypeType, semanticModifierDefaultLibrary)
 				s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeType, 0)
 			} else if node.IsExtension() {
-				s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeType, 0)
+				s.mktokens(node.Open, append(tracker.Path(), node.Open), semanticTypeOperator, 0)
+				s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeVariable, semanticModifierStatic)
+				s.mktokens(node.Close, append(tracker.Path(), node.Close), semanticTypeOperator, 0)
 			} else {
-				s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeProperty, 0)
+				s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeParameter, 0)
 			}
 			return nil
 		},

@@ -498,11 +498,6 @@ func (s *Server) Diagnostic(ctx context.Context, params *protocol.DocumentDiagno
 	}
 }
 
-// DiagnosticRefresh implements protocol.Server.
-func (*Server) DiagnosticRefresh(context.Context) error {
-	return jsonrpc2.ErrMethodNotFound
-}
-
 // DiagnosticWorkspace implements protocol.Server.
 func (s *Server) DiagnosticWorkspace(ctx context.Context, params *protocol.WorkspaceDiagnosticParams) (*protocol.WorkspaceDiagnosticReport, error) {
 	if params.PartialResultToken == nil {
@@ -615,7 +610,7 @@ func (s *Server) NonstandardRequest(ctx context.Context, method string, params i
 		}
 		return DumpAST(parseRes.AST(), parseRes), nil
 	default:
-		return nil, jsonrpc2.ErrMethodNotFound
+		return nil, fmt.Errorf("%w: unknown nonstandard request %q", jsonrpc2.ErrMethodNotFound, method)
 	}
 }
 
@@ -682,247 +677,266 @@ func (s *Server) CodeAction(ctx context.Context, params *protocol.CodeActionPara
 // Unimplemented Methods
 // =====================
 
+func notImplemented(method string) error {
+	return fmt.Errorf("%w: %q not yet implemented", jsonrpc2.ErrMethodNotFound, method)
+}
+
 // Declaration implements protocol.Server.
 func (*Server) Declaration(context.Context, *protocol.DeclarationParams) (*protocol.Or_textDocument_declaration, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("Declaration")
 }
 
 // SignatureHelp implements protocol.Server.
 func (*Server) SignatureHelp(context.Context, *protocol.SignatureHelpParams) (*protocol.SignatureHelp, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("SignatureHelp")
 }
 
 // Subtypes implements protocol.Server.
 func (*Server) Subtypes(context.Context, *protocol.TypeHierarchySubtypesParams) ([]protocol.TypeHierarchyItem, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("Subtypes")
 }
 
 // Supertypes implements protocol.Server.
 func (*Server) Supertypes(context.Context, *protocol.TypeHierarchySupertypesParams) ([]protocol.TypeHierarchyItem, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("Supertypes")
 }
 
 // Symbol implements protocol.Server.
 func (*Server) Symbol(context.Context, *protocol.WorkspaceSymbolParams) ([]protocol.SymbolInformation, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("Symbol")
 }
 
 // TypeDefinition implements protocol.Server.
 func (*Server) TypeDefinition(context.Context, *protocol.TypeDefinitionParams) ([]protocol.Location, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("TypeDefinition")
 }
 
 // WillCreateFiles implements protocol.Server.
 func (*Server) WillCreateFiles(context.Context, *protocol.CreateFilesParams) (*protocol.WorkspaceEdit, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("WillCreateFiles")
 }
 
 // WillDeleteFiles implements protocol.Server.
 func (*Server) WillDeleteFiles(context.Context, *protocol.DeleteFilesParams) (*protocol.WorkspaceEdit, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("WillDeleteFiles")
 }
 
 // WillRenameFiles implements protocol.Server.
 func (*Server) WillRenameFiles(context.Context, *protocol.RenameFilesParams) (*protocol.WorkspaceEdit, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("WillRenameFiles")
 }
 
 // WillSave implements protocol.Server.
 func (*Server) WillSave(context.Context, *protocol.WillSaveTextDocumentParams) error {
-	return jsonrpc2.ErrMethodNotFound
+	return notImplemented("WillSave")
 }
 
 // WillSaveWaitUntil implements protocol.Server.
 func (s *Server) WillSaveWaitUntil(ctx context.Context, params *protocol.WillSaveTextDocumentParams) ([]protocol.TextEdit, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("WillSaveWaitUntil")
 }
 
 // WorkDoneProgressCancel implements protocol.Server.
 func (*Server) WorkDoneProgressCancel(context.Context, *protocol.WorkDoneProgressCancelParams) error {
-	return jsonrpc2.ErrMethodNotFound
+	return notImplemented("WorkDoneProgressCancel")
 }
 
 // CodeLens implements protocol.Server.
 func (s *Server) CodeLens(ctx context.Context, params *protocol.CodeLensParams) (result []protocol.CodeLens, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("CodeLens")
 }
 
 // CodeLensRefresh implements protocol.Server.
 func (s *Server) CodeLensRefresh(ctx context.Context) (err error) {
-	return jsonrpc2.ErrMethodNotFound
+	return notImplemented("CodeLensRefresh")
 }
 
 // CodeLensResolve implements protocol.Server.
 func (s *Server) CodeLensResolve(ctx context.Context, params *protocol.CodeLens) (result *protocol.CodeLens, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("CodeLensResolve")
 }
 
 // ColorPresentation implements protocol.Server.
 func (s *Server) ColorPresentation(ctx context.Context, params *protocol.ColorPresentationParams) (result []protocol.ColorPresentation, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("ColorPresentation")
 }
 
 // CompletionResolve implements protocol.Server.
 func (s *Server) CompletionResolve(ctx context.Context, params *protocol.CompletionItem) (result *protocol.CompletionItem, err error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("CompletionResolve")
 }
 
 // Rename implements protocol.Server.
 func (*Server) Rename(context.Context, *protocol.RenameParams) (*protocol.WorkspaceEdit, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("Rename")
 }
 
 // Resolve implements protocol.Server.
 func (*Server) Resolve(context.Context, *protocol.InlayHint) (*protocol.InlayHint, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("Resolve")
 }
 
 // ResolveCodeAction implements protocol.Server.
 func (*Server) ResolveCodeAction(context.Context, *protocol.CodeAction) (*protocol.CodeAction, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("ResolveCodeAction")
 }
 
 // ResolveCodeLens implements protocol.Server.
 func (*Server) ResolveCodeLens(context.Context, *protocol.CodeLens) (*protocol.CodeLens, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("ResolveCodeLens")
 }
 
 // ResolveCompletionItem implements protocol.Server.
 func (*Server) ResolveCompletionItem(context.Context, *protocol.CompletionItem) (*protocol.CompletionItem, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("ResolveCompletionItem")
 }
 
 // ResolveDocumentLink implements protocol.Server.
 func (*Server) ResolveDocumentLink(context.Context, *protocol.DocumentLink) (*protocol.DocumentLink, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("ResolveDocumentLink")
 }
 
 // ResolveWorkspaceSymbol implements protocol.Server.
 func (*Server) ResolveWorkspaceSymbol(context.Context, *protocol.WorkspaceSymbol) (*protocol.WorkspaceSymbol, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("ResolveWorkspaceSymbol")
 }
 
 // SelectionRange implements protocol.Server.
 func (*Server) SelectionRange(context.Context, *protocol.SelectionRangeParams) ([]protocol.SelectionRange, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("SelectionRange")
 }
 
 // SetTrace implements protocol.Server.
 func (*Server) SetTrace(context.Context, *protocol.SetTraceParams) error {
-	return jsonrpc2.ErrMethodNotFound
+	return notImplemented("SetTrace")
 }
 
 // OnTypeFormatting implements protocol.Server.
 func (*Server) OnTypeFormatting(context.Context, *protocol.DocumentOnTypeFormattingParams) ([]protocol.TextEdit, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("OnTypeFormatting")
 }
 
 // OutgoingCalls implements protocol.Server.
 func (*Server) OutgoingCalls(context.Context, *protocol.CallHierarchyOutgoingCallsParams) ([]protocol.CallHierarchyOutgoingCall, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("OutgoingCalls")
 }
 
 // PrepareCallHierarchy implements protocol.Server.
 func (*Server) PrepareCallHierarchy(context.Context, *protocol.CallHierarchyPrepareParams) ([]protocol.CallHierarchyItem, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("PrepareCallHierarchy")
 }
 
 // PrepareRename implements protocol.Server.
 func (*Server) PrepareRename(context.Context, *protocol.PrepareRenameParams) (*protocol.Msg_PrepareRename2Gn, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("PrepareRename")
 }
 
 // PrepareTypeHierarchy implements protocol.Server.
 func (*Server) PrepareTypeHierarchy(context.Context, *protocol.TypeHierarchyPrepareParams) ([]protocol.TypeHierarchyItem, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("PrepareTypeHierarchy")
 }
 
 // Progress implements protocol.Server.
 func (*Server) Progress(context.Context, *protocol.ProgressParams) error {
-	return jsonrpc2.ErrMethodNotFound
+	return notImplemented("Progress")
 }
 
 // RangeFormatting implements protocol.Server.
 func (s *Server) RangeFormatting(ctx context.Context, params *protocol.DocumentRangeFormattingParams) ([]protocol.TextEdit, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("RangeFormatting")
 }
 
 // InlayHintRefresh implements protocol.Server.
 func (*Server) InlayHintRefresh(context.Context) error {
-	return jsonrpc2.ErrMethodNotFound
+	return notImplemented("InlayHintRefresh")
 }
 
 // InlineValue implements protocol.Server.
 func (*Server) InlineValue(context.Context, *protocol.InlineValueParams) ([]protocol.Or_InlineValue, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("InlineValue")
 }
 
 // InlineValueRefresh implements protocol.Server.
 func (*Server) InlineValueRefresh(context.Context) error {
-	return jsonrpc2.ErrMethodNotFound
+	return notImplemented("InlineValueRefresh")
 }
 
 // LinkedEditingRange implements protocol.Server.
 func (*Server) LinkedEditingRange(context.Context, *protocol.LinkedEditingRangeParams) (*protocol.LinkedEditingRanges, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("LinkedEditingRange")
 }
 
 // Moniker implements protocol.Server.
 func (*Server) Moniker(context.Context, *protocol.MonikerParams) ([]protocol.Moniker, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("Moniker")
 }
 
 // Implementation implements protocol.Server.
 func (*Server) Implementation(context.Context, *protocol.ImplementationParams) ([]protocol.Location, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("Implementation")
 }
 
 // IncomingCalls implements protocol.Server.
 func (*Server) IncomingCalls(context.Context, *protocol.CallHierarchyIncomingCallsParams) ([]protocol.CallHierarchyIncomingCall, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("IncomingCalls")
 }
 
 // DidChangeConfiguration implements protocol.Server.
 func (*Server) DidChangeConfiguration(context.Context, *protocol.DidChangeConfigurationParams) error {
-	return jsonrpc2.ErrMethodNotFound
+	return notImplemented("DidChangeConfiguration")
 }
 
 // DidChangeNotebookDocument implements protocol.Server.
 func (*Server) DidChangeNotebookDocument(context.Context, *protocol.DidChangeNotebookDocumentParams) error {
-	return jsonrpc2.ErrMethodNotFound
+	return notImplemented("DidChangeNotebookDocument")
 }
 
 // DidChangeWatchedFiles implements protocol.Server.
 func (*Server) DidChangeWatchedFiles(context.Context, *protocol.DidChangeWatchedFilesParams) error {
-	return jsonrpc2.ErrMethodNotFound
+	return notImplemented("DidChangeWatchedFiles")
 }
 
 // DidCloseNotebookDocument implements protocol.Server.
 func (*Server) DidCloseNotebookDocument(context.Context, *protocol.DidCloseNotebookDocumentParams) error {
-	return jsonrpc2.ErrMethodNotFound
+	return notImplemented("DidCloseNotebookDocument")
 }
 
 // DidOpenNotebookDocument implements protocol.Server.
 func (*Server) DidOpenNotebookDocument(context.Context, *protocol.DidOpenNotebookDocumentParams) error {
-	return jsonrpc2.ErrMethodNotFound
+	return notImplemented("DidOpenNotebookDocument")
 }
 
 // DidSaveNotebookDocument implements protocol.Server.
 func (*Server) DidSaveNotebookDocument(context.Context, *protocol.DidSaveNotebookDocumentParams) error {
-	return jsonrpc2.ErrMethodNotFound
+	return notImplemented("DidSaveNotebookDocument")
 }
 
 // ExecuteCommand implements protocol.Server.
 func (*Server) ExecuteCommand(context.Context, *protocol.ExecuteCommandParams) (interface{}, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("ExecuteCommand")
 }
 
 // Exit implements protocol.Server.
 func (*Server) Exit(context.Context) error {
-	return jsonrpc2.ErrMethodNotFound
+	return notImplemented("Exit")
 }
 
 // FoldingRange implements protocol.Server.
 func (*Server) FoldingRange(context.Context, *protocol.FoldingRangeParams) ([]protocol.FoldingRange, error) {
-	return nil, jsonrpc2.ErrMethodNotFound
+	return nil, notImplemented("FoldingRange")
+}
+
+// InlineCompletion implements protocol.Server.
+func (*Server) InlineCompletion(context.Context, *protocol.InlineCompletionParams) (*protocol.Or_Result_textDocument_inlineCompletion, error) {
+	return nil, notImplemented("InlineCompletion")
+}
+
+// RangesFormatting implements protocol.Server.
+func (*Server) RangesFormatting(context.Context, *protocol.DocumentRangesFormattingParams) ([]protocol.TextEdit, error) {
+	return nil, notImplemented("RangesFormatting")
+}
+
+// DiagnosticRefresh implements protocol.Server.
+func (*Server) DiagnosticRefresh(context.Context) error {
+	return notImplemented("DiagnosticRefresh")
 }

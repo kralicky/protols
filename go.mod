@@ -1,6 +1,6 @@
 module github.com/kralicky/protols
 
-go 1.20
+go 1.21
 
 require (
 	github.com/bmatcuk/doublestar v1.3.4

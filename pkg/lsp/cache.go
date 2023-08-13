@@ -1228,8 +1228,6 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 				desc = linkRes.FindOptionNameFieldDescriptor(nodeDescriptor)
 			case *descriptorpb.UninterpretedOption:
 				desc = linkRes.FindOptionMessageDescriptor(nodeDescriptor)
-			// case *descriptorpb.FieldDescriptorProto:
-
 			default:
 				// not a top-level descriptor. push it on the stack and go up one level
 				stack.push(currentNode, nil)
@@ -1270,9 +1268,19 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 				case *ast.EnumNode:
 					want.desc = findByName[protoreflect.EnumDescriptor](haveDesc.Enums(), string(wantNode.Name.AsIdentifier()))
 				case *ast.ExtendNode:
-					want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Extensions(), string(wantNode.Extendee.AsIdentifier()))
+					want.desc = haveDesc
 				case *ast.ServiceNode:
 					want.desc = findByName[protoreflect.ServiceDescriptor](haveDesc.Services(), string(wantNode.Name.AsIdentifier()))
+				}
+			case *ast.FieldNode:
+				want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Extensions(), string(wantNode.Name.AsIdentifier()))
+			case *ast.CompoundIdentNode:
+				switch prevNode := want.prev.node.(type) {
+				case *ast.ExtendNode:
+					// looking for the extendee in the "extend <extendee> {" statement
+					if wantNode.AsIdentifier() == prevNode.Extendee.AsIdentifier() {
+						want.desc = linkRes.FindExtendeeDescriptorByName(protoreflect.FullName(wantNode.AsIdentifier()))
+					}
 				}
 			}
 		case protoreflect.MessageDescriptor:
@@ -1321,13 +1329,15 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 		case protoreflect.ExtensionTypeDescriptor:
 			switch wantNode := want.node.(type) {
 			case ast.IdentValueNode:
-				id := wantNode.AsIdentifier()
-				exts := haveDesc.ParentFile().Extensions()
-				for i := 0; i < exts.Len(); i++ {
-					ext := exts.Get(i)
-					if ext.FullName() == protoreflect.FullName(id) {
-						want.desc = ext
-						break
+				switch containingField := want.prev.node.(type) {
+				case *ast.FieldReferenceNode:
+					want.desc = haveDesc
+				case *ast.FieldNode:
+					switch wantNode {
+					case containingField.Name:
+						want.desc = haveDesc.Descriptor()
+					case containingField.FldType:
+						want.desc = haveDesc.Message()
 					}
 				}
 			}
@@ -1382,6 +1392,11 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 						}
 					case haveNode.FieldName():
 						// keep the field descriptor
+						// this may be nil if we're in a regular message field, but set if
+						// we are in a message literal
+						if want.desc == nil {
+							want.desc = have.desc
+						}
 					}
 				}
 			}
@@ -1532,9 +1547,9 @@ func (c *Cache) FindReferencesForTypeDescriptor(desc protoreflect.Descriptor) ([
 
 	var wg sync.WaitGroup
 	referencePositions := make(chan ast.SourcePosInfo, len(c.results))
+	wg.Add(len(c.results))
 	for _, res := range c.results {
 		res := res
-		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for _, ref := range res.(linker.Result).FindReferences(desc) {

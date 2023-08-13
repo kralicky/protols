@@ -262,6 +262,10 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			}
 			return nil
 		},
+		DoVisitExtendNode: func(en *ast.ExtendNode) error {
+			s.mktokens(en.Extendee, append(tracker.Path(), en.Extendee), semanticTypeType, semanticModifierDefaultLibrary)
+			return nil
+		},
 		DoVisitOneofNode: func(node *ast.OneofNode) error {
 			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeInterface, semanticModifierDefinition)
 			return nil

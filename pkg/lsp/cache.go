@@ -335,6 +335,10 @@ func (c *Cache) Initialize() {
 func (c *Cache) Compile(protos ...string) {
 	c.compileLock.Lock()
 	defer c.compileLock.Unlock()
+	c.compileLocked(protos...)
+}
+
+func (c *Cache) compileLocked(protos ...string) {
 	c.lg.Info("compiling", zap.Int("protos", len(protos)))
 	res, err := c.compiler.Compile(context.TODO(), protos...)
 	if err != nil {
@@ -345,7 +349,6 @@ func (c *Cache) Compile(protos ...string) {
 	}
 	// important to lock resultsMu here so that it can be modified in compile hooks
 	c.resultsMu.Lock()
-	defer c.resultsMu.Unlock()
 	c.lg.Info("done compiling", zap.Int("protos", len(protos)))
 	for _, r := range res.Files {
 		path := r.Path()
@@ -370,6 +373,14 @@ func (c *Cache) Compile(protos ...string) {
 		c.lg.With(zap.String("path", path)).Debug("adding new partial linker result")
 		c.partialResults[path] = partial
 	}
+	c.resultsMu.Unlock()
+
+	syntheticFiles := c.resolver.CheckSyntheticSources(c.compiler.GetImplicitResults())
+	if len(syntheticFiles) == 0 {
+		return
+	}
+	c.lg.Debug("building new synthetic sources", zap.Int("sources", len(syntheticFiles)))
+	c.compileLocked(syntheticFiles...)
 }
 
 // func (s *Cache) OnFileOpened(doc protocol.TextDocumentItem) {
@@ -1071,8 +1082,10 @@ func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]p
 }
 
 func (c *Cache) GetSyntheticFileContents(ctx context.Context, uri string) (string, error) {
-	uri = strings.TrimSuffix(uri, "#"+c.workspace.Name)
-	uri = strings.TrimPrefix(strings.TrimPrefix(uri, "proto:///"), "proto://")
+	// uri = strings.TrimSuffix(uri, "#"+c.workspace.Name)
+	// uri = strings.TrimPrefix(strings.TrimPrefix(uri, "proto:///"), "proto://")
+
+	return c.resolver.SyntheticFileContents(span.URIFromURI(uri))
 	fh, err := c.resolver.FindFileByPath(uri)
 	if err != nil {
 		return "", err
@@ -1084,8 +1097,8 @@ func (c *Cache) GetSyntheticFileContents(ctx context.Context, uri string) (strin
 		return string(b), err
 	case fh.Desc != nil:
 		return printDescriptor(fh.Desc)
-
 	case fh.Proto != nil:
+		c.Compile(uri)
 		f, err := protodesc.NewFile(fh.Proto, c.results.AsResolver())
 		if err != nil {
 			return "", err

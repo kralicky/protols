@@ -63,23 +63,30 @@ func NewProtoSourceSynthesizer(workdir string) *ProtoSourceSynthesizer {
 	}
 }
 
-func (s *ProtoSourceSynthesizer) ImportFromGoModule(importName string) (_filePath string, _pkgData *gocommand.ModuleJSON, _err error) {
+type GoModuleImportResults struct {
+	Module       *gocommand.ModuleJSON
+	DirInModule  string
+	SourceExists bool
+	SourcePath   string
+}
+
+func (s *ProtoSourceSynthesizer) ImportFromGoModule(importName string) (GoModuleImportResults, error) {
 	// fmt.Println("tryGoImport", importName)
 	// defer func() { fmt.Println("tryGoImport done", _filePath, _err) }()
 
 	last := strings.LastIndex(importName, "/")
 	if last == -1 {
-		return "", nil, fmt.Errorf("%w: %s", os.ErrNotExist, "not a go import")
+		return GoModuleImportResults{}, fmt.Errorf("%w: %s", os.ErrNotExist, "not a go import")
 	}
 	filename := importName[last+1:]
 	if !strings.HasSuffix(filename, ".proto") {
-		return "", nil, fmt.Errorf("%w: %s", os.ErrNotExist, "not a .proto file")
+		return GoModuleImportResults{}, fmt.Errorf("%w: %s", os.ErrNotExist, "not a .proto file")
 	}
 
 	// check if the path (excluding the filename) is a well-formed go module
 	importPath := importName[:last]
 	if err := module.CheckImportPath(importPath); err != nil {
-		return "", nil, fmt.Errorf("%w: %s", os.ErrNotExist, err)
+		return GoModuleImportResults{}, fmt.Errorf("%w: %s", os.ErrNotExist, err)
 	}
 
 	pkgData, dir := s.moduleResolver.FindPackage(importPath)
@@ -95,7 +102,7 @@ func (s *ProtoSourceSynthesizer) ImportFromGoModule(importName string) (_filePat
 				}
 			}
 		}
-		return "", nil, fmt.Errorf("%w: %s", os.ErrNotExist, "no packages found")
+		return GoModuleImportResults{}, fmt.Errorf("%w: %s", os.ErrNotExist, "no packages found")
 	}
 edit_success:
 	// fmt.Println("tryGoImport > pkgData", pkgData)
@@ -104,15 +111,24 @@ edit_success:
 	// If there is, we're done.
 	if _, err := os.Stat(filepath.Join(dir, filename)); err == nil {
 		// thank god
-		return filepath.Join(dir, filename), pkgData, nil
+		return GoModuleImportResults{
+			Module:       pkgData,
+			DirInModule:  dir,
+			SourceExists: true,
+			SourcePath:   filepath.Join(dir, filename),
+		}, nil
 	}
-	return "", pkgData, fmt.Errorf("%w: %s", os.ErrNotExist, "no .proto file found")
+	return GoModuleImportResults{
+		Module:       pkgData,
+		DirInModule:  dir,
+		SourceExists: false,
+	}, nil
 }
 
-func (s *ProtoSourceSynthesizer) SynthesizeFromGoSource(importName string, pkgData *gocommand.ModuleJSON) (desc *descriptorpb.FileDescriptorProto, _err error) {
+func (s *ProtoSourceSynthesizer) SynthesizeFromGoSource(importName string, res GoModuleImportResults) (desc *descriptorpb.FileDescriptorProto, _err error) {
 	// buckle up
 	fset := token.NewFileSet()
-	packages, err := goparser.ParseDir(fset, pkgData.Dir, func(fi fs.FileInfo) bool {
+	packages, err := goparser.ParseDir(fset, res.DirInModule, func(fi fs.FileInfo) bool {
 		if strings.HasSuffix(fi.Name(), "_test.go") {
 			return false
 		}

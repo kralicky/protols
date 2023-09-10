@@ -47,10 +47,9 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	var textEditRange *protocol.Range
 	item, found := findNarrowestSemanticToken(parseRes, enc.items, params.Position)
 	if found {
-		switch item.typ {
-		case semanticTypeType, semanticTypeProperty:
-		default:
-			return nil, nil
+		switch item.node.(type) {
+		case *ast.ImportNode:
+
 		}
 
 		textPrecedingCursor, textEditRange, err = completeWithinToken(posOffset, mapper, item)

@@ -15,12 +15,14 @@ import (
 	"sync"
 
 	"github.com/bufbuild/protocompile"
+	"github.com/bufbuild/protocompile/linker"
 	"github.com/jhump/protoreflect/desc"
 	"go.uber.org/zap"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/lsp/source"
 	"golang.org/x/tools/gopls/pkg/span"
+	"google.golang.org/protobuf/reflect/protodesc"
 )
 
 type ImportSource int
@@ -156,6 +158,7 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 			canonicalName := filepath.Join(goPkg, filepath.Base(filename))
 			r.filePathsByURI[m.URI] = canonicalName
 			r.fileURIsByPath[canonicalName] = m.URI
+			r.importSourcesByURI[m.URI] = SourceLocalGoModule
 		case source.Delete:
 			path := r.filePathsByURI[m.URI]
 			delete(r.filePathsByURI, m.URI)
@@ -166,6 +169,39 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 
 		}
 	}
+}
+
+// CheckSyntheticSources fills in placeholder sources for synthetic files
+// that did not have fully linked descriptors at the time of creation, and
+// returns a list of paths that need to be compiled again.
+func (r *Resolver) CheckSyntheticSources(results linker.Files) []string {
+	compileAgain := []string{}
+	for uri, path := range r.filePathsByURI {
+		if strings.HasPrefix(string(uri), "proto://") {
+			if _, ok := r.syntheticFiles[uri]; !ok {
+				res := results.FindFileByPath(path)
+				newFile, err := protodesc.NewFile(protodesc.ToFileDescriptorProto(res), results.AsResolver())
+				if err != nil {
+					r.lg.With(
+						zap.String("uri", string(uri)),
+						zap.Error(err),
+					).Error("failed to generate synthetic file descriptor")
+				}
+				src, err := printDescriptor(newFile)
+				if err != nil {
+					r.lg.With(
+						zap.String("uri", string(uri)),
+						zap.Error(err),
+					).Error("failed to generate synthetic file source")
+					continue
+				}
+				r.syntheticFiles[uri] = src
+				// these files aren't going to have ASTs yet and will need to be recompiled
+				compileAgain = append(compileAgain, path)
+			}
+		}
+	}
+	return compileAgain
 }
 
 // Path resolution order:
@@ -246,37 +282,40 @@ func (r *Resolver) checkFS(path string) (protocompile.SearchResult, error) {
 }
 
 func (r *Resolver) checkGoModule(path string) (protocompile.SearchResult, error) {
-	filePath, pkgData, err := r.synthesizer.ImportFromGoModule(path)
-	if err == nil {
-		src, err := os.Open(filePath)
-		if err == nil {
-			uri := span.URIFromPath(filePath)
-			r.filePathsByURI[uri] = path
-			r.fileURIsByPath[path] = uri
-			// todo: need to fix the incomplete go_package values in some imports
-			return protocompile.SearchResult{
-				Source: src,
-			}, nil
-		}
+	res, err := r.synthesizer.ImportFromGoModule(path)
+	if err != nil {
+		return protocompile.SearchResult{}, err
 	}
-	if pkgData != nil {
-		if synthesized, err := r.synthesizer.SynthesizeFromGoSource(path, pkgData); err == nil {
-			syntheticURI := url.URL{
-				Scheme:   "proto",
-				Path:     path,
-				Fragment: r.folder.Name,
-			}
-			uri := span.URI(syntheticURI.String())
-			r.filePathsByURI[uri] = path
-			r.fileURIsByPath[path] = uri
-			return protocompile.SearchResult{
-				Proto: synthesized,
-			}, nil
-		} else {
-			return protocompile.SearchResult{}, fmt.Errorf("failed to synthesize %s: %w", path, err)
+	if res.SourceExists {
+		src, err := os.Open(res.SourcePath)
+		if err != nil {
+			return protocompile.SearchResult{}, err
 		}
+		uri := span.URIFromPath(res.SourcePath)
+		r.filePathsByURI[uri] = path
+		r.fileURIsByPath[path] = uri
+		// todo: need to fix the incomplete go_package values in some imports
+		return protocompile.SearchResult{
+			Source: src,
+		}, nil
+	} else if src, ok := r.syntheticFiles[r.fileURIsByPath[path]]; ok {
+		return protocompile.SearchResult{
+			Source: strings.NewReader(src),
+		}, nil
+	} else if synthesized, err := r.synthesizer.SynthesizeFromGoSource(path, res); err == nil {
+		syntheticURI := url.URL{
+			Scheme:   "proto",
+			Path:     synthesized.GetName(),
+			Fragment: r.folder.Name,
+		}
+		uri := span.URI(syntheticURI.String())
+		r.filePathsByURI[uri] = path
+		r.fileURIsByPath[path] = uri
+		return protocompile.SearchResult{
+			Proto: synthesized,
+		}, nil
 	}
-	return protocompile.SearchResult{}, os.ErrNotExist
+	return protocompile.SearchResult{}, fmt.Errorf("failed to synthesize %s: %w", path, err)
 }
 
 func (r *Resolver) checkGlobalCache(path string) (protocompile.SearchResult, error) {

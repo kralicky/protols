@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"runtime"
 	"sync"
 
 	"github.com/samber/lo"
@@ -609,6 +610,22 @@ func (s *Server) NonstandardRequest(ctx context.Context, method string, params i
 			return nil, err
 		}
 		return DumpAST(parseRes.AST(), parseRes), nil
+	case "protols/reindex-workspaces":
+		s.cachesMu.Lock()
+		allWorkspaces := []protocol.WorkspaceFolder{}
+		for _, c := range s.caches {
+			allWorkspaces = append(allWorkspaces, c.workspace)
+		}
+		s.lg.Info("reindexing workspaces")
+		clear(s.caches)
+		runtime.GC()
+		for _, folder := range allWorkspaces {
+			path := span.URIFromURI(folder.URI).Filename()
+			c := NewCache(folder, s.lg.Named("cache."+folder.Name))
+			s.caches[path] = c
+		}
+		s.cachesMu.Unlock()
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("%w: unknown nonstandard request %q", jsonrpc2.ErrMethodNotFound, method)
 	}

@@ -22,17 +22,28 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("protols.restart", async () => {
-      try {
-        await client.restart()
-      } catch (e) {
-        // if it's already stopped, restart will throw an error.
+      if (!client.isRunning()) {
         await client.start()
+      } else {
+        await client.restart()
       }
     }),
+    vscode.commands.registerCommand("protols.reindex-workspaces", async () => {
+      if (!client.isRunning()) {
+        return
+      }
+      await client.sendRequest("protols/reindex-workspaces", {})
+    }),
     vscode.commands.registerCommand("protols.stop", async () => {
+      if (!client.isRunning()) {
+        return
+      }
       await client.stop()
     }),
     vscode.commands.registerTextEditorCommand("protols.ast", async (editor) => {
+      if (!client.isRunning()) {
+        return
+      }
       await astViewer.openDocument(editor)
     }),
   )

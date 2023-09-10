@@ -41,6 +41,10 @@
 				"title": "Protols: Stop Language Server"
 			},
 			{
+				"command": "protols.reindex-workspaces",
+				"title": "Protols: Reindex Workspaces"
+			},
+			{
 				"command": "protols.ast",
 				"title": "Protols: Show Document AST",
 				"icon": "$(open-preview)"

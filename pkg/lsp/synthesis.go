@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -52,7 +53,6 @@ func NewProtoSourceSynthesizer(workdir string) *ProtoSourceSynthesizer {
 	}
 	resolver := res.(*imports.ModuleResolver)
 	resolver.ClearForNewMod()
-
 	modDir, modName := resolver.ModInfo(workdir)
 
 	return &ProtoSourceSynthesizer{
@@ -123,6 +123,16 @@ edit_success:
 		DirInModule:  dir,
 		SourceExists: false,
 	}, nil
+}
+
+func (s *ProtoSourceSynthesizer) ImplicitGoPackagePath(filename string) (string, error) {
+	// check if there is a known go module at the path
+	relativePath, err := filepath.Rel(s.localModDir, filename)
+	if err != nil {
+		return "", err
+	}
+	// it's in the same module, so we can use the module name
+	return path.Join(s.localModName, path.Dir(relativePath)), nil
 }
 
 func (s *ProtoSourceSynthesizer) SynthesizeFromGoSource(importName string, res GoModuleImportResults) (desc *descriptorpb.FileDescriptorProto, _err error) {

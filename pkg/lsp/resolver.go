@@ -22,6 +22,7 @@ import (
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/lsp/source"
 	"golang.org/x/tools/gopls/pkg/span"
+	"golang.org/x/tools/pkg/imports"
 	"google.golang.org/protobuf/reflect/protodesc"
 )
 
@@ -63,6 +64,11 @@ func NewResolver(folder protocol.WorkspaceFolder, lg *zap.Logger) *Resolver {
 func (r *Resolver) PathToURI(path string) (span.URI, error) {
 	r.pathsMu.RLock()
 	defer r.pathsMu.RUnlock()
+
+	if i := strings.IndexRune(path, ';'); i != -1 {
+		path = path[:i] // strip trailing ;packagename directive
+	}
+
 	uri, ok := r.fileURIsByPath[path]
 	if !ok {
 		return "", fmt.Errorf("%w: path %q", os.ErrNotExist, path)
@@ -73,6 +79,10 @@ func (r *Resolver) PathToURI(path string) (span.URI, error) {
 func (r *Resolver) URIToPath(uri span.URI) (string, error) {
 	r.pathsMu.RLock()
 	defer r.pathsMu.RUnlock()
+
+	if i := strings.IndexRune(string(uri), ';'); i != -1 {
+		uri = uri[:i] // strip trailing ;packagename directive
+	}
 	path, ok := r.filePathsByURI[uri]
 	if !ok {
 		return "", fmt.Errorf("%w: URI %q", os.ErrNotExist, uri)
@@ -115,7 +125,7 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 						continue
 					}
 				}
-				mod, err := FastLookupGoModule(f)
+				mod, err := r.LookupGoModule(filename, f)
 				if err != nil {
 					r.lg.With(
 						zap.String("filename", filename),
@@ -146,7 +156,7 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 				).Error("failed to open file")
 				continue
 			}
-			goPkg, err := FastLookupGoModule(f)
+			goPkg, err := r.LookupGoModule(filename, f)
 			if err != nil {
 				r.lg.With(
 					zap.String("filename", filename),
@@ -352,6 +362,25 @@ func (r *Resolver) SyntheticFiles() []span.URI {
 	return uris
 }
 
+func (r *Resolver) LookupGoModule(filename string, f io.ReadCloser) (string, error) {
+	// Check if the file is in a go package directory
+	if pkgName, err := imports.PackageDirToName(filepath.Dir(filename)); err == nil {
+		return pkgName, nil
+	}
+
+	// Check if the filename is relative to a local go module
+	if pkgName, err := r.synthesizer.ImplicitGoPackagePath(filename); err == nil {
+		return pkgName, nil
+	}
+
+	// If the file contains a go_module option, use that
+	if mod, err := FastLookupGoModule(f); err == nil {
+		return mod, nil
+	}
+
+	return "", fmt.Errorf("could not determine go module for %s", filename)
+}
+
 func FastLookupGoModule(f io.ReadCloser) (string, error) {
 	// Search the .proto file for `option go_package = "...";`
 	// We know this will be somewhere at the top of the file.
@@ -380,6 +409,10 @@ func FastLookupGoModule(f io.ReadCloser) (string, error) {
 		}
 		startIdx := index + 1
 		endIdx := strings.LastIndexByte(line, '"')
+		endSemicolon := strings.IndexByte(line, ';')
+		if endSemicolon > startIdx && endSemicolon < endIdx {
+			endIdx = endSemicolon
+		}
 		if endIdx <= startIdx {
 			continue
 		}

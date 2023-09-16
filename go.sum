@@ -1,3 +1,5 @@
+cloud.google.com/go/dlp v1.10.1 h1:tF3wsJ2QulRhRLWPzWVkeDz3FkOGVoMl6cmDUHtfYxw=
+cloud.google.com/go/dlp v1.10.1/go.mod h1:IM8BWz1iJd8njcNcG0+Kyd9OPnqnRNkDV8j42VT5KOI=
 github.com/BurntSushi/toml v1.2.1 h1:9F2/+DoOYIOksmaJFPw1tGFy1eDnIJXg+UHjuD8lTak=
 github.com/BurntSushi/toml v1.2.1/go.mod h1:CxXYINrC8qIiEnFrOxCa7Jy5BFHlXnUU2pbicEuybxQ=
 github.com/benbjohnson/clock v1.1.0 h1:Q92kusRqC1XV2MjkWETPvjJVqKetz1OzxZB7mHJLju8=

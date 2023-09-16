@@ -1232,8 +1232,28 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 				} else {
 					typeName = nodeDescriptor.GetName()
 				}
+				// check if we're looking for a nested message
+				if i > 0 {
+					if _, ok := item.path[i-1].(*ast.MessageNode); ok {
+						// the immediate parent is another message, so this message is not
+						// a top-level descriptor. push it on the stack and go up one level
+						stack.push(currentNode, nil)
+						continue
+					}
+				}
+				// search top-level messages
 				desc = findByName[protoreflect.MessageDescriptor](linkRes.Messages(), typeName)
 			case *descriptorpb.EnumDescriptorProto:
+				// check if we're looking for an enum nested in a message
+				// (enums can't be nested in other enums)
+				if i > 0 {
+					if _, ok := item.path[i-1].(*ast.MessageNode); ok {
+						// the immediate parent is a message, so this enum is not
+						// a top-level descriptor. push it on the stack and go up one level
+						stack.push(currentNode, nil)
+						continue
+					}
+				}
 				desc = findByName[protoreflect.EnumDescriptor](linkRes.Enums(), nodeDescriptor.GetName())
 			case *descriptorpb.ServiceDescriptorProto:
 				desc = linkRes.Services().ByName(protoreflect.Name(nodeDescriptor.GetName()))
@@ -1479,8 +1499,20 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 			case ast.IdentValueNode:
 				want.desc = haveDesc
 			}
+		case protoreflect.OneofDescriptor:
+			switch wantNode := want.node.(type) {
+			case ast.OneofElement:
+				switch wantNode := wantNode.(type) {
+				case *ast.OptionNode:
+					want.desc = haveDesc.Options().(*descriptorpb.OneofOptions).ProtoReflect().Descriptor()
+				case *ast.FieldNode:
+					want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Fields(), string(wantNode.Name.AsIdentifier()))
+				}
+			case ast.IdentValueNode:
+				want.desc = haveDesc
+			}
 		default:
-			return nil, protocol.Range{}, fmt.Errorf("unknown descriptor type %T", want.desc)
+			return nil, protocol.Range{}, fmt.Errorf("unknown descriptor type %T", have.desc)
 		}
 		if want.desc == nil {
 			return nil, protocol.Range{}, fmt.Errorf("failed to find descriptor for %T/%T", want.desc, want.node)

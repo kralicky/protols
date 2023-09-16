@@ -217,20 +217,8 @@ PACKAGES:
 	// now we have a byte array containing the raw file descriptor, which we can unmarshal
 	// into a FileDescriptorProto.
 	// the buffer may or may not be gzipped, so we need to check that first.
-	var reader io.Reader = buf
-	if bytes.HasPrefix(buf.Bytes(), []byte{0x1f, 0x8b}) {
-		reader, err = gzip.NewReader(buf)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %s", os.ErrNotExist, err)
-		}
-	}
-	decompressedBytes, err := io.ReadAll(reader)
+	fd, err := DecodeRawFileDescriptor(buf.Bytes())
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", os.ErrNotExist, err)
-	}
-
-	fd := &descriptorpb.FileDescriptorProto{}
-	if err := proto.Unmarshal(decompressedBytes, fd); err != nil {
 		return nil, fmt.Errorf("%w: %s", os.ErrNotExist, err)
 	}
 	// fmt.Println(">> [OK] decoded raw file descriptor")
@@ -244,5 +232,27 @@ PACKAGES:
 
 		*fd.Name = importName
 	}
+	return fd, nil
+}
+
+func DecodeRawFileDescriptor(data []byte) (*descriptorpb.FileDescriptorProto, error) {
+	var reader io.Reader = bytes.NewReader(data)
+	if bytes.HasPrefix(data, []byte{0x1f, 0x8b}) {
+		var err error
+		reader, err = gzip.NewReader(reader)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s", os.ErrNotExist, err)
+		}
+	}
+	decompressedBytes, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", os.ErrNotExist, err)
+	}
+
+	fd := &descriptorpb.FileDescriptorProto{}
+	if err := proto.Unmarshal(decompressedBytes, fd); err != nil {
+		return nil, fmt.Errorf("%w: %s", os.ErrNotExist, err)
+	}
+
 	return fd, nil
 }

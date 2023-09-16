@@ -16,6 +16,7 @@ import (
 
 	"github.com/bufbuild/protocompile"
 	"github.com/bufbuild/protocompile/linker"
+	gogo "github.com/gogo/protobuf/proto"
 	"github.com/jhump/protoreflect/desc"
 	"go.uber.org/zap"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
@@ -181,10 +182,13 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 	}
 }
 
-// CheckSyntheticSources fills in placeholder sources for synthetic files
+// CheckIncompleteDescriptors fills in placeholder sources for synthetic files
 // that did not have fully linked descriptors at the time of creation, and
 // returns a list of paths that need to be compiled again.
-func (r *Resolver) CheckSyntheticSources(results linker.Files) []string {
+func (r *Resolver) CheckIncompleteDescriptors(results linker.Files) []string {
+	r.pathsMu.Lock()
+	defer r.pathsMu.Unlock()
+
 	compileAgain := []string{}
 	for uri, path := range r.filePathsByURI {
 		if strings.HasPrefix(string(uri), "proto://") {
@@ -223,21 +227,24 @@ func (r *Resolver) CheckSyntheticSources(results linker.Files) []string {
 func (r *Resolver) FindFileByPath(path string) (protocompile.SearchResult, error) {
 	r.pathsMu.Lock()
 	defer r.pathsMu.Unlock()
+	return r.findFileByPathLocked(path)
+}
 
+func (r *Resolver) findFileByPathLocked(path string) (protocompile.SearchResult, error) {
 	var isSynthetic bool
 	if uri, ok := r.fileURIsByPath[path]; ok {
 		if strings.HasPrefix(string(uri), "proto://") {
 			isSynthetic = true
 		}
 	}
+	if result, err := r.checkWellKnownImportPath(path); err == nil {
+		r.lg.With(zap.String("path", path)).Debug("resolved to well-known import path")
+		return result, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		r.lg.With(zap.String("path", path)).Error("failed to check well-known import path")
+		return protocompile.SearchResult{}, err
+	}
 	if !isSynthetic {
-		if result, err := r.checkWellKnownImportPath(path); err == nil {
-			r.lg.With(zap.String("path", path)).Debug("resolved to well-known import path")
-			return result, nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			r.lg.With(zap.String("path", path)).Error("failed to check well-known import path")
-			return protocompile.SearchResult{}, err
-		}
 		if result, err := r.checkFS(path); err == nil {
 			r.lg.With(zap.String("path", path)).Debug("resolved to cached file")
 			return result, nil
@@ -269,8 +276,26 @@ func (r *Resolver) checkWellKnownImportPath(path string) (protocompile.SearchRes
 	if strings.HasPrefix(path, "google/") {
 		return r.checkGlobalCache(path)
 	}
-	if strings.HasPrefix(path, "gogoproto/") {
-		return r.checkGoModule("github.com/gogo/protobuf/" + path)
+	if filepath.Base(path) == "gogo.proto" {
+		descriptorBytes := gogo.FileDescriptor("gogo.proto")
+		if descriptorBytes != nil {
+			fd, err := DecodeRawFileDescriptor(descriptorBytes)
+			if err != nil {
+				return protocompile.SearchResult{}, err
+			}
+			*fd.Name = path
+			syntheticURI := url.URL{
+				Scheme:   "proto",
+				Path:     path,
+				Fragment: r.folder.Name,
+			}
+			uri := span.URI(syntheticURI.String())
+			r.filePathsByURI[uri] = path
+			r.fileURIsByPath[path] = uri
+			return protocompile.SearchResult{
+				Proto: fd,
+			}, nil
+		}
 	}
 	return protocompile.SearchResult{}, os.ErrNotExist
 }

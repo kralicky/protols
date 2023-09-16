@@ -375,7 +375,7 @@ func (c *Cache) compileLocked(protos ...string) {
 	}
 	c.resultsMu.Unlock()
 
-	syntheticFiles := c.resolver.CheckSyntheticSources(c.compiler.GetImplicitResults())
+	syntheticFiles := c.resolver.CheckIncompleteDescriptors(c.compiler.GetImplicitResults())
 	if len(syntheticFiles) == 0 {
 		return
 	}
@@ -703,6 +703,9 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 		return nil, err
 	}
 	resAst := res.AST()
+	if resAst == nil {
+		return nil, fmt.Errorf("no AST available for %s", doc.URI)
+	}
 	var imports []*ast.ImportNode
 	// get the source positions of the import statements
 	for _, decl := range resAst.Decls {
@@ -1556,6 +1559,7 @@ func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([
 				ext := exts.Get(i)
 				if ext.FullName() == desc.FullName() {
 					node = containingFileResolver.FieldNode(protoutil.ProtoFromFieldDescriptor(ext))
+					break
 				}
 			}
 		}
@@ -1573,6 +1577,9 @@ func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([
 		return nil, fmt.Errorf("failed to find node for %q", desc.FullName())
 	}
 
+	if _, ok := node.(ast.NoSourceNode); ok {
+		return nil, fmt.Errorf("no source available")
+	}
 	info := containingFileResolver.AST().NodeInfo(node)
 	uri, err := c.resolver.PathToURI(containingFileResolver.Path())
 	if err != nil {

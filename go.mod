@@ -5,6 +5,7 @@ go 1.21
 require (
 	github.com/bmatcuk/doublestar v1.3.4
 	github.com/bufbuild/protocompile v0.4.0
+	github.com/gogo/protobuf v1.3.2
 	github.com/jhump/protoreflect v1.15.1
 	github.com/kralicky/gpkg v0.0.0-20220311205216-0d8ea9557555
 	github.com/samber/lo v1.38.1

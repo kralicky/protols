@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"math"
+	"reflect"
 	"sort"
 
 	"github.com/bufbuild/protocompile"
@@ -218,6 +219,10 @@ func (s *semanticItems) mkcomments(node ast.Node) {
 
 func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.WalkOption) {
 	tracker := &ast.AncestorTracker{}
+	// check if node is a non-nil interface to a nil pointer
+	if reflect.ValueOf(node).IsNil() {
+		return
+	}
 	walkOptions = append(walkOptions, tracker.AsWalkOptions()...)
 	// NB: when calling mktokens in composite node visitors:
 	// - ensure node paths are manually adjusted if creating tokens for a child node

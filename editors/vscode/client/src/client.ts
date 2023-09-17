@@ -1,4 +1,6 @@
 import * as vscode from "vscode"
+import * as which from "which"
+import * as path from "path"
 import {
   LanguageClientOptions,
   RevealOutputChannelOn,
@@ -8,7 +10,6 @@ import {
   ServerOptions,
   TransportKind,
 } from "vscode-languageclient/node"
-import * as path from "path"
 
 export class ProtolsLanguageClient
   extends LanguageClient
@@ -36,19 +37,36 @@ export class ProtolsLanguageClient
   }
 }
 
-export function buildLanguageClient(
+async function lookPath(cmd: string): Promise<string> {
+  try {
+    return await which(cmd)
+  } catch (e) {
+    return null
+  }
+}
+
+export async function buildLanguageClient(
   context: vscode.ExtensionContext,
-): ProtolsLanguageClient {
+): Promise<ProtolsLanguageClient> {
   const documentSelector = [
     { language: "protobuf", scheme: "file" },
     { language: "protobuf", scheme: "proto" },
   ]
 
+  let binaryPath: string | undefined = vscode.workspace
+    .getConfiguration("protols")
+    .get("alternateBinaryPath")
+
+  if (!binaryPath) {
+    binaryPath =
+      (await lookPath("protols")) ||
+      path.join(process.env.HOME, "go", "bin", "protols")
+  }
   const c = new ProtolsLanguageClient(
     "protobuf",
     "protols",
     {
-      command: path.join(process.env.HOME, "go", "bin", "protols"),
+      command: binaryPath,
       args: ["serve"],
       transport: TransportKind.pipe,
     } as ServerOptions,

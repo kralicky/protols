@@ -73,6 +73,11 @@
 					],
 					"default": "off",
 					"description": "Traces the communication between VS Code and the language server."
+				},
+				"protols.alternateBinaryPath": {
+					"scope": "window",
+					"type": "string",
+					"description": "Path to an alternate protols binary to use."
 				}
 			}
 		},
@@ -98,7 +103,10 @@
 		"eslint-config-prettier": "^8.8.0",
 		"eslint-plugin-prettier": "^5.0.0",
 		"mocha": "^9.2.1",
-		"typescript": "^5.1.6",
-		"prettier": "^3.0.0"
+		"prettier": "^3.0.0",
+		"typescript": "^5.1.6"
+	},
+	"dependencies": {
+		"which": "^4.0.0"
 	}
 }

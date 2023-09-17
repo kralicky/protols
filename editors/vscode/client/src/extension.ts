@@ -6,8 +6,8 @@ import { initCommands } from "./commands"
 
 let client: LanguageClient
 
-export function activate(context: vscode.ExtensionContext) {
-  const client = buildLanguageClient(context)
+export async function activate(context: vscode.ExtensionContext) {
+  const client = await buildLanguageClient(context)
   vscode.workspace.registerTextDocumentContentProvider("proto", client)
   // Start the client. This will also launch the server
   client.start()

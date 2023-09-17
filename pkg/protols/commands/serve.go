@@ -30,7 +30,13 @@ func BuildServeCmd() *cobra.Command {
 				fmt.Fprintf(os.Stderr, "error: %s\n", err.Error())
 				os.Exit(1)
 			}
-			lg.Info("listening on " + pipe)
+			executablePath, _ := os.Executable()
+			lg.With(
+				zap.String("path", executablePath),
+				zap.String("pipe", pipe),
+				zap.Int("pid", os.Getpid()),
+			).Info("starting server")
+
 			stream := jsonrpc2.NewHeaderStream(cc)
 			stream = protocol.LoggingStream(stream, os.Stdout)
 			conn := jsonrpc2.NewConn(stream)

@@ -95,7 +95,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 					},
 				},
 			},
-			// InlayHintProvider:    true,
+			InlayHintProvider:    true,
 			DocumentLinkProvider: &protocol.DocumentLinkOptions{},
 			DocumentFormattingProvider: &protocol.Or_ServerCapabilities_documentFormattingProvider{
 				Value: protocol.DocumentFormattingOptions{},

@@ -759,179 +759,229 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 	if err != nil {
 		return nil
 	}
-	fdp := res.FileDescriptorProto()
 	mapper, err := c.GetMapper(doc.URI.SpanURI())
 	if err != nil {
 		return nil
 	}
 	a := res.AST()
-
 	startOff, endOff, _ := mapper.RangeOffsets(rng)
+	startToken := a.TokenAtOffset(startOff)
+	endToken := a.TokenAtOffset(endOff)
+	res.RangeFieldReferenceNodesWithDescriptors(func(node ast.Node, desc protoreflect.FieldDescriptor) bool {
+		switch node := node.(type) {
+		case *ast.FieldReferenceNode:
+			if node.Start() > endToken || node.End() < startToken {
+				return true
+			}
+			if node.IsAnyTypeReference() {
+				return true
+			}
+			// insert before the closing )
+			closeParen := node.Close
+			if closeParen == nil {
+				return true
+			}
+			info := a.NodeInfo(closeParen)
+			if desc.Kind() == protoreflect.MessageKind && !desc.IsMap() && !desc.IsList() {
+				fieldHint := protocol.InlayHint{
+					Kind:         protocol.Type,
+					PaddingLeft:  true,
+					PaddingRight: false,
+				}
+				fieldHint.Position = protocol.Position{
+					Line:      uint32(info.Start().Line) - 1,
+					Character: uint32(info.Start().Col) - 1,
+				}
+				var location *protocol.Location
+				if locations, err := c.FindDefinitionForTypeDescriptor(desc.Message()); err == nil && len(locations) > 0 {
+					location = &locations[0]
+				}
 
-	optionsByNode := make(map[*ast.OptionNode][]protoreflect.ExtensionType)
+				fieldHint.Label = append(fieldHint.Label, protocol.InlayHintLabelPart{
+					Value: string(desc.Message().Name()),
+					// Tooltip:  makeTooltip(desc.Message()),
+					Location: location,
+				})
+				// fieldHint.PaddingLeft = false
+				hints = append(hints, fieldHint)
+			}
+		}
+		return true
+	})
+	return hints
 
-	for _, decl := range a.Decls {
-		if opt, ok := decl.(*ast.OptionNode); ok {
-			opt := opt
-			if len(opt.Name.Parts) == 1 {
-				info := a.NodeInfo(opt.Name)
-				if info.End().Offset <= startOff {
-					continue
-				} else if info.Start().Offset >= endOff {
-					break
-				}
-				part := opt.Name.Parts[0]
-				if wellKnownType, ok := wellKnownFileOptions[part.Value()]; ok {
-					hints = append(hints, protocol.InlayHint{
-						Kind: protocol.Type,
-						Position: protocol.Position{
-							Line:      uint32(info.End().Line - 1),
-							Character: uint32(info.End().Col - 1),
-						},
-						Label: []protocol.InlayHintLabelPart{
-							{
-								Value: wellKnownType,
-							},
-						},
-						PaddingLeft: true,
-					})
-					continue
-				}
-			}
-			// todo(bug): if more than one FileOption is declared in the same file, each option will show up in all usages of the options in the file
-			collectOptions[*descriptorpb.FileOptions](opt, fdp, optionsByNode)
-		}
-	}
-	// collect all options
-	for _, svc := range fdp.GetService() {
-		for _, decl := range res.ServiceNode(svc).(*ast.ServiceNode).Decls {
-			info := a.NodeInfo(decl)
-			if info.End().Offset <= startOff {
-				continue
-			} else if info.Start().Offset >= endOff {
-				break
-			}
-			if opt, ok := decl.(*ast.OptionNode); ok {
-				collectOptions[*descriptorpb.ServiceOptions](opt, svc, optionsByNode)
-			}
-		}
-		for _, method := range svc.GetMethod() {
-			for _, decl := range res.MethodNode(method).(*ast.RPCNode).Decls {
-				info := a.NodeInfo(decl)
-				if info.End().Offset <= startOff {
-					continue
-				} else if info.Start().Offset >= endOff {
-					break
-				}
-				if opt, ok := decl.(*ast.OptionNode); ok {
-					collectOptions[*descriptorpb.MethodOptions](opt, method, optionsByNode)
-				}
-			}
-		}
-	}
-	for _, msg := range fdp.GetMessageType() {
-		for _, decl := range res.MessageNode(msg).(*ast.MessageNode).Decls {
-			info := a.NodeInfo(decl)
-			if info.End().Offset <= startOff {
-				continue
-			} else if info.Start().Offset >= endOff {
-				break
-			}
-			if opt, ok := decl.(*ast.OptionNode); ok {
-				collectOptions[*descriptorpb.MessageOptions](opt, msg, optionsByNode)
-			}
-		}
-		for _, field := range msg.GetField() {
-			fieldNode := res.FieldNode(field)
-			info := a.NodeInfo(fieldNode)
-			if info.End().Offset <= startOff {
-				continue
-			} else if info.Start().Offset >= endOff {
-				break
-			}
-			switch fieldNode := fieldNode.(type) {
-			case *ast.FieldNode:
-				for _, opt := range fieldNode.GetOptions().GetElements() {
-					collectOptions[*descriptorpb.FieldOptions](opt, field, optionsByNode)
-				}
-			case *ast.MapFieldNode:
-				for _, opt := range fieldNode.GetOptions().GetElements() {
-					collectOptions[*descriptorpb.FieldOptions](opt, field, optionsByNode)
-				}
-			}
-		}
-	}
-	for _, enum := range fdp.GetEnumType() {
-		for _, decl := range res.EnumNode(enum).(*ast.EnumNode).Decls {
-			info := a.NodeInfo(decl)
-			if info.End().Offset <= startOff {
-				continue
-			} else if info.Start().Offset >= endOff {
-				break
-			}
-			if opt, ok := decl.(*ast.OptionNode); ok {
-				collectOptions[*descriptorpb.EnumOptions](opt, enum, optionsByNode)
-			}
-		}
-		for _, val := range enum.GetValue() {
-			for _, opt := range res.EnumValueNode(val).(*ast.EnumValueNode).Options.GetElements() {
-				collectOptions[*descriptorpb.EnumValueOptions](opt, val, optionsByNode)
-			}
-		}
-	}
-	// for _, ext := range fdp.GetExtension() {
-	// 	for _, opt := range res.FieldNode(ext).(*ast.FieldNode).GetOptions().GetElements() {
-	// 		collectOptions[*descriptorpb.FieldOptions](opt, ext, optionsByNode)
+	// fdp := res.FileDescriptorProto()
+	// if err != nil {
+	// 	return nil
+	// }
+	// a := res.AST()
+
+	// startOff, endOff, _ := mapper.RangeOffsets(rng)
+
+	// optionsByNode := make(map[*ast.OptionNode][]protoreflect.ExtensionType)
+
+	// for _, decl := range a.Decls {
+	// 	if opt, ok := decl.(*ast.OptionNode); ok {
+	// 		opt := opt
+	// 		if len(opt.Name.Parts) == 1 {
+	// 			info := a.NodeInfo(opt.Name)
+	// 			if info.End().Offset <= startOff {
+	// 				continue
+	// 			} else if info.Start().Offset >= endOff {
+	// 				break
+	// 			}
+	// 			part := opt.Name.Parts[0]
+	// 			if wellKnownType, ok := wellKnownFileOptions[part.Value()]; ok {
+	// 				hints = append(hints, protocol.InlayHint{
+	// 					Kind: protocol.Type,
+	// 					Position: protocol.Position{
+	// 						Line:      uint32(info.End().Line - 1),
+	// 						Character: uint32(info.End().Col - 1),
+	// 					},
+	// 					Label: []protocol.InlayHintLabelPart{
+	// 						{
+	// 							Value: wellKnownType,
+	// 						},
+	// 					},
+	// 					PaddingLeft: true,
+	// 				})
+	// 				continue
+	// 			}
+	// 		}
+	// 		// todo(bug): if more than one FileOption is declared in the same file, each option will show up in all usages of the options in the file
+	// 		collectOptions[*descriptorpb.FileOptions](opt, fdp, optionsByNode)
 	// 	}
 	// }
+	// // collect all options
+	// for _, svc := range fdp.GetService() {
+	// 	for _, decl := range res.ServiceNode(svc).(*ast.ServiceNode).Decls {
+	// 		info := a.NodeInfo(decl)
+	// 		if info.End().Offset <= startOff {
+	// 			continue
+	// 		} else if info.Start().Offset >= endOff {
+	// 			break
+	// 		}
+	// 		if opt, ok := decl.(*ast.OptionNode); ok {
+	// 			collectOptions[*descriptorpb.ServiceOptions](opt, svc, optionsByNode)
+	// 		}
+	// 	}
+	// 	for _, method := range svc.GetMethod() {
+	// 		for _, decl := range res.MethodNode(method).(*ast.RPCNode).Decls {
+	// 			info := a.NodeInfo(decl)
+	// 			if info.End().Offset <= startOff {
+	// 				continue
+	// 			} else if info.Start().Offset >= endOff {
+	// 				break
+	// 			}
+	// 			if opt, ok := decl.(*ast.OptionNode); ok {
+	// 				collectOptions[*descriptorpb.MethodOptions](opt, method, optionsByNode)
+	// 			}
+	// 		}
+	// 	}
+	// }
+	// for _, msg := range fdp.GetMessageType() {
+	// 	for _, decl := range res.MessageNode(msg).(*ast.MessageNode).Decls {
+	// 		info := a.NodeInfo(decl)
+	// 		if info.End().Offset <= startOff {
+	// 			continue
+	// 		} else if info.Start().Offset >= endOff {
+	// 			break
+	// 		}
+	// 		if opt, ok := decl.(*ast.OptionNode); ok {
+	// 			collectOptions[*descriptorpb.MessageOptions](opt, msg, optionsByNode)
+	// 		}
+	// 	}
+	// 	for _, field := range msg.GetField() {
+	// 		fieldNode := res.FieldNode(field)
+	// 		info := a.NodeInfo(fieldNode)
+	// 		if info.End().Offset <= startOff {
+	// 			continue
+	// 		} else if info.Start().Offset >= endOff {
+	// 			break
+	// 		}
+	// 		switch fieldNode := fieldNode.(type) {
+	// 		case *ast.FieldNode:
+	// 			for _, opt := range fieldNode.GetOptions().GetElements() {
+	// 				collectOptions[*descriptorpb.FieldOptions](opt, field, optionsByNode)
+	// 			}
+	// 		case *ast.MapFieldNode:
+	// 			for _, opt := range fieldNode.GetOptions().GetElements() {
+	// 				collectOptions[*descriptorpb.FieldOptions](opt, field, optionsByNode)
+	// 			}
+	// 		}
+	// 	}
+	// }
+	// for _, enum := range fdp.GetEnumType() {
+	// 	for _, decl := range res.EnumNode(enum).(*ast.EnumNode).Decls {
+	// 		info := a.NodeInfo(decl)
+	// 		if info.End().Offset <= startOff {
+	// 			continue
+	// 		} else if info.Start().Offset >= endOff {
+	// 			break
+	// 		}
+	// 		if opt, ok := decl.(*ast.OptionNode); ok {
+	// 			collectOptions[*descriptorpb.EnumOptions](opt, enum, optionsByNode)
+	// 		}
+	// 	}
+	// 	for _, val := range enum.GetValue() {
+	// 		for _, opt := range res.EnumValueNode(val).(*ast.EnumValueNode).Options.GetElements() {
+	// 			collectOptions[*descriptorpb.EnumValueOptions](opt, val, optionsByNode)
+	// 		}
+	// 	}
+	// }
+	// // for _, ext := range fdp.GetExtension() {
+	// // 	for _, opt := range res.FieldNode(ext).(*ast.FieldNode).GetOptions().GetElements() {
+	// // 		collectOptions[*descriptorpb.FieldOptions](opt, ext, optionsByNode)
+	// // 	}
+	// // }
 
-	allNodes := a.Children()
-	for _, node := range allNodes {
-		// only look at the decls that overlap the range
-		info := a.NodeInfo(node)
-		if info.End().Offset <= startOff {
-			continue
-		} else if info.Start().Offset >= endOff {
-			break
-		}
-		ast.Walk(node, &ast.SimpleVisitor{
-			DoVisitOptionNode: func(n *ast.OptionNode) error {
-				opts, ok := optionsByNode[n]
-				if !ok {
-					return nil
-				}
-				for _, opt := range opts {
-					msg := opt.TypeDescriptor().Message()
-					if msg != nil {
-						fullName := msg.FullName()
+	// allNodes := a.Children()
+	// for _, node := range allNodes {
+	// 	// only look at the decls that overlap the range
+	// 	info := a.NodeInfo(node)
+	// 	if info.End().Offset <= startOff {
+	// 		continue
+	// 	} else if info.Start().Offset >= endOff {
+	// 		break
+	// 	}
+	// 	ast.Walk(node, &ast.SimpleVisitor{
+	// 		DoVisitOptionNode: func(n *ast.OptionNode) error {
+	// 			opts, ok := optionsByNode[n]
+	// 			if !ok {
+	// 				return nil
+	// 			}
+	// 			for _, opt := range opts {
+	// 				msg := opt.TypeDescriptor().Message()
+	// 				if msg != nil {
+	// 					fullName := msg.FullName()
 
-						info := a.NodeInfo(n.Val)
-						hints = append(hints, protocol.InlayHint{
-							Position: protocol.Position{
-								Line:      uint32(info.Start().Line) - 1,
-								Character: uint32(info.Start().Col) - 1,
-							},
-							Label: []protocol.InlayHintLabelPart{
-								{
-									Value:   string(fullName),
-									Tooltip: makeTooltip(msg),
-								},
-							},
-							Kind:         protocol.Type,
-							PaddingLeft:  true,
-							PaddingRight: true,
-						})
-						if lit, ok := n.Val.(*ast.MessageLiteralNode); ok {
-							hints = append(hints, buildMessageLiteralHints(lit, msg, a)...)
-						}
-					}
-				}
-				return nil
-			},
-		})
-	}
+	// 					info := a.NodeInfo(n.Val)
+	// 					hints = append(hints, protocol.InlayHint{
+	// 						Position: protocol.Position{
+	// 							Line:      uint32(info.Start().Line) - 1,
+	// 							Character: uint32(info.Start().Col) - 1,
+	// 						},
+	// 						Label: []protocol.InlayHintLabelPart{
+	// 							{
+	// 								Value:   string(fullName),
+	// 								Tooltip: makeTooltip(msg),
+	// 							},
+	// 						},
+	// 						Kind:         protocol.Type,
+	// 						PaddingLeft:  true,
+	// 						PaddingRight: true,
+	// 					})
+	// 					if lit, ok := n.Val.(*ast.MessageLiteralNode); ok {
+	// 						hints = append(hints, buildMessageLiteralHints(lit, msg, a)...)
+	// 					}
+	// 				}
+	// 			}
+	// 			return nil
+	// 		},
+	// 	})
+	// }
 
-	return hints
+	// return hints
 }
 
 func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]protocol.DocumentSymbol, error) {
@@ -1229,15 +1279,20 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 			case *descriptorpb.DescriptorProto:
 				var typeName string
 				// check if it's a synthetic map field
-				if nodeDescriptor.GetOptions().GetMapEntry() {
+				isMapEntry := nodeDescriptor.GetOptions().GetMapEntry()
+				if isMapEntry {
 					// if it is, we're looking for the value message
 					typeName = strings.TrimPrefix(nodeDescriptor.Field[1].GetTypeName(), ".")
 				} else {
 					typeName = nodeDescriptor.GetName()
 				}
 				// check if we're looking for a nested message
-				if i > 0 {
-					if _, ok := item.path[i-1].(*ast.MessageNode); ok {
+				prevIndex := i - 1
+				if isMapEntry {
+					prevIndex-- // go up one more level, we're inside a map field node
+				}
+				if prevIndex >= 0 {
+					if _, ok := item.path[prevIndex].(*ast.MessageNode); ok {
 						// the immediate parent is another message, so this message is not
 						// a top-level descriptor. push it on the stack and go up one level
 						stack.push(currentNode, nil)
@@ -1543,13 +1598,13 @@ func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([
 	var node ast.Node
 	switch desc := desc.(type) {
 	case protoreflect.MessageDescriptor:
-		node = containingFileResolver.MessageNode(protoutil.ProtoFromMessageDescriptor(desc))
+		node = containingFileResolver.MessageNode(protoutil.ProtoFromMessageDescriptor(desc)).MessageName()
 	case protoreflect.EnumDescriptor:
-		node = containingFileResolver.EnumNode(protoutil.ProtoFromEnumDescriptor(desc))
+		node = containingFileResolver.EnumNode(protoutil.ProtoFromEnumDescriptor(desc)).GetName()
 	case protoreflect.ServiceDescriptor:
-		node = containingFileResolver.ServiceNode(protoutil.ProtoFromServiceDescriptor(desc))
+		node = containingFileResolver.ServiceNode(protoutil.ProtoFromServiceDescriptor(desc)).GetName()
 	case protoreflect.MethodDescriptor:
-		node = containingFileResolver.MethodNode(protoutil.ProtoFromMethodDescriptor(desc))
+		node = containingFileResolver.MethodNode(protoutil.ProtoFromMethodDescriptor(desc)).GetName()
 	case protoreflect.FieldDescriptor:
 		if !desc.IsExtension() {
 			node = containingFileResolver.FieldNode(protoutil.ProtoFromFieldDescriptor(desc))
@@ -1564,7 +1619,7 @@ func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([
 			}
 		}
 	case protoreflect.EnumValueDescriptor:
-		node = containingFileResolver.EnumValueNode(protoutil.ProtoFromEnumValueDescriptor(desc))
+		node = containingFileResolver.EnumValueNode(protoutil.ProtoFromEnumValueDescriptor(desc)).GetName()
 	case protoreflect.OneofDescriptor:
 		node = containingFileResolver.OneofNode(protoutil.ProtoFromOneofDescriptor(desc))
 	case protoreflect.FileDescriptor:

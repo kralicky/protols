@@ -4,6 +4,7 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/bufbuild/protocompile"
 	"github.com/bufbuild/protocompile/ast"
@@ -192,29 +193,70 @@ func (s *semanticItems) mkcomments(node ast.Node) {
 	}
 
 	info := s.parseRes.AST().NodeInfo(node)
+
 	leadingComments := info.LeadingComments()
 	for i := 0; i < leadingComments.Len(); i++ {
 		comment := leadingComments.Index(i)
-		commentTk := semanticItem{
-			line:  uint32(comment.Start().Line - 1),
-			start: uint32(comment.Start().Col - 1),
-			len:   uint32((comment.End().Col) - (comment.Start().Col - 1)),
-			typ:   semanticTypeComment,
+		cstart, cend := comment.Start(), comment.End()
+		if cend.Line > cstart.Line {
+			s.multilineComment(comment, cstart, cend)
+			continue
 		}
-		s.items = append(s.items, commentTk)
+		s.items = append(s.items, semanticItem{
+			line:  uint32(cstart.Line - 1),
+			start: uint32(cstart.Col - 1),
+			len:   uint32(cend.Col - (cstart.Col - 1)),
+			typ:   semanticTypeComment,
+		})
 	}
 
 	trailingComments := info.TrailingComments()
 	for i := 0; i < trailingComments.Len(); i++ {
 		comment := trailingComments.Index(i)
-		commentTk := semanticItem{
-			line:  uint32(comment.Start().Line - 1),
-			start: uint32(comment.Start().Col - 1),
-			len:   uint32((comment.End().Col) - (comment.Start().Col - 1)),
-			typ:   semanticTypeComment,
+		cstart, cend := comment.Start(), comment.End()
+		if cend.Line > cstart.Line {
+			s.multilineComment(comment, cstart, cend)
+			continue
 		}
-		s.items = append(s.items, commentTk)
+		s.items = append(s.items, semanticItem{
+			line:  uint32(cstart.Line - 1),
+			start: uint32(cstart.Col - 1),
+			len:   uint32((cend.Col) - (cstart.Col - 1)),
+			typ:   semanticTypeComment,
+		})
 	}
+}
+
+func (s *semanticItems) multilineComment(comment ast.Comment, cstart, cend ast.SourcePos) {
+	text := comment.RawText()
+	lines := strings.Split(text, "\n")
+	lineNumbers := make([]uint32, len(lines))
+	for i := range lines {
+		lineNumbers[i] = uint32(cstart.Line - 1 + i)
+	}
+	// create a token for the first line
+	s.items = append(s.items, semanticItem{
+		line:  uint32(cstart.Line - 1),
+		start: uint32(cstart.Col - 1),
+		len:   uint32(len(lines[0])),
+		typ:   semanticTypeComment,
+	})
+	// create a token for each line between the first and last lines
+	for i := 1; i < len(lines)-1; i++ {
+		s.items = append(s.items, semanticItem{
+			line:  lineNumbers[i],
+			start: 0,
+			len:   uint32(len(lines[i])),
+			typ:   semanticTypeComment,
+		})
+	}
+	// create a token for the last line
+	s.items = append(s.items, semanticItem{
+		line:  uint32(cend.Line - 1),
+		start: 0,
+		len:   uint32(cend.Col),
+		typ:   semanticTypeComment,
+	})
 }
 
 func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.WalkOption) {

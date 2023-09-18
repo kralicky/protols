@@ -23,7 +23,6 @@ import (
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/lsp/source"
 	"golang.org/x/tools/gopls/pkg/span"
-	"golang.org/x/tools/pkg/imports"
 	"google.golang.org/protobuf/reflect/protodesc"
 )
 
@@ -81,9 +80,6 @@ func (r *Resolver) URIToPath(uri span.URI) (string, error) {
 	r.pathsMu.RLock()
 	defer r.pathsMu.RUnlock()
 
-	if i := strings.IndexRune(string(uri), ';'); i != -1 {
-		uri = uri[:i] // strip trailing ;packagename directive
-	}
 	path, ok := r.filePathsByURI[uri]
 	if !ok {
 		return "", fmt.Errorf("%w: URI %q", os.ErrNotExist, uri)
@@ -388,10 +384,10 @@ func (r *Resolver) SyntheticFiles() []span.URI {
 }
 
 func (r *Resolver) LookupGoModule(filename string, f io.ReadCloser) (string, error) {
-	// Check if the file is in a go package directory
-	if pkgName, err := imports.PackageDirToName(filepath.Dir(filename)); err == nil {
-		return pkgName, nil
-	}
+	// // Check if the file is in a go package directory
+	// if pkgName, err := imports.PackageDirToName(filepath.Dir(filename)); err == nil {
+	// 	return pkgName, nil
+	// }
 
 	// Check if the filename is relative to a local go module
 	if pkgName, err := r.synthesizer.ImplicitGoPackagePath(filename); err == nil {

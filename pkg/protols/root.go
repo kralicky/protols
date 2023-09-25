@@ -3,7 +3,6 @@ package protols
 import (
 	"os"
 
-	//+cobra:commandsImport
 	"github.com/kralicky/protols/pkg/protols/commands"
 	"github.com/spf13/cobra"
 )
@@ -15,8 +14,9 @@ func BuildRootCmd() *cobra.Command {
 		Short: "Protobuf Language Server",
 	}
 
-	//+cobra:subcommands
+	rootCmd.AddCommand(commands.BuildFmtCmd())
 	rootCmd.AddCommand(commands.BuildServeCmd())
+	//+cobra:subcommands
 
 	return rootCmd
 }

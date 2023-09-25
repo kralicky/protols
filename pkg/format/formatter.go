@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package lsp
+package format
 
 import (
 	"bytes"
@@ -93,8 +93,8 @@ func (f *formatter) mergeState(other *formatter, reader io.Reader) {
 	f.inline = other.inline
 }
 
-// newFormatter returns a new formatter for the given file.
-func newFormatter(
+// NewFormatter returns a new formatter for the given file.
+func NewFormatter(
 	writer io.Writer,
 	fileNode *ast.FileNode,
 ) *formatter {
@@ -320,8 +320,8 @@ func (f *formatter) writeFileHeader() {
 		// The default options (e.g. cc_enable_arenas) should always
 		// be sorted above custom options (which are identified by a
 		// leading '(').
-		left := stringForOptionName(optionNodes[i].Name)
-		right := stringForOptionName(optionNodes[j].Name)
+		left := StringForOptionName(optionNodes[i].Name)
+		right := StringForOptionName(optionNodes[j].Name)
 		if strings.HasPrefix(left, "(") && !strings.HasPrefix(right, "(") {
 			// Prefer the default option on the right.
 			return false
@@ -2593,23 +2593,23 @@ func importSortOrder(node *ast.ImportNode) int {
 	}
 }
 
-// stringForOptionName returns the string representation of the given option name node.
+// StringForOptionName returns the string representation of the given option name node.
 // This is used for sorting file-level options.
-func stringForOptionName(optionNameNode *ast.OptionNameNode) string {
+func StringForOptionName(optionNameNode *ast.OptionNameNode) string {
 	var result string
 	for j, part := range optionNameNode.Parts {
 		if j > 0 {
 			// Add a dot between each of the parts.
 			result += "."
 		}
-		result += stringForFieldReference(part)
+		result += StringForFieldReference(part)
 	}
 	return result
 }
 
-// stringForFieldReference returns the string representation of the given field reference.
+// StringForFieldReference returns the string representation of the given field reference.
 // This is used for sorting file-level options.
-func stringForFieldReference(fieldReference *ast.FieldReferenceNode) string {
+func StringForFieldReference(fieldReference *ast.FieldReferenceNode) string {
 	var result string
 	if fieldReference.Open != nil {
 		result += "("

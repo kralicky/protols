@@ -23,6 +23,7 @@ import (
 	"github.com/jhump/protoreflect/desc"
 	"github.com/jhump/protoreflect/desc/protoprint"
 	gsync "github.com/kralicky/gpkg/sync"
+	"github.com/kralicky/protols/pkg/format"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
@@ -1817,7 +1818,7 @@ func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options prot
 
 	// format whole file
 	buf := bytes.NewBuffer(make([]byte, 0, len(mapper.Content)))
-	format := newFormatter(buf, res.AST())
+	format := format.NewFormatter(buf, res.AST())
 	if err := format.Run(); err != nil {
 		return nil, err
 	}

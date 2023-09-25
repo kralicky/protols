@@ -7,6 +7,7 @@ import (
 
 	"github.com/bufbuild/protocompile/ast"
 	"github.com/bufbuild/protocompile/parser"
+	"github.com/kralicky/protols/pkg/format"
 )
 
 func DumpAST(node ast.Node, parseRes parser.Result) string {
@@ -171,12 +172,12 @@ func (v *dumpVisitor) VisitOneofNode(node *ast.OneofNode) error {
 }
 
 func (v *dumpVisitor) VisitOptionNameNode(node *ast.OptionNameNode) error {
-	v.buf.WriteString(fmt.Sprintf("(name=%s)\n", stringForOptionName(node)))
+	v.buf.WriteString(fmt.Sprintf("(name=%s)\n", format.StringForOptionName(node)))
 	return nil
 }
 
 func (v *dumpVisitor) VisitOptionNode(node *ast.OptionNode) error {
-	v.buf.WriteString(fmt.Sprintf("(name=%s) (val=%T)\n", stringForOptionName(node.Name), node.Val.Value()))
+	v.buf.WriteString(fmt.Sprintf("(name=%s) (val=%T)\n", format.StringForOptionName(node.Name), node.Val.Value()))
 	return nil
 }
 

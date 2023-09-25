@@ -876,20 +876,20 @@ func (f *formatter) maybeWriteCompactMessageLiteral(
 		return false
 	}
 
-	// messages with a single scalar field and no comments can be
-	// printed all on one line
 	if inArrayLiteral {
 		f.Indent(messageLiteralNode.Open)
 	}
 	f.writeInline(messageLiteralNode.Open)
-	if len(messageLiteralNode.Elements) != 0 {
-		fieldNode := messageLiteralNode.Elements[0]
+	for i, fieldNode := range messageLiteralNode.Elements {
 		f.writeInline(fieldNode.Name)
 		if fieldNode.Sep != nil {
 			f.writeInline(fieldNode.Sep)
 		}
 		f.Space()
 		f.writeInline(fieldNode.Val)
+		if i < len(messageLiteralNode.Seps)-1 {
+			f.writer.Write([]byte(", "))
+		}
 	}
 	f.writeInline(messageLiteralNode.Close)
 	return true

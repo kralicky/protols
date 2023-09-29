@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/exp/maps"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/tools/gopls/pkg/lsp"
 	"golang.org/x/tools/gopls/pkg/lsp/progress"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/lsp/source"
@@ -273,6 +274,32 @@ func (s *Server) DidChange(ctx context.Context, params *protocol.DidChangeTextDo
 		Version: params.TextDocument.Version,
 		Text:    text,
 	}})
+}
+
+// DidChangeWatchedFiles implements protocol.Server.
+func (s *Server) DidChangeWatchedFiles(ctx context.Context, params *protocol.DidChangeWatchedFilesParams) error {
+	mods := map[*Cache][]source.FileModification{}
+	for _, change := range params.Changes {
+		uri := change.URI
+		if !uri.SpanURI().IsFile() {
+			continue
+		}
+		cache, err := s.CacheForURI(uri)
+		if err != nil {
+			continue
+		}
+		mods[cache] = append(mods[cache], source.FileModification{
+			URI:    uri.SpanURI(),
+			Action: lsp.ChangeTypeToFileAction(change.Type),
+			OnDisk: true,
+		})
+	}
+	for c, mods := range mods {
+		if err := c.DidModifyFiles(ctx, mods); err != nil {
+			s.lg.Error("failed to update files", zap.Error(err))
+		}
+	}
+	return nil
 }
 
 // DidCreateFiles implements protocol.Server.
@@ -906,11 +933,6 @@ func (*Server) DidChangeConfiguration(context.Context, *protocol.DidChangeConfig
 // DidChangeNotebookDocument implements protocol.Server.
 func (*Server) DidChangeNotebookDocument(context.Context, *protocol.DidChangeNotebookDocumentParams) error {
 	return notImplemented("DidChangeNotebookDocument")
-}
-
-// DidChangeWatchedFiles implements protocol.Server.
-func (*Server) DidChangeWatchedFiles(context.Context, *protocol.DidChangeWatchedFilesParams) error {
-	return notImplemented("DidChangeWatchedFiles")
 }
 
 // DidCloseNotebookDocument implements protocol.Server.

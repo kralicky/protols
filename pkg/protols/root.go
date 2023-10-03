@@ -16,6 +16,7 @@ func BuildRootCmd() *cobra.Command {
 
 	rootCmd.AddCommand(commands.BuildFmtCmd())
 	rootCmd.AddCommand(commands.BuildServeCmd())
+	rootCmd.AddCommand(commands.BuildVetCmd())
 	//+cobra:subcommands
 
 	return rootCmd

@@ -18,6 +18,7 @@ import (
 	"github.com/bufbuild/protocompile/linker"
 	gogo "github.com/gogo/protobuf/proto"
 	"github.com/jhump/protoreflect/desc"
+	"github.com/kralicky/protols/pkg/format"
 	"go.uber.org/zap"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
@@ -197,7 +198,7 @@ func (r *Resolver) CheckIncompleteDescriptors(results linker.Files) []string {
 						zap.Error(err),
 					).Error("failed to generate synthetic file descriptor")
 				}
-				src, err := printDescriptor(newFile)
+				src, err := format.PrintDescriptor(newFile)
 				if err != nil {
 					r.lg.With(
 						zap.String("uri", string(uri)),
@@ -362,7 +363,7 @@ func (r *Resolver) checkGlobalCache(path string) (protocompile.SearchResult, err
 	uri := span.URI(syntheticURI.String())
 	r.filePathsByURI[uri] = path
 	r.fileURIsByPath[path] = uri
-	src, err := printDescriptor(fd.UnwrapFile())
+	src, err := format.PrintDescriptor(fd.UnwrapFile())
 	if err != nil {
 		return protocompile.SearchResult{Desc: fd.UnwrapFile()}, nil
 	}

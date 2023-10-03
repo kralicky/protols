@@ -20,8 +20,6 @@ import (
 	"github.com/bufbuild/protocompile/parser"
 	"github.com/bufbuild/protocompile/protoutil"
 	"github.com/bufbuild/protocompile/reporter"
-	"github.com/jhump/protoreflect/desc"
-	"github.com/jhump/protoreflect/desc/protoprint"
 	gsync "github.com/kralicky/gpkg/sync"
 	"github.com/kralicky/protols/pkg/format"
 	"go.uber.org/zap"
@@ -43,7 +41,7 @@ import (
 // and definitions.
 type Cache struct {
 	workspace      protocol.WorkspaceFolder
-	lg             *zap.Logger
+	lg             *zap.SugaredLogger
 	compiler       *Compiler
 	resolver       *Resolver
 	diagHandler    *DiagnosticHandler
@@ -180,7 +178,7 @@ var requiredGoEnvVars = []string{"GO111MODULE", "GOFLAGS", "GOINSECURE", "GOMOD"
 func NewCache(workspace protocol.WorkspaceFolder, lg *zap.Logger) *Cache {
 	workdir := span.URIFromURI(workspace.URI).Filename()
 	// NewCache creates a new cache.
-	diagHandler := NewDiagnosticHandler()
+	diagHandler := NewDiagnosticHandler(lg)
 	reporter := reporter.NewReporter(diagHandler.HandleError, diagHandler.HandleWarning)
 	resolver := NewResolver(workspace, lg)
 
@@ -198,7 +196,7 @@ func NewCache(workspace protocol.WorkspaceFolder, lg *zap.Logger) *Cache {
 	}
 	cache := &Cache{
 		workspace:   workspace,
-		lg:          lg,
+		lg:          lg.Sugar(),
 		compiler:    compiler,
 		resolver:    resolver,
 		diagHandler: diagHandler,
@@ -272,7 +270,7 @@ func contentChangeEventsToDiffEdits(mapper *protocol.Mapper, changes []protocol.
 }
 
 func (c *Cache) preInvalidateHook(path string, reason string) {
-	fmt.Printf("invalidating %s (%s)\n", path, reason)
+	c.lg.Debugf("invalidating %s (%s)\n", path, reason)
 	c.inflightTasksInvalidate.Store(path, time.Now())
 	c.diagHandler.ClearDiagnosticsForPath(path)
 }
@@ -280,14 +278,14 @@ func (c *Cache) preInvalidateHook(path string, reason string) {
 func (c *Cache) postInvalidateHook(path string) {
 	startTime, ok := c.inflightTasksInvalidate.LoadAndDelete(path)
 	if ok {
-		fmt.Printf("invalidated %s (took %s)\n", path, time.Since(startTime))
+		c.lg.Debugf("invalidated %s (took %s)\n", path, time.Since(startTime))
 	} else {
-		fmt.Printf("invalidated %s\n", path)
+		c.lg.Debugf("invalidated %s\n", path)
 	}
 }
 
 func (c *Cache) preCompile(path string) {
-	fmt.Printf("compiling %s\n", path)
+	c.lg.Debugf("compiling %s\n", path)
 	c.inflightTasksCompile.Store(path, time.Now())
 	c.resultsMu.Lock()
 	delete(c.partialResults, path)
@@ -297,9 +295,9 @@ func (c *Cache) preCompile(path string) {
 func (c *Cache) postCompile(path string) {
 	startTime, ok := c.inflightTasksCompile.LoadAndDelete(path)
 	if ok {
-		fmt.Printf("compiled %s (took %s)\n", path, time.Since(startTime))
+		c.lg.Debugf("compiled %s (took %s)\n", path, time.Since(startTime))
 	} else {
-		fmt.Printf("compiled %s\n", path)
+		c.lg.Debugf("compiled %s\n", path)
 	}
 }
 
@@ -1150,14 +1148,14 @@ func (c *Cache) GetSyntheticFileContents(ctx context.Context, uri string) (strin
 		b, err := io.ReadAll(fh.Source)
 		return string(b), err
 	case fh.Desc != nil:
-		return printDescriptor(fh.Desc)
+		return format.PrintDescriptor(fh.Desc)
 	case fh.Proto != nil:
 		c.Compile(uri)
 		f, err := protodesc.NewFile(fh.Proto, c.results.AsResolver())
 		if err != nil {
 			return "", err
 		}
-		return printDescriptor(f)
+		return format.PrintDescriptor(f)
 	default:
 		return "", fmt.Errorf("unimplemented synthetic file type for %s", uri)
 	}
@@ -1333,7 +1331,7 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 		}
 	}
 
-	// fmt.Printf("descriptor: [%T] %v\n", haveDescriptor, haveDescriptor.FullName())
+	// c.lg.Debugf("descriptor: [%T] %v\n", haveDescriptor, haveDescriptor.FullName())
 
 	// fast path: the node is directly mapped to a resolved top-level descriptor
 	if len(stack) == 1 && stack[0].desc != nil {
@@ -1776,25 +1774,8 @@ func buildMessageLiteralHints(lit *ast.MessageLiteralNode, msg protoreflect.Mess
 	return hints
 }
 
-func printDescriptor(d protoreflect.Descriptor) (string, error) {
-	wrap, err := desc.WrapDescriptor(d)
-	if err != nil {
-		return "", err
-	}
-	printer := protoprint.Printer{
-		CustomSortFunction: SortElements,
-		Indent:             "  ",
-		Compact:            protoprint.CompactDefault,
-	}
-	str, err := printer.PrintProtoToString(wrap)
-	if err != nil {
-		return "", err
-	}
-	return str, nil
-}
-
 func makeTooltip(d protoreflect.Descriptor) *protocol.OrPTooltipPLabel {
-	str, err := printDescriptor(d)
+	str, err := format.PrintDescriptor(d)
 	if err != nil {
 		return nil
 	}

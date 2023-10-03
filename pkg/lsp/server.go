@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sync"
 
+	"github.com/kralicky/protols/pkg/format"
 	"github.com/samber/lo"
 	"go.uber.org/zap"
 	"golang.org/x/exp/maps"
@@ -636,7 +637,7 @@ func (s *Server) NonstandardRequest(ctx context.Context, method string, params i
 		if err != nil {
 			return nil, err
 		}
-		return DumpAST(parseRes.AST(), parseRes), nil
+		return format.DumpAST(parseRes.AST(), parseRes), nil
 	case "protols/reindex-workspaces":
 		s.cachesMu.Lock()
 		allWorkspaces := []protocol.WorkspaceFolder{}

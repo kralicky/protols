@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/bufbuild/protocompile/ast"
 	"github.com/bufbuild/protocompile/linker"
 	"github.com/bufbuild/protocompile/reporter"
+	"go.uber.org/zap"
 	"golang.org/x/exp/slices"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 )
@@ -38,9 +38,10 @@ type CodeAction struct {
 	Command     *protocol.Command       `json:"command,omitempty"`
 }
 
-func NewDiagnosticHandler() *DiagnosticHandler {
+func NewDiagnosticHandler(lg *zap.Logger) *DiagnosticHandler {
 	return &DiagnosticHandler{
 		diagnostics: map[string]*DiagnosticList{},
+		lg:          lg.Sugar(),
 	}
 }
 
@@ -101,6 +102,7 @@ type DiagnosticHandler struct {
 	diagnostics   map[string]*DiagnosticList
 	listenerMu    sync.RWMutex
 	listener      ListenerFunc
+	lg            *zap.SugaredLogger
 }
 
 func tagsForError(errWithPos reporter.ErrorWithPos) []protocol.DiagnosticTag {
@@ -238,7 +240,7 @@ func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
 		return nil
 	}
 
-	fmt.Fprintf(os.Stderr, "[diagnostic] error: %s\n", err.Error())
+	dr.lg.Debugf("[diagnostic] error: %s\n", err.Error())
 
 	pos := err.GetPosition()
 	filename := pos.Start().Filename
@@ -271,7 +273,7 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "[diagnostic] warning: %s\n", err.Error())
+	dr.lg.Debugf("[diagnostic] warning: %s\n", err.Error())
 
 	pos := err.GetPosition()
 	filename := pos.Start().Filename
@@ -321,8 +323,29 @@ func (dr *DiagnosticHandler) GetDiagnosticsForPath(path string, prevResultId ...
 	}
 	res, resultId, unchanged := dl.Get(prevResultId...)
 
-	fmt.Printf("[diagnostic] querying diagnostics for %s: (%d results)\n", path, len(res))
+	dr.lg.Debugf("[diagnostic] querying diagnostics for %s: (%d results)\n", path, len(res))
 	return res, resultId, unchanged
+}
+
+func (dr *DiagnosticHandler) FullDiagnosticSnapshot() map[string][]*ProtoDiagnostic {
+	dr.diagnosticsMu.RLock()
+	defer dr.diagnosticsMu.RUnlock()
+	res := make(map[string][]*ProtoDiagnostic, len(dr.diagnostics))
+	for path, dl := range dr.diagnostics {
+		list := make([]*ProtoDiagnostic, 0, len(dl.Diagnostics))
+		for _, d := range dl.Diagnostics {
+			list = append(list, &ProtoDiagnostic{
+				Pos:                d.Pos,
+				Severity:           d.Severity,
+				Error:              d.Error,
+				Tags:               d.Tags,
+				RelatedInformation: d.RelatedInformation,
+				CodeActions:        d.CodeActions,
+			})
+		}
+		res[path] = list
+	}
+	return res
 }
 
 func (dr *DiagnosticHandler) ClearDiagnosticsForPath(path string) {
@@ -333,7 +356,7 @@ func (dr *DiagnosticHandler) ClearDiagnosticsForPath(path string) {
 		prev = dl.Clear()
 	}
 
-	fmt.Printf("[diagnostic] clearing %d diagnostics for %s\n", len(prev), path)
+	dr.lg.Debugf("[diagnostic] clearing %d diagnostics for %s\n", len(prev), path)
 
 	dr.listenerMu.RLock()
 	if dr.listener != nil {

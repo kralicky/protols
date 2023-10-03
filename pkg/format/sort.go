@@ -1,4 +1,4 @@
-package lsp
+package format
 
 import "github.com/jhump/protoreflect/desc/protoprint"
 

@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/kralicky/protols/pkg/format"
+	"github.com/kralicky/protols/pkg/sources"
 	"github.com/samber/lo"
 	"go.uber.org/zap"
 	"golang.org/x/exp/maps"
@@ -52,7 +53,8 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 	for _, folder := range folders {
 		path := span.URIFromURI(folder.URI).Filename()
 		s.lg.Info("adding workspace folder", zap.String("path", path))
-		c := NewCache(folder, s.lg.Named("cache."+folder.Name))
+		c := NewCache(folder, WithLogger(s.lg.Named("cache."+folder.Name)))
+		c.LoadFiles(sources.SearchDirs(path))
 		s.caches[path] = c
 	}
 	s.cachesMu.Unlock()
@@ -649,7 +651,8 @@ func (s *Server) NonstandardRequest(ctx context.Context, method string, params i
 		runtime.GC()
 		for _, folder := range allWorkspaces {
 			path := span.URIFromURI(folder.URI).Filename()
-			c := NewCache(folder, s.lg.Named("cache."+folder.Name))
+			c := NewCache(folder, WithLogger(s.lg.Named("cache."+folder.Name)))
+			c.LoadFiles(sources.SearchDirs(path))
 			s.caches[path] = c
 		}
 		s.cachesMu.Unlock()
@@ -681,7 +684,8 @@ func (s *Server) DidChangeWorkspaceFolders(ctx context.Context, params *protocol
 	for _, folder := range added {
 		path := span.URIFromURI(folder.URI).Filename()
 		s.lg.Info("adding workspace folder", zap.String("path", path))
-		c := NewCache(folder, s.lg.Named("cache."+folder.Name))
+		c := NewCache(folder, WithLogger(s.lg.Named("cache."+folder.Name)))
+		c.LoadFiles(sources.SearchDirs(path))
 		s.caches[path] = c
 	}
 	for _, folder := range removed {

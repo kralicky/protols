@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/kralicky/protols/codegen"
+	"github.com/kralicky/protols/pkg/sources"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
@@ -23,7 +24,7 @@ func BuildVetCmd() *cobra.Command {
 				return err
 			}
 			driver := codegen.NewDriver(wd, zap.NewNop())
-			results, err := driver.Compile()
+			results, err := driver.Compile(sources.SearchDirs(wd))
 			if err != nil {
 				return err
 			}

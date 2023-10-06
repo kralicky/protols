@@ -48,8 +48,9 @@ var severityMsg = map[protocol.DiagnosticSeverity]string{
 	protocol.SeverityWarning: "\x1b[33mwarning\x1b[0m",
 }
 
-func (d *Driver) Compile() (*Results, error) {
-	cache := lsp.NewCache(d.workspace, d.logger)
+func (d *Driver) Compile(protos []string) (*Results, error) {
+	cache := lsp.NewCache(d.workspace, lsp.WithLogger(d.logger))
+	cache.LoadFiles(protos)
 
 	diagnostics, err := cache.XGetAllDiagnostics()
 	if err != nil {

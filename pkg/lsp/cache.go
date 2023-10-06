@@ -7,13 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/bmatcuk/doublestar"
 	"github.com/bufbuild/protocompile"
 	"github.com/bufbuild/protocompile/ast"
 	"github.com/bufbuild/protocompile/linker"
@@ -49,14 +47,7 @@ type Cache struct {
 	results        linker.Files
 	partialResults map[string]parser.Result
 	indexMu        sync.RWMutex
-	// indexedDirsByGoPkg map[string]string   // go package name -> directory
-	// indexedGoPkgsByDir map[string]string   // directory -> go package name
-	// filePathsByURI map[span.URI]string // URI -> canonical file path (go package + file name)
-	// fileURIsByPath map[string]span.URI // canonical file path (go package + file name) -> URI
-
-	todoModLock sync.Mutex
-
-	compileLock sync.Mutex
+	compileLock    sync.Mutex
 
 	inflightTasksInvalidate gsync.Map[string, time.Time]
 	inflightTasksCompile    gsync.Map[string, time.Time]
@@ -175,12 +166,34 @@ type Compiler struct {
 
 var requiredGoEnvVars = []string{"GO111MODULE", "GOFLAGS", "GOINSECURE", "GOMOD", "GOMODCACHE", "GONOPROXY", "GONOSUMDB", "GOPATH", "GOPROXY", "GOROOT", "GOSUMDB", "GOWORK"}
 
-func NewCache(workspace protocol.WorkspaceFolder, lg *zap.Logger) *Cache {
+type CacheOptions struct {
+	searchPattern string
+	logger        *zap.Logger
+}
+
+type CacheOption func(*CacheOptions)
+
+func (o *CacheOptions) apply(opts ...CacheOption) {
+	for _, op := range opts {
+		op(o)
+	}
+}
+
+func WithLogger(lg *zap.Logger) CacheOption {
+	return func(o *CacheOptions) {
+		o.logger = lg
+	}
+}
+
+func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
+	options := CacheOptions{
+		logger: zap.NewNop(),
+	}
 	workdir := span.URIFromURI(workspace.URI).Filename()
 	// NewCache creates a new cache.
-	diagHandler := NewDiagnosticHandler(lg)
+	diagHandler := NewDiagnosticHandler(options.logger)
 	reporter := reporter.NewReporter(diagHandler.HandleError, diagHandler.HandleWarning)
-	resolver := NewResolver(workspace, lg)
+	resolver := NewResolver(workspace, options.logger)
 
 	compiler := &Compiler{
 		fs: resolver.OverlayFS,
@@ -195,15 +208,11 @@ func NewCache(workspace protocol.WorkspaceFolder, lg *zap.Logger) *Cache {
 		workdir: workdir,
 	}
 	cache := &Cache{
-		workspace:   workspace,
-		lg:          lg.Sugar(),
-		compiler:    compiler,
-		resolver:    resolver,
-		diagHandler: diagHandler,
-		// indexedDirsByGoPkg: map[string]string{},
-		// indexedGoPkgsByDir: map[string]string{},
-		// filePathsByURI: map[span.URI]string{},
-		// fileURIsByPath: map[string]span.URI{},
+		workspace:      workspace,
+		lg:             options.logger.Sugar(),
+		compiler:       compiler,
+		resolver:       resolver,
+		diagHandler:    diagHandler,
 		partialResults: map[string]parser.Result{},
 	}
 	compiler.Hooks = protocompile.CompilerHooks{
@@ -212,8 +221,25 @@ func NewCache(workspace protocol.WorkspaceFolder, lg *zap.Logger) *Cache {
 		PreCompile:     cache.preCompile,
 		PostCompile:    cache.postCompile,
 	}
-	cache.Initialize()
 	return cache
+}
+
+func (c *Cache) LoadFiles(files []string) {
+	c.lg.Debug("initializing")
+	defer c.lg.Debug("done initializing")
+
+	created := make([]source.FileModification, len(files))
+	for i, f := range files {
+		created[i] = source.FileModification{
+			Action: source.Create,
+			OnDisk: true,
+			URI:    span.URIFromPath(f),
+		}
+	}
+
+	if err := c.DidModifyFiles(context.TODO(), created); err != nil {
+		c.lg.Error("failed to index files", zap.Error(err))
+	}
 }
 
 func (r *Cache) GetMapper(uri span.URI) (*protocol.Mapper, error) {
@@ -299,36 +325,6 @@ func (c *Cache) postCompile(path string) {
 	} else {
 		c.lg.Debugf("compiled %s\n", path)
 	}
-}
-
-func (c *Cache) Initialize() {
-	c.lg.Debug("initializing")
-	defer c.lg.Debug("done initializing")
-
-	allProtos, _ := doublestar.Glob(path.Join(c.compiler.workdir, "**/*.proto"))
-
-	if len(allProtos) == 0 {
-		c.lg.Debug("no protos found")
-		return
-	}
-	c.lg.Debug("found protos", zap.Strings("protos", allProtos))
-	created := make([]source.FileModification, len(allProtos))
-	for i, proto := range allProtos {
-		created[i] = source.FileModification{
-			Action: source.Create,
-			OnDisk: true,
-			URI:    span.URIFromPath(proto),
-		}
-	}
-
-	if err := c.DidModifyFiles(context.TODO(), created); err != nil {
-		c.lg.Error("failed to index files", zap.Error(err))
-	}
-	c.resultsMu.Lock()
-	defer c.resultsMu.Unlock()
-	implicit := c.compiler.GetImplicitResults()
-	c.lg.Debug("indexing implicit results", zap.Int("results", len(implicit)))
-	c.results = append(c.results, implicit...)
 }
 
 func (c *Cache) Compile(protos ...string) {

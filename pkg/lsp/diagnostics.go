@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -11,7 +12,6 @@ import (
 	"github.com/bufbuild/protocompile/ast"
 	"github.com/bufbuild/protocompile/linker"
 	"github.com/bufbuild/protocompile/reporter"
-	"go.uber.org/zap"
 	"golang.org/x/exp/slices"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 )
@@ -38,10 +38,9 @@ type CodeAction struct {
 	Command     *protocol.Command       `json:"command,omitempty"`
 }
 
-func NewDiagnosticHandler(lg *zap.Logger) *DiagnosticHandler {
+func NewDiagnosticHandler() *DiagnosticHandler {
 	return &DiagnosticHandler{
 		diagnostics: map[string]*DiagnosticList{},
-		lg:          lg.Sugar(),
 	}
 }
 
@@ -102,7 +101,6 @@ type DiagnosticHandler struct {
 	diagnostics   map[string]*DiagnosticList
 	listenerMu    sync.RWMutex
 	listener      ListenerFunc
-	lg            *zap.SugaredLogger
 }
 
 func tagsForError(errWithPos reporter.ErrorWithPos) []protocol.DiagnosticTag {
@@ -240,7 +238,7 @@ func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
 		return nil
 	}
 
-	dr.lg.Debugf("[diagnostic] error: %s\n", err.Error())
+	slog.Debug(fmt.Sprintf("[diagnostic] error: %s\n", err.Error()))
 
 	pos := err.GetPosition()
 	filename := pos.Start().Filename
@@ -273,7 +271,7 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 		return
 	}
 
-	dr.lg.Debugf("[diagnostic] warning: %s\n", err.Error())
+	slog.Debug(fmt.Sprintf("[diagnostic] warning: %s\n", err.Error()))
 
 	pos := err.GetPosition()
 	filename := pos.Start().Filename
@@ -323,7 +321,7 @@ func (dr *DiagnosticHandler) GetDiagnosticsForPath(path string, prevResultId ...
 	}
 	res, resultId, unchanged := dl.Get(prevResultId...)
 
-	dr.lg.Debugf("[diagnostic] querying diagnostics for %s: (%d results)\n", path, len(res))
+	slog.Debug(fmt.Sprintf("[diagnostic] querying diagnostics for %s: (%d results)\n", path, len(res)))
 	return res, resultId, unchanged
 }
 
@@ -356,7 +354,7 @@ func (dr *DiagnosticHandler) ClearDiagnosticsForPath(path string) {
 		prev = dl.Clear()
 	}
 
-	dr.lg.Debugf("[diagnostic] clearing %d diagnostics for %s\n", len(prev), path)
+	slog.Debug(fmt.Sprintf("[diagnostic] clearing %d diagnostics for %s\n", len(prev), path))
 
 	dr.listenerMu.RLock()
 	if dr.listener != nil {

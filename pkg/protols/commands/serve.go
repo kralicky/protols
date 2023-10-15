@@ -6,8 +6,9 @@ import (
 	"net"
 	"os"
 
+	"log/slog"
+
 	"github.com/kralicky/protols/pkg/lsp"
-	"go.uber.org/zap"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 
 	"golang.org/x/tools/pkg/event"
@@ -22,27 +23,33 @@ func BuildServeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the language server",
-		Run: func(cmd *cobra.Command, args []string) {
-			lg, _ := zap.NewDevelopment()
-
+		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, err := net.Dial("unix", pipe)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: %s\n", err.Error())
-				os.Exit(1)
+				return err
 			}
-			executablePath, _ := os.Executable()
-			lg.With(
-				zap.String("path", executablePath),
-				zap.String("pipe", pipe),
-				zap.Int("pid", os.Getpid()),
-			).Info("starting server")
-
 			stream := jsonrpc2.NewHeaderStream(cc)
 			stream = protocol.LoggingStream(stream, os.Stdout)
 			conn := jsonrpc2.NewConn(stream)
 			client := protocol.ClientDispatcher(conn)
+			// r, w := io.Pipe()
+			// go func() {
+			// 	scan := bufio.NewScanner(r)
+			// 	for scan.Scan() {
+			// 		log := scan.Bytes()
+			// 		client.LogMessage(context.Background(), &protocol.LogMessageParams{
+			// 			Type:    protocol.Log,
+			// 			Message: string(log),
+			// 		})
+			// 	}
+			// }()
+			slog.SetDefault(slog.New(slog.NewTextHandler(cmd.OutOrStderr(), &slog.HandlerOptions{
+				AddSource: true,
+				Level:     slog.LevelDebug,
+			})))
+
 			ctx := protocol.WithClient(cmd.Context(), client)
-			server := lsp.NewServer(lg, client)
+			server := lsp.NewServer(client)
 			conn.Go(ctx, protocol.CancelHandler(
 				AsyncHandler(
 					jsonrpc2.MustReplyHandler(
@@ -50,9 +57,9 @@ func BuildServeCmd() *cobra.Command {
 
 			<-conn.Done()
 			if err := conn.Err(); err != nil {
-				fmt.Fprintf(os.Stderr, "server exited with error: %s\n", err.Error())
-				os.Exit(1)
+				return fmt.Errorf("server exited with error: %w", err)
 			}
+			return nil
 		},
 	}
 

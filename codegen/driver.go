@@ -7,7 +7,6 @@ import (
 
 	"github.com/bufbuild/protocompile/linker"
 	"github.com/kralicky/protols/pkg/lsp"
-	"go.uber.org/zap"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/span"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -16,15 +15,13 @@ import (
 
 type Driver struct {
 	workspace protocol.WorkspaceFolder
-	logger    *zap.Logger
 }
 
-func NewDriver(workspaceFolder string, logger *zap.Logger) *Driver {
+func NewDriver(workspaceFolder string) *Driver {
 	return &Driver{
 		workspace: protocol.WorkspaceFolder{
 			URI: string(span.URIFromPath(workspaceFolder)),
 		},
-		logger: logger,
 	}
 }
 
@@ -49,7 +46,7 @@ var severityMsg = map[protocol.DiagnosticSeverity]string{
 }
 
 func (d *Driver) Compile(protos []string) (*Results, error) {
-	cache := lsp.NewCache(d.workspace, lsp.WithLogger(d.logger))
+	cache := lsp.NewCache(d.workspace)
 	cache.LoadFiles(protos)
 
 	diagnostics, err := cache.XGetAllDiagnostics()

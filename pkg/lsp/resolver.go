@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,7 +20,6 @@ import (
 	gogo "github.com/gogo/protobuf/proto"
 	"github.com/jhump/protoreflect/desc"
 	"github.com/kralicky/protols/pkg/format"
-	"go.uber.org/zap"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/lsp/source"
@@ -41,7 +41,6 @@ type Resolver struct {
 	*cache.OverlayFS
 	folder             protocol.WorkspaceFolder
 	synthesizer        *ProtoSourceSynthesizer
-	lg                 *zap.Logger
 	pathsMu            sync.RWMutex
 	filePathsByURI     map[span.URI]string // URI -> canonical file path (go package + file name)
 	fileURIsByPath     map[string]span.URI // canonical file path (go package + file name) -> URI
@@ -49,9 +48,8 @@ type Resolver struct {
 	syntheticFiles     map[span.URI]string
 }
 
-func NewResolver(folder protocol.WorkspaceFolder, lg *zap.Logger) *Resolver {
+func NewResolver(folder protocol.WorkspaceFolder) *Resolver {
 	return &Resolver{
-		lg:                 lg,
 		folder:             folder,
 		OverlayFS:          cache.NewOverlayFS(cache.NewMemoizedFS()),
 		synthesizer:        NewProtoSourceSynthesizer(span.URIFromURI(folder.URI).Filename()),
@@ -116,26 +114,26 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 					var err error
 					f, err = os.Open(filename)
 					if err != nil {
-						r.lg.With(
-							zap.String("filename", filename),
-							zap.Error(err),
+						slog.With(
+							"filename", filename,
+							"error", err,
 						).Error("failed to open file")
 						continue
 					}
 				}
 				mod, err := r.LookupGoModule(filename, f)
 				if err != nil {
-					r.lg.With(
-						zap.String("filename", filename),
-						zap.Error(err),
+					slog.With(
+						"filename", filename,
+						"error", err,
 					).Error("failed to lookup go module")
 					continue
 				}
 				updatedPath := filepath.Join(mod, filepath.Base(filename))
 				if updatedPath != existingPath {
-					r.lg.With(
-						zap.String("existingPath", existingPath),
-						zap.String("updatedPath", updatedPath),
+					slog.With(
+						"existingPath", existingPath,
+						"updatedPath", updatedPath,
 					).Debug("updating path mapping")
 					r.filePathsByURI[m.URI] = updatedPath
 					r.fileURIsByPath[updatedPath] = m.URI
@@ -148,17 +146,17 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 			filename := m.URI.Filename()
 			f, err := os.Open(filename)
 			if err != nil {
-				r.lg.With(
-					zap.String("filename", filename),
-					zap.Error(err),
+				slog.With(
+					"filename", filename,
+					"error", err,
 				).Error("failed to open file")
 				continue
 			}
 			goPkg, err := r.LookupGoModule(filename, f)
 			if err != nil {
-				r.lg.With(
-					zap.String("filename", filename),
-					zap.Error(err),
+				slog.With(
+					"filename", filename,
+					"error", err,
 				).Error("failed to lookup go module")
 				r.filePathsByURI[m.URI] = ""
 				continue
@@ -193,16 +191,16 @@ func (r *Resolver) CheckIncompleteDescriptors(results linker.Files) []string {
 				res := results.FindFileByPath(path)
 				newFile, err := protodesc.NewFile(protodesc.ToFileDescriptorProto(res), results.AsResolver())
 				if err != nil {
-					r.lg.With(
-						zap.String("uri", string(uri)),
-						zap.Error(err),
+					slog.With(
+						"uri", string(uri),
+						"error", err,
 					).Error("failed to generate synthetic file descriptor")
 				}
 				src, err := format.PrintDescriptor(newFile)
 				if err != nil {
-					r.lg.With(
-						zap.String("uri", string(uri)),
-						zap.Error(err),
+					slog.With(
+						"uri", string(uri),
+						"error", err,
 					).Error("failed to generate synthetic file source")
 					continue
 				}
@@ -234,38 +232,39 @@ func (r *Resolver) findFileByPathLocked(path string) (protocompile.SearchResult,
 			isSynthetic = true
 		}
 	}
+	lg := slog.With("path", path)
 	if result, err := r.checkWellKnownImportPath(path); err == nil {
-		r.lg.With(zap.String("path", path)).Debug("resolved to well-known import path")
+		lg.Debug("resolved to well-known import path")
 		return result, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
-		r.lg.With(zap.String("path", path)).Error("failed to check well-known import path")
+		lg.Error("failed to check well-known import path")
 		return protocompile.SearchResult{}, err
 	}
 	if !isSynthetic {
 		if result, err := r.checkFS(path); err == nil {
-			r.lg.With(zap.String("path", path)).Debug("resolved to cached file")
+			lg.Debug("resolved to cached file")
 			return result, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
-			r.lg.With(zap.String("path", path), zap.Error(err)).Debug("failed to check cached file")
+			slog.With("path", path, "error", err).Debug("failed to check cached file")
 			return protocompile.SearchResult{}, err
 		}
 	}
 	if result, err := r.checkGoModule(path); err == nil {
-		r.lg.With(zap.String("path", path)).Debug("resolved to go module")
+		lg.Debug("resolved to go module")
 		return result, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
-		r.lg.With(zap.String("path", path)).Debug("failed to check go module")
+		lg.Debug("failed to check go module")
 		return protocompile.SearchResult{}, err
 	}
 	if result, err := r.checkGlobalCache(path); err == nil {
-		r.lg.With(zap.String("path", path)).Debug("resolved to type in global descriptor cache")
+		lg.Debug("resolved to type in global descriptor cache")
 		return result, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
-		r.lg.With(zap.String("path", path)).Debug("failed to check global descriptor cache")
+		lg.Debug("failed to check global descriptor cache")
 		return protocompile.SearchResult{}, err
 	}
 
-	r.lg.With(zap.String("path", path)).Debug("could not resolve path")
+	lg.Debug("could not resolve path")
 	return protocompile.SearchResult{}, os.ErrNotExist
 }
 

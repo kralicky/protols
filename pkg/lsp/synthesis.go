@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 
-	"go.uber.org/zap"
 	"golang.org/x/mod/module"
 	"golang.org/x/tools/pkg/diff"
 	"golang.org/x/tools/pkg/gocommand"
@@ -45,7 +44,6 @@ func NewProtoSourceSynthesizer(workdir string) *ProtoSourceSynthesizer {
 		ModFile:     filepath.Join(workdir, "go.mod"),
 		ModFlag:     "readonly",
 		WorkingDir:  workdir,
-		Logf:        zap.S().Debugf,
 	}
 	res, err := procEnv.GetResolver()
 	if err != nil {

@@ -10,7 +10,6 @@ import (
 	"github.com/kralicky/protols/codegen"
 	"github.com/kralicky/protols/pkg/sources"
 	"github.com/spf13/cobra"
-	"go.uber.org/zap"
 )
 
 // VetCmd represents the vet command
@@ -23,7 +22,7 @@ func BuildVetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			driver := codegen.NewDriver(wd, zap.NewNop())
+			driver := codegen.NewDriver(wd)
 			results, err := driver.Compile(sources.SearchDirs(wd))
 			if err != nil {
 				return err

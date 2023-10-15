@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -12,7 +14,6 @@ import (
 	"github.com/kralicky/protols/pkg/format"
 	"github.com/kralicky/protols/pkg/sources"
 	"github.com/samber/lo"
-	"go.uber.org/zap"
 	"golang.org/x/exp/maps"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/tools/gopls/pkg/lsp"
@@ -24,7 +25,6 @@ import (
 )
 
 type Server struct {
-	lg       *zap.Logger
 	cachesMu sync.RWMutex
 	caches   map[string]*Cache
 	client   protocol.Client
@@ -36,9 +36,15 @@ type Server struct {
 	diagnosticStreamCancel func()
 }
 
-func NewServer(lg *zap.Logger, client protocol.Client) *Server {
+func NewServer(client protocol.Client) *Server {
+	executablePath, _ := os.Executable()
+
+	slog.With(
+		"path", executablePath,
+		"pid", os.Getpid(),
+	).Info("starting server")
+
 	return &Server{
-		lg:      lg,
 		caches:  map[string]*Cache{},
 		client:  client,
 		tracker: progress.NewTracker(client),
@@ -52,8 +58,8 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 	s.cachesMu.Lock()
 	for _, folder := range folders {
 		path := span.URIFromURI(folder.URI).Filename()
-		s.lg.Info("adding workspace folder", zap.String("path", path))
-		c := NewCache(folder, WithLogger(s.lg.Named("cache."+folder.Name)))
+		slog.Info("adding workspace folder", "path", path)
+		c := NewCache(folder)
 		c.LoadFiles(sources.SearchDirs(path))
 		s.caches[path] = c
 	}
@@ -66,7 +72,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			},
 		},
 	}
-	s.lg.Debug("Initialize", zap.Any("folders", folders))
+	slog.Debug("Initialize", "folders", folders)
 	return &protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
 			TextDocumentSync: protocol.TextDocumentSyncOptions{
@@ -114,6 +120,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 					protocol.RefactorExtract,
 				},
 			},
+
 			// DeclarationProvider: &protocol.Or_ServerCapabilities_declarationProvider{Value: true},
 			// TypeDefinitionProvider: true,
 			ReferencesProvider: &protocol.Or_ServerCapabilities_referencesProvider{Value: true},
@@ -179,7 +186,7 @@ func (s *Server) Completion(ctx context.Context, params *protocol.CompletionPara
 
 // Initialized implements protocol.Server.
 func (s *Server) Initialized(ctx context.Context, params *protocol.InitializedParams) (err error) {
-	s.lg.Debug("Initialized")
+	slog.Debug("Initialized")
 	return nil
 }
 
@@ -299,7 +306,7 @@ func (s *Server) DidChangeWatchedFiles(ctx context.Context, params *protocol.Did
 	}
 	for c, mods := range mods {
 		if err := c.DidModifyFiles(ctx, mods); err != nil {
-			s.lg.Error("failed to update files", zap.Error(err))
+			slog.Error("failed to update files", "error", err)
 		}
 	}
 	return nil
@@ -501,7 +508,7 @@ func (s *Server) Diagnostic(ctx context.Context, params *protocol.DocumentDiagno
 
 	reports, kind, resultId, err := c.ComputeDiagnosticReports(params.TextDocument.URI.SpanURI(), params.PreviousResultID)
 	if err != nil {
-		s.lg.Error("failed to compute diagnostic reports", zap.Error(err))
+		slog.Error("failed to compute diagnostic reports", "error", err)
 		return nil, err
 	}
 	switch kind {
@@ -646,12 +653,12 @@ func (s *Server) NonstandardRequest(ctx context.Context, method string, params i
 		for _, c := range s.caches {
 			allWorkspaces = append(allWorkspaces, c.workspace)
 		}
-		s.lg.Info("reindexing workspaces")
+		slog.Info("reindexing workspaces")
 		clear(s.caches)
 		runtime.GC()
 		for _, folder := range allWorkspaces {
 			path := span.URIFromURI(folder.URI).Filename()
-			c := NewCache(folder, WithLogger(s.lg.Named("cache."+folder.Name)))
+			c := NewCache(folder)
 			c.LoadFiles(sources.SearchDirs(path))
 			s.caches[path] = c
 		}
@@ -683,14 +690,14 @@ func (s *Server) DidChangeWorkspaceFolders(ctx context.Context, params *protocol
 	s.cachesMu.Lock()
 	for _, folder := range added {
 		path := span.URIFromURI(folder.URI).Filename()
-		s.lg.Info("adding workspace folder", zap.String("path", path))
-		c := NewCache(folder, WithLogger(s.lg.Named("cache."+folder.Name)))
+		slog.Info("adding workspace folder", "path", path)
+		c := NewCache(folder)
 		c.LoadFiles(sources.SearchDirs(path))
 		s.caches[path] = c
 	}
 	for _, folder := range removed {
 		path := span.URIFromURI(folder.URI).Filename()
-		s.lg.Info("removing workspace folder", zap.String("path", path))
+		slog.Info("removing workspace folder", "path", path)
 		delete(s.caches, path)
 	}
 	s.cachesMu.Unlock()

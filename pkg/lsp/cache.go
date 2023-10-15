@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"runtime"
 	"strings"
 	"sync"
@@ -20,7 +21,6 @@ import (
 	"github.com/bufbuild/protocompile/reporter"
 	gsync "github.com/kralicky/gpkg/sync"
 	"github.com/kralicky/protols/pkg/format"
-	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
@@ -39,7 +39,6 @@ import (
 // and definitions.
 type Cache struct {
 	workspace      protocol.WorkspaceFolder
-	lg             *zap.SugaredLogger
 	compiler       *Compiler
 	resolver       *Resolver
 	diagHandler    *DiagnosticHandler
@@ -168,7 +167,6 @@ var requiredGoEnvVars = []string{"GO111MODULE", "GOFLAGS", "GOINSECURE", "GOMOD"
 
 type CacheOptions struct {
 	searchPattern string
-	logger        *zap.Logger
 }
 
 type CacheOption func(*CacheOptions)
@@ -179,21 +177,14 @@ func (o *CacheOptions) apply(opts ...CacheOption) {
 	}
 }
 
-func WithLogger(lg *zap.Logger) CacheOption {
-	return func(o *CacheOptions) {
-		o.logger = lg
-	}
-}
-
 func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
-	options := CacheOptions{
-		logger: zap.NewNop(),
-	}
+	options := CacheOptions{}
+	options.apply(opts...)
 	workdir := span.URIFromURI(workspace.URI).Filename()
 	// NewCache creates a new cache.
-	diagHandler := NewDiagnosticHandler(options.logger)
+	diagHandler := NewDiagnosticHandler()
 	reporter := reporter.NewReporter(diagHandler.HandleError, diagHandler.HandleWarning)
-	resolver := NewResolver(workspace, options.logger)
+	resolver := NewResolver(workspace)
 
 	compiler := &Compiler{
 		fs: resolver.OverlayFS,
@@ -209,7 +200,6 @@ func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
 	}
 	cache := &Cache{
 		workspace:      workspace,
-		lg:             options.logger.Sugar(),
 		compiler:       compiler,
 		resolver:       resolver,
 		diagHandler:    diagHandler,
@@ -225,8 +215,8 @@ func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
 }
 
 func (c *Cache) LoadFiles(files []string) {
-	c.lg.Debug("initializing")
-	defer c.lg.Debug("done initializing")
+	slog.Debug("initializing")
+	defer slog.Debug("done initializing")
 
 	created := make([]source.FileModification, len(files))
 	for i, f := range files {
@@ -238,7 +228,7 @@ func (c *Cache) LoadFiles(files []string) {
 	}
 
 	if err := c.DidModifyFiles(context.TODO(), created); err != nil {
-		c.lg.Error("failed to index files", zap.Error(err))
+		slog.Error("failed to index files", "error", err)
 	}
 }
 
@@ -296,7 +286,7 @@ func contentChangeEventsToDiffEdits(mapper *protocol.Mapper, changes []protocol.
 }
 
 func (c *Cache) preInvalidateHook(path string, reason string) {
-	c.lg.Debugf("invalidating %s (%s)\n", path, reason)
+	slog.Debug("invalidating file", "path", path, "reason", reason)
 	c.inflightTasksInvalidate.Store(path, time.Now())
 	c.diagHandler.ClearDiagnosticsForPath(path)
 }
@@ -311,7 +301,7 @@ func (c *Cache) postInvalidateHook(path string) {
 }
 
 func (c *Cache) preCompile(path string) {
-	c.lg.Debugf("compiling %s\n", path)
+	slog.Debug(fmt.Sprintf("compiling %s\n", path))
 	c.inflightTasksCompile.Store(path, time.Now())
 	c.resultsMu.Lock()
 	delete(c.partialResults, path)
@@ -321,9 +311,9 @@ func (c *Cache) preCompile(path string) {
 func (c *Cache) postCompile(path string) {
 	startTime, ok := c.inflightTasksCompile.LoadAndDelete(path)
 	if ok {
-		c.lg.Debugf("compiled %s (took %s)\n", path, time.Since(startTime))
+		slog.Debug(fmt.Sprintf("compiled %s (took %s)\n", path, time.Since(startTime)))
 	} else {
-		c.lg.Debugf("compiled %s\n", path)
+		slog.Debug(fmt.Sprintf("compiled %s\n", path))
 	}
 }
 
@@ -334,11 +324,12 @@ func (c *Cache) Compile(protos ...string) {
 }
 
 func (c *Cache) compileLocked(protos ...string) {
-	c.lg.Info("compiling", zap.Int("protos", len(protos)))
+	slog.Info("compiling", "protos", len(protos))
+
 	res, err := c.compiler.Compile(context.TODO(), protos...)
 	if err != nil {
 		if !errors.Is(err, reporter.ErrInvalidSource) {
-			c.lg.With(zap.Error(err)).Error("failed to compile")
+			slog.With("error", err).Error("failed to compile")
 			return
 		}
 	}
@@ -365,7 +356,7 @@ func (c *Cache) compileLocked(protos ...string) {
 	}
 	for path, partial := range res.UnlinkedParserResults {
 		partial := partial
-		c.lg.With(zap.String("path", path)).Debug("adding new partial linker result")
+		slog.With("path", path).Debug("adding new partial linker result")
 		c.partialResults[path] = partial
 	}
 	c.resultsMu.Unlock()
@@ -374,21 +365,21 @@ func (c *Cache) compileLocked(protos ...string) {
 	if len(syntheticFiles) == 0 {
 		return
 	}
-	c.lg.Debug("building new synthetic sources", zap.Int("sources", len(syntheticFiles)))
+	slog.Debug("building new synthetic sources", "sources", len(syntheticFiles))
 	c.compileLocked(syntheticFiles...)
 }
 
 // func (s *Cache) OnFileOpened(doc protocol.TextDocumentItem) {
-// 	s.lg.With(
-// 		zap.String("file", string(doc.URI)),
-// 		zap.String("path", s.filePathsByURI[doc.URI.SpanURI()]),
+// 	slog.With(
+// 		"file", string(doc.URI),
+// 		"path", s.filePathsByURI[doc.URI.SpanURI()],
 // 	).Debug("file opened")
 // 	s.compiler.overlay.Create(doc.URI.SpanURI(), s.filePathsByURI[doc.URI.SpanURI()], []byte(doc.Text))
 // }
 
 // func (s *Cache) OnFileClosed(doc protocol.TextDocumentIdentifier) {
-// 	s.lg.With(
-// 		zap.String("file", string(doc.URI)),
+// 	slog.With(
+// 		"file", string(doc.URI),
 // 	).Debug("file closed")
 // 	s.compiler.overlay.Delete(s.filePathsByURI[doc.URI.SpanURI()])
 // }
@@ -396,8 +387,8 @@ func (c *Cache) compileLocked(protos ...string) {
 // func (s *Cache) OnFileModified(f protocol.VersionedTextDocumentIdentifier, contentChanges []protocol.TextDocumentContentChangeEvent) error {
 // 	s.todoModLock.Lock()
 // 	defer s.todoModLock.Unlock()
-// 	s.lg.With(
-// 		zap.String("file", string(f.URI)),
+// 	slog.With(
+// 		"file", string(f.URI),
 // 	).Debug("file modified")
 
 // 	if err := s.compiler.overlay.Update(f.URI.SpanURI(), contentChanges); err != nil {
@@ -416,8 +407,8 @@ func (c *Cache) compileLocked(protos ...string) {
 // 		paths[i] = c.filePathsByURI[span.URIFromURI(file.URI)]
 // 		c.compiler.overlay.Delete(paths[i])
 // 	}
-// 	c.lg.With(
-// 		zap.Strings("files", paths),
+// 	slog.With(
+// 		"files", paths,
 // 	).Debug("files deleted")
 // 	c.Compile(paths...)
 
@@ -437,9 +428,9 @@ func (c *Cache) compileLocked(protos ...string) {
 // 		filename := uri.Filename()
 // 		goPkg, err := FastLookupGoModule(filename)
 // 		if err != nil {
-// 			c.lg.With(
-// 				zap.String("filename", filename),
-// 				zap.Error(err),
+// 			slog.With(
+// 				"filename", filename,
+// 				"error", err,
 // 			).Debug("failed to lookup go module")
 // 			continue
 // 		}
@@ -449,8 +440,8 @@ func (c *Cache) compileLocked(protos ...string) {
 // 		resolved = append(resolved, canonicalName)
 // 	}
 // 	c.indexMu.Unlock()
-// 	c.lg.With(
-// 		zap.Int("files", len(resolved)),
+// 	slog.With(
+// 		"files", len(resolved),
 // 	).Debug("files created")
 // 	c.Compile(resolved...)
 
@@ -458,8 +449,8 @@ func (c *Cache) compileLocked(protos ...string) {
 // }
 
 // func (c *Cache) OnFilesRenamed(f []protocol.FileRename) error {
-// 	c.lg.With(
-// 		zap.Any("files", f),
+// 	slog.With(
+// 		"files", f,
 // 	).Debug("files renamed")
 
 // 	c.indexMu.Lock()
@@ -487,9 +478,9 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []source.FileM
 	for _, m := range modifications {
 		path, err := c.resolver.URIToPath(m.URI)
 		if err != nil {
-			c.lg.With(
-				zap.Error(err),
-				zap.String("uri", m.URI.Filename()),
+			slog.With(
+				"error", err,
+				"uri", m.URI.Filename(),
 			).Error("failed to resolve uri to path")
 			continue
 		}
@@ -509,13 +500,15 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []source.FileM
 	if err := c.compiler.fs.UpdateOverlays(ctx, modifications); err != nil {
 		return err
 	}
-	c.Compile(toRecompile...)
+	if len(toRecompile) > 0 {
+		c.Compile(toRecompile...)
+	}
 	return nil
 }
 
 // func (s *Cache) OnFileSaved(f *protocol.DidSaveTextDocumentParams) error {
-// 	s.lg.With(
-// 		zap.String("file", string(f.TextDocument.URI)),
+// 	slog.With(
+// 		"file", string(f.TextDocument.URI),
 // 	).Debug("file modified")
 // 	s.compiler.overlay.ReloadFromDisk(f.TextDocument.URI.SpanURI())
 // 	s.Compile(s.filePathsByURI[f.TextDocument.URI.SpanURI()])
@@ -551,9 +544,9 @@ func (c *Cache) ComputeDiagnosticReports(uri span.URI, prevResultId string) ([]p
 	}
 	path, err := c.resolver.URIToPath(uri)
 	if err != nil {
-		c.lg.With(
-			zap.Error(err),
-			zap.String("uri", string(uri)),
+		slog.With(
+			"error", err,
+			"uri", string(uri),
 		).Error("failed to resolve uri to path")
 		return nil, protocol.DiagnosticUnchanged, "", nil
 	}
@@ -589,9 +582,9 @@ func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.
 		if len(rawReport.CodeActions) > 0 {
 			jsonData, err := json.Marshal(CodeActions{Items: rawReport.CodeActions})
 			if err != nil {
-				c.lg.With(
-					zap.Error(err),
-					zap.String("sourcePos", rawReport.Pos.String()),
+				slog.With(
+					"error", err,
+					"sourcePos", rawReport.Pos.String(),
 				).Error("failed to marshal suggested fixes")
 				continue
 			}
@@ -611,9 +604,9 @@ func (c *Cache) ToProtocolCodeActions(rawCodeActions []CodeAction, associatedDia
 	for _, rawCodeAction := range rawCodeActions {
 		u, err := c.resolver.PathToURI(string(rawCodeAction.Path))
 		if err != nil {
-			c.lg.With(
-				zap.Error(err),
-				zap.String("path", string(rawCodeAction.Path)),
+			slog.With(
+				"error", err,
+				"path", string(rawCodeAction.Path),
 			).Error("failed to resolve path to uri")
 			continue
 		}
@@ -993,7 +986,7 @@ func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]p
 	fn := f.AST()
 	ast.Walk(fn, &ast.SimpleVisitor{
 		// DoVisitImportNode: func(node *ast.ImportNode) error {
-		// 	s.lg.Debug("found import", zap.String("name", string(node.Name.AsString())))
+		// 	slog.Debug("found import", "name", string(node.Name.AsString()))
 		// 	symbols = append(symbols, protocol.DocumentSymbol{
 		// 		Name:           string(node.Name.AsString()),
 		// 		Kind:           protocol.SymbolKindNamespace,
@@ -1012,7 +1005,6 @@ func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]p
 
 			ast.Walk(node, &ast.SimpleVisitor{
 				DoVisitRPCNode: func(node *ast.RPCNode) error {
-					// s.lg.Debug("found rpc", zap.String("name", string(node.Name.AsIdentifier())), zap.String("service", string(node.Name.AsIdentifier())))
 					var detail string
 					switch {
 					case node.Input.Stream != nil && node.Output.Stream != nil:
@@ -1327,7 +1319,7 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 		}
 	}
 
-	// c.lg.Debugf("descriptor: [%T] %v\n", haveDescriptor, haveDescriptor.FullName())
+	// slog.Debugf("descriptor: [%T] %v\n", haveDescriptor, haveDescriptor.FullName())
 
 	// fast path: the node is directly mapped to a resolved top-level descriptor
 	if len(stack) == 1 && stack[0].desc != nil {
@@ -1619,7 +1611,7 @@ func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([
 		node = containingFileResolver.OneofNode(protoutil.ProtoFromOneofDescriptor(desc))
 	case protoreflect.FileDescriptor:
 		node = containingFileResolver.FileNode()
-		c.lg.Debug("definition is an import: ", zap.String("import", containingFileResolver.Path()))
+		slog.Debug("definition is an import: ", "import", containingFileResolver.Path())
 	default:
 		return nil, fmt.Errorf("unexpected descriptor type %T", desc)
 	}

@@ -180,7 +180,7 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 // CheckIncompleteDescriptors fills in placeholder sources for synthetic files
 // that did not have fully linked descriptors at the time of creation, and
 // returns a list of paths that need to be compiled again.
-func (r *Resolver) CheckIncompleteDescriptors(results linker.Files) []string {
+func (r *Resolver) CheckIncompleteDescriptors(results linker.SortedFiles) []string {
 	r.pathsMu.Lock()
 	defer r.pathsMu.Unlock()
 

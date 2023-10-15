@@ -43,7 +43,7 @@ type Cache struct {
 	resolver       *Resolver
 	diagHandler    *DiagnosticHandler
 	resultsMu      sync.RWMutex
-	results        linker.Files
+	results        linker.SortedFiles
 	partialResults map[string]parser.Result
 	indexMu        sync.RWMutex
 	compileLock    sync.Mutex
@@ -189,12 +189,13 @@ func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
 	compiler := &Compiler{
 		fs: resolver.OverlayFS,
 		Compiler: &protocompile.Compiler{
-			Resolver:       resolver,
-			MaxParallelism: runtime.NumCPU() * 4,
-			Reporter:       reporter,
-			SourceInfoMode: protocompile.SourceInfoExtraComments | protocompile.SourceInfoExtraOptionLocations,
-			RetainResults:  true,
-			RetainASTs:     true,
+			Resolver:                     resolver,
+			MaxParallelism:               runtime.NumCPU() * 4,
+			Reporter:                     reporter,
+			SourceInfoMode:               protocompile.SourceInfoExtraComments | protocompile.SourceInfoExtraOptionLocations,
+			RetainResults:                true,
+			RetainASTs:                   true,
+			IncludeDependenciesInResults: true,
 		},
 		workdir: workdir,
 	}
@@ -203,7 +204,7 @@ func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
 		compiler:       compiler,
 		resolver:       resolver,
 		diagHandler:    diagHandler,
-		partialResults: map[string]parser.Result{},
+		partialResults: make(map[string]parser.Result),
 	}
 	compiler.Hooks = protocompile.CompilerHooks{
 		PreInvalidate:  cache.preInvalidateHook,
@@ -291,12 +292,14 @@ func (c *Cache) preInvalidateHook(path string, reason string) {
 	c.diagHandler.ClearDiagnosticsForPath(path)
 }
 
-func (c *Cache) postInvalidateHook(path string) {
-	startTime, ok := c.inflightTasksInvalidate.LoadAndDelete(path)
-	if ok {
-		c.lg.Debugf("invalidated %s (took %s)\n", path, time.Since(startTime))
-	} else {
-		c.lg.Debugf("invalidated %s\n", path)
+func (c *Cache) postInvalidateHook(path string, prevResult linker.File, willRecompile bool) {
+	startTime, _ := c.inflightTasksInvalidate.LoadAndDelete(path)
+	slog.Debug("file invalidated", "path", path, "took", time.Since(startTime))
+	if !willRecompile {
+		c.resultsMu.Lock()
+		defer c.resultsMu.Unlock()
+		slog.Debug("file deleted, clearing linker result", "path", path)
+		c.results.Delete(prevResult)
 	}
 }
 
@@ -335,25 +338,21 @@ func (c *Cache) compileLocked(protos ...string) {
 	}
 	// important to lock resultsMu here so that it can be modified in compile hooks
 	c.resultsMu.Lock()
-	c.lg.Info("done compiling", zap.Int("protos", len(protos)))
-	for _, r := range res.Files {
-		path := r.Path()
-		found := false
-		// delete(c.partialResults, path)
-		for i, f := range c.results {
-			// todo: this is big slow
-			if f.Path() == path {
-				found = true
-				c.lg.With(zap.String("path", path)).Debug("updating existing linker result")
-				c.results[i] = r
-				break
-			}
-		}
-		if !found {
-			c.lg.With(zap.String("path", path)).Debug("adding new linker result")
-			c.results = append(c.results, r)
-		}
+	slog.Info("done compiling", "protos", len(protos))
+	if c.results == nil {
+		c.results = res.SortedFiles
+	} else {
+		c.results = linker.MergeFiles(c.results, res.SortedFiles)
 	}
+	// for _, r := range res.SortedFiles {
+	// 	isNew := c.results.Put(r)
+	// 	if !isNew {
+	// 		slog.With("path", r.Path()).Debug("updating existing linker result")
+	// 	} else {
+	// 		delete(res.UnlinkedParserResults, r.Path())
+	// 		slog.With("path", r.Path()).Debug("adding new linker result")
+	// 	}
+	// }
 	for path, partial := range res.UnlinkedParserResults {
 		partial := partial
 		slog.With("path", path).Debug("adding new partial linker result")
@@ -361,7 +360,7 @@ func (c *Cache) compileLocked(protos ...string) {
 	}
 	c.resultsMu.Unlock()
 
-	syntheticFiles := c.resolver.CheckIncompleteDescriptors(c.compiler.GetImplicitResults())
+	syntheticFiles := c.resolver.CheckIncompleteDescriptors(c.results)
 	if len(syntheticFiles) == 0 {
 		return
 	}

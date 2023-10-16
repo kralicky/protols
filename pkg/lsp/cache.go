@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"runtime"
 	"strings"
@@ -30,7 +29,6 @@ import (
 	"golang.org/x/tools/pkg/jsonrpc2"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
@@ -43,7 +41,7 @@ type Cache struct {
 	resolver       *Resolver
 	diagHandler    *DiagnosticHandler
 	resultsMu      sync.RWMutex
-	results        linker.SortedFiles
+	results        linker.Files
 	partialResults map[string]parser.Result
 	indexMu        sync.RWMutex
 	compileLock    sync.Mutex
@@ -295,20 +293,25 @@ func (c *Cache) preInvalidateHook(path string, reason string) {
 func (c *Cache) postInvalidateHook(path string, prevResult linker.File, willRecompile bool) {
 	startTime, _ := c.inflightTasksInvalidate.LoadAndDelete(path)
 	slog.Debug("file invalidated", "path", path, "took", time.Since(startTime))
-	if !willRecompile {
-		c.resultsMu.Lock()
-		defer c.resultsMu.Unlock()
-		slog.Debug("file deleted, clearing linker result", "path", path)
-		c.results.Delete(prevResult)
-	}
+	// if !willRecompile {
+	// 	c.resultsMu.Lock()
+	// 	defer c.resultsMu.Unlock()
+	// 	slog.Debug("file deleted, clearing linker result", "path", path)
+	// 	for i, f := range c.results {
+	// 		if f.Path() == path {
+	// 			c.results = append(c.results[:i], c.results[i+1:]...)
+	// 			break
+	// 		}
+	// 	}
+	// }
 }
 
 func (c *Cache) preCompile(path string) {
 	slog.Debug(fmt.Sprintf("compiling %s\n", path))
 	c.inflightTasksCompile.Store(path, time.Now())
-	c.resultsMu.Lock()
+	// c.resultsMu.Lock()
 	delete(c.partialResults, path)
-	c.resultsMu.Unlock()
+	// c.resultsMu.Unlock()
 }
 
 func (c *Cache) postCompile(path string) {
@@ -321,8 +324,10 @@ func (c *Cache) postCompile(path string) {
 }
 
 func (c *Cache) Compile(protos ...string) {
-	c.compileLock.Lock()
-	defer c.compileLock.Unlock()
+	// c.compileLock.Lock()
+	// defer c.compileLock.Unlock()
+	c.resultsMu.Lock()
+	defer c.resultsMu.Unlock()
 	c.compileLocked(protos...)
 }
 
@@ -337,35 +342,40 @@ func (c *Cache) compileLocked(protos ...string) {
 		}
 	}
 	// important to lock resultsMu here so that it can be modified in compile hooks
-	c.resultsMu.Lock()
+	// c.resultsMu.Lock()
 	slog.Info("done compiling", "protos", len(protos))
-	if c.results == nil {
-		c.results = res.SortedFiles
-	} else {
-		c.results = linker.MergeFiles(c.results, res.SortedFiles)
+	for _, r := range res.Files {
+		path := r.Path()
+		found := false
+		// delete(c.partialResults, path)
+		for i, f := range c.results {
+			// todo: this is big slow
+			if f.Path() == path {
+				found = true
+				slog.With("path", path).Debug("updating existing linker result")
+				c.results[i] = r
+				break
+			}
+		}
+		if !found {
+			slog.With("path", path).Debug("adding new linker result")
+			c.results = append(c.results, r)
+		}
 	}
-	// for _, r := range res.SortedFiles {
-	// 	isNew := c.results.Put(r)
-	// 	if !isNew {
-	// 		slog.With("path", r.Path()).Debug("updating existing linker result")
-	// 	} else {
-	// 		delete(res.UnlinkedParserResults, r.Path())
-	// 		slog.With("path", r.Path()).Debug("adding new linker result")
-	// 	}
-	// }
+
 	for path, partial := range res.UnlinkedParserResults {
 		partial := partial
 		slog.With("path", path).Debug("adding new partial linker result")
 		c.partialResults[path] = partial
 	}
-	c.resultsMu.Unlock()
+	// c.resultsMu.Unlock()
 
-	syntheticFiles := c.resolver.CheckIncompleteDescriptors(c.results)
-	if len(syntheticFiles) == 0 {
-		return
-	}
-	slog.Debug("building new synthetic sources", "sources", len(syntheticFiles))
-	c.compileLocked(syntheticFiles...)
+	// syntheticFiles := c.resolver.CheckIncompleteDescriptors(c.results)
+	// if len(syntheticFiles) == 0 {
+	// 	return
+	// }
+	// slog.Debug("building new synthetic sources", "sources", len(syntheticFiles))
+	// c.compileLocked(syntheticFiles...)
 }
 
 // func (s *Cache) OnFileOpened(doc protocol.TextDocumentItem) {
@@ -701,8 +711,27 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 		}
 	}
 
+	dependencyPaths := res.FileDescriptorProto().Dependency
+	// if the ast doesn't contain "google/protobuf/descriptor.proto" but the file descriptor does, filter it
+
+	found := false
 	for _, imp := range imports {
-		path := imp.Name.AsString()
+		if imp.Name.AsString() == "google/protobuf/descriptor.proto" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		for i, dep := range dependencyPaths {
+			if dep == "google/protobuf/descriptor.proto" {
+				dependencyPaths = append(dependencyPaths[:i], dependencyPaths[i+1:]...)
+				break
+			}
+		}
+	}
+
+	for i, imp := range imports {
+		path := dependencyPaths[i]
 		nameInfo := resAst.NodeInfo(imp.Name)
 		if uri, err := c.resolver.PathToURI(path); err == nil {
 			links = append(links, protocol.DocumentLink{
@@ -1121,31 +1150,7 @@ func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]p
 }
 
 func (c *Cache) GetSyntheticFileContents(ctx context.Context, uri string) (string, error) {
-	// uri = strings.TrimSuffix(uri, "#"+c.workspace.Name)
-	// uri = strings.TrimPrefix(strings.TrimPrefix(uri, "proto:///"), "proto://")
-
 	return c.resolver.SyntheticFileContents(span.URIFromURI(uri))
-	fh, err := c.resolver.FindFileByPath(uri)
-	if err != nil {
-		return "", err
-	}
-
-	switch {
-	case fh.Source != nil:
-		b, err := io.ReadAll(fh.Source)
-		return string(b), err
-	case fh.Desc != nil:
-		return format.PrintDescriptor(fh.Desc)
-	case fh.Proto != nil:
-		c.Compile(uri)
-		f, err := protodesc.NewFile(fh.Proto, c.results.AsResolver())
-		if err != nil {
-			return "", err
-		}
-		return format.PrintDescriptor(f)
-	default:
-		return "", fmt.Errorf("unimplemented synthetic file type for %s", uri)
-	}
 }
 
 type list[T protoreflect.Descriptor] interface {
@@ -1584,30 +1589,30 @@ func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([
 	var node ast.Node
 	switch desc := desc.(type) {
 	case protoreflect.MessageDescriptor:
-		node = containingFileResolver.MessageNode(protoutil.ProtoFromMessageDescriptor(desc)).MessageName()
+		node = containingFileResolver.MessageNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.DescriptorProto)).MessageName()
 	case protoreflect.EnumDescriptor:
-		node = containingFileResolver.EnumNode(protoutil.ProtoFromEnumDescriptor(desc)).GetName()
+		node = containingFileResolver.EnumNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.EnumDescriptorProto)).GetName()
 	case protoreflect.ServiceDescriptor:
-		node = containingFileResolver.ServiceNode(protoutil.ProtoFromServiceDescriptor(desc)).GetName()
+		node = containingFileResolver.ServiceNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.ServiceDescriptorProto)).GetName()
 	case protoreflect.MethodDescriptor:
-		node = containingFileResolver.MethodNode(protoutil.ProtoFromMethodDescriptor(desc)).GetName()
+		node = containingFileResolver.MethodNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.MethodDescriptorProto)).GetName()
 	case protoreflect.FieldDescriptor:
 		if !desc.IsExtension() {
-			node = containingFileResolver.FieldNode(protoutil.ProtoFromFieldDescriptor(desc))
+			node = containingFileResolver.FieldNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.FieldDescriptorProto))
 		} else {
 			exts := desc.ParentFile().Extensions()
 			for i := 0; i < exts.Len(); i++ {
 				ext := exts.Get(i)
 				if ext.FullName() == desc.FullName() {
-					node = containingFileResolver.FieldNode(protoutil.ProtoFromFieldDescriptor(ext))
+					node = containingFileResolver.FieldNode(ext.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.FieldDescriptorProto))
 					break
 				}
 			}
 		}
 	case protoreflect.EnumValueDescriptor:
-		node = containingFileResolver.EnumValueNode(protoutil.ProtoFromEnumValueDescriptor(desc)).GetName()
+		node = containingFileResolver.EnumValueNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.EnumValueDescriptorProto)).GetName()
 	case protoreflect.OneofDescriptor:
-		node = containingFileResolver.OneofNode(protoutil.ProtoFromOneofDescriptor(desc))
+		node = containingFileResolver.OneofNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.OneofDescriptorProto))
 	case protoreflect.FileDescriptor:
 		node = containingFileResolver.FileNode()
 		slog.Debug("definition is an import: ", "import", containingFileResolver.Path())

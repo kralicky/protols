@@ -180,7 +180,7 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 // CheckIncompleteDescriptors fills in placeholder sources for synthetic files
 // that did not have fully linked descriptors at the time of creation, and
 // returns a list of paths that need to be compiled again.
-func (r *Resolver) CheckIncompleteDescriptors(results linker.SortedFiles) []string {
+func (r *Resolver) CheckIncompleteDescriptors(results linker.Files) []string {
 	r.pathsMu.Lock()
 	defer r.pathsMu.Unlock()
 
@@ -219,13 +219,28 @@ func (r *Resolver) CheckIncompleteDescriptors(results linker.SortedFiles) []stri
 // 3. Check if the path is a go module containing proto sources
 // 3.5. Check if the path is a go module path containing generated code, but no proto sources
 // 4. Check if the path is found in the global message cache
-func (r *Resolver) FindFileByPath(path string) (protocompile.SearchResult, error) {
+func (r *Resolver) FindFileByPath(path string, whence protocompile.ImportContext) (protocompile.SearchResult, error) {
 	r.pathsMu.Lock()
 	defer r.pathsMu.Unlock()
-	return r.findFileByPathLocked(path)
+	res, err := r.findFileByPathLocked(path, whence)
+	if err != nil {
+		if whence != nil {
+			path, err2 := r.translatePathLocked(path, whence)
+			if err2 == nil {
+				res, err2 = r.findFileByPathLocked(path, whence)
+				if err2 == nil {
+					res.EffectiveImportPath = path
+					return res, nil
+				}
+			}
+			return protocompile.SearchResult{}, errors.Join(err, err2)
+		}
+		return protocompile.SearchResult{}, err
+	}
+	return res, nil
 }
 
-func (r *Resolver) findFileByPathLocked(path string) (protocompile.SearchResult, error) {
+func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportContext) (protocompile.SearchResult, error) {
 	var isSynthetic bool
 	if uri, ok := r.fileURIsByPath[path]; ok {
 		if strings.HasPrefix(string(uri), "proto://") {
@@ -241,7 +256,7 @@ func (r *Resolver) findFileByPathLocked(path string) (protocompile.SearchResult,
 		return protocompile.SearchResult{}, err
 	}
 	if !isSynthetic {
-		if result, err := r.checkFS(path); err == nil {
+		if result, err := r.checkFS(path, whence); err == nil {
 			lg.Debug("resolved to cached file")
 			return result, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -249,7 +264,7 @@ func (r *Resolver) findFileByPathLocked(path string) (protocompile.SearchResult,
 			return protocompile.SearchResult{}, err
 		}
 	}
-	if result, err := r.checkGoModule(path); err == nil {
+	if result, err := r.checkGoModule(path, whence); err == nil {
 		lg.Debug("resolved to go module")
 		return result, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -288,6 +303,7 @@ func (r *Resolver) checkWellKnownImportPath(path string) (protocompile.SearchRes
 			uri := span.URI(syntheticURI.String())
 			r.filePathsByURI[uri] = path
 			r.fileURIsByPath[path] = uri
+			r.importSourcesByURI[uri] = SourceWellKnown
 			return protocompile.SearchResult{
 				Proto: fd,
 			}, nil
@@ -296,23 +312,28 @@ func (r *Resolver) checkWellKnownImportPath(path string) (protocompile.SearchRes
 	return protocompile.SearchResult{}, os.ErrNotExist
 }
 
-func (r *Resolver) checkFS(path string) (protocompile.SearchResult, error) {
+const largeFileThreshold = 100 * 1024 // 100KB
+
+func (r *Resolver) checkFS(path string, whence protocompile.ImportContext) (protocompile.SearchResult, error) {
 	uri, ok := r.fileURIsByPath[path]
-	if !ok {
-		return protocompile.SearchResult{}, os.ErrNotExist
-	}
-	if fh, err := r.ReadFile(context.TODO(), uri); err == nil {
-		content, err := fh.Content()
-		if err == nil && content != nil {
-			return protocompile.SearchResult{
-				Source: bytes.NewReader(content),
-			}, nil
+	if ok {
+		if fh, err := r.ReadFile(context.TODO(), uri); err == nil {
+			content, err := fh.Content()
+			if len(content) > largeFileThreshold {
+				return protocompile.SearchResult{}, fmt.Errorf("refusing to load file %q larger than 100KB", path)
+			}
+			if err == nil && content != nil {
+				return protocompile.SearchResult{
+					Source: bytes.NewReader(content),
+				}, nil
+			}
 		}
 	}
+
 	return protocompile.SearchResult{}, os.ErrNotExist
 }
 
-func (r *Resolver) checkGoModule(path string) (protocompile.SearchResult, error) {
+func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext) (protocompile.SearchResult, error) {
 	res, err := r.synthesizer.ImportFromGoModule(path)
 	if err != nil {
 		return protocompile.SearchResult{}, err
@@ -325,9 +346,14 @@ func (r *Resolver) checkGoModule(path string) (protocompile.SearchResult, error)
 		uri := span.URIFromPath(res.SourcePath)
 		r.filePathsByURI[uri] = path
 		r.fileURIsByPath[path] = uri
+		if res.Module.Path == r.synthesizer.localModName {
+			r.importSourcesByURI[uri] = SourceLocalGoModule
+		} else {
+			r.importSourcesByURI[uri] = SourceGoModuleCache
+		}
 		// todo: need to fix the incomplete go_package values in some imports
 		return protocompile.SearchResult{
-			Source: src,
+			Source: src, // this is closed by the compiler
 		}, nil
 	} else if src, ok := r.syntheticFiles[r.fileURIsByPath[path]]; ok {
 		return protocompile.SearchResult{
@@ -342,6 +368,7 @@ func (r *Resolver) checkGoModule(path string) (protocompile.SearchResult, error)
 		uri := span.URI(syntheticURI.String())
 		r.filePathsByURI[uri] = path
 		r.fileURIsByPath[path] = uri
+		r.importSourcesByURI[uri] = SourceSynthetic
 		return protocompile.SearchResult{
 			Proto: synthesized,
 		}, nil
@@ -440,4 +467,93 @@ func FastLookupGoModule(f io.ReadCloser) (string, error) {
 		return line[startIdx:endIdx], nil
 	}
 	return "", fmt.Errorf("no go_package option found")
+}
+
+// Translates paths relative to either the importing file or the workspace root
+func (r *Resolver) translatePathLocked(path string, whence protocompile.ImportContext) (string, error) {
+	if _, ok := r.fileURIsByPath[path]; ok {
+		// already a known path
+		return path, nil
+	}
+
+	fd := whence.FileDescriptorProto()
+	uri, ok := r.fileURIsByPath[fd.GetName()]
+	if !ok {
+		return "", fmt.Errorf("source file %q has no URI", fd.GetName())
+	}
+
+	var translatedPath string
+	if !uri.IsFile() {
+		return "", os.ErrNotExist
+	}
+	// simple cases:
+	// 1. check if the path is relative to the source file
+	filename := uri.Filename()
+	if filepath.IsLocal(path) { // does the path look like a local file (not absolute, no ../ etc)
+		candidates := []string{
+			filepath.Join(filepath.Dir(filename), path), // relative
+		}
+		if idx := strings.IndexRune(path, '/'); idx > 0 && path[:idx] == filepath.Base(filepath.Dir(filename)) {
+			// relative, but the path prefix is duplicated
+			candidates = append(candidates, filepath.Join(filepath.Dir(filepath.Dir(filename)), path))
+		}
+		// relative but to the parent directory
+		candidates = append(candidates, filepath.Join(filepath.Dir(filepath.Dir(filename)), path))
+
+		for _, candidate := range candidates {
+			if f, err := os.Stat(candidate); err == nil && f.Mode().IsRegular() {
+				// found it, now translate back to a matching URI
+				translatedPath = candidate
+				break
+			}
+		}
+	}
+
+	if translatedPath == "" {
+		return "", fmt.Errorf("could not find file %q relative to %q", path, uri)
+	}
+	translatedURI := span.URIFromPath(translatedPath)
+
+	// translate back to a URI that matches the importing file
+	switch r.importSourcesByURI[uri] {
+	case SourceLocalGoModule:
+		// fast path
+		f, err := os.Open(translatedPath)
+		if err != nil {
+			return "", err // shouldn't happen
+		}
+		goPkg, err := r.LookupGoModule(translatedPath, f)
+		f.Close()
+		if err != nil {
+			return "", err // could happen maybe
+		}
+		canonicalName := filepath.Join(goPkg, filepath.Base(translatedPath))
+		r.filePathsByURI[translatedURI] = canonicalName
+		r.fileURIsByPath[canonicalName] = translatedURI
+		r.importSourcesByURI[translatedURI] = SourceLocalGoModule
+		return canonicalName, nil
+	case SourceGoModuleCache:
+		originalDir := filepath.Dir(filename)
+		// determine the relative movemnt from the original package to the new package
+		// and apply it to the original package
+		relative, err := filepath.Rel(originalDir, filepath.Dir(translatedPath))
+		if err != nil {
+			return "", err // perhaps
+		}
+		originalPkg := r.filePathsByURI[uri]
+		canonicalName := filepath.Join(originalPkg, relative)
+		r.filePathsByURI[translatedURI] = canonicalName
+		r.fileURIsByPath[canonicalName] = translatedURI
+		r.importSourcesByURI[translatedURI] = SourceGoModuleCache
+		return translatedPath, nil
+	case SourceRelativePath:
+		// it's already a relative path, so just make it relative to that one
+		originalDir := filepath.Dir(filename)
+		translatedPath, err := filepath.Rel(originalDir, translatedPath)
+		if err == nil {
+			return translatedPath, nil
+		}
+	default:
+	}
+	return "", os.ErrNotExist
 }

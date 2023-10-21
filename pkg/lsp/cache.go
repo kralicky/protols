@@ -20,6 +20,7 @@ import (
 	"github.com/bufbuild/protocompile/reporter"
 	gsync "github.com/kralicky/gpkg/sync"
 	"github.com/kralicky/protols/pkg/format"
+	"golang.org/x/exp/slices"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
@@ -1822,4 +1823,18 @@ func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, l
 		combined = append(combined, results...)
 	}
 	return combined
+}
+
+func (c *Cache) AllMessages() []protoreflect.MessageDescriptor {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	var all []protoreflect.MessageDescriptor
+	for _, res := range c.results {
+		msgs := res.Messages()
+		all = slices.Grow(all, msgs.Len())
+		for i, l := 0, msgs.Len(); i < l; i++ {
+			all = append(all, msgs.Get(i))
+		}
+	}
+	return all
 }

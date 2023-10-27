@@ -537,6 +537,12 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []source.FileM
 func (c *Cache) ComputeSemanticTokens(doc protocol.TextDocumentIdentifier) ([]uint32, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
+	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI.SpanURI()); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, fmt.Errorf("document contents not well formed")
+	}
+
 	result, err := semanticTokensFull(c, doc)
 	if err != nil {
 		return nil, err
@@ -547,6 +553,12 @@ func (c *Cache) ComputeSemanticTokens(doc protocol.TextDocumentIdentifier) ([]ui
 func (c *Cache) ComputeSemanticTokensRange(doc protocol.TextDocumentIdentifier, rng protocol.Range) ([]uint32, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
+	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI.SpanURI()); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, fmt.Errorf("document contents not well formed")
+	}
+
 	result, err := semanticTokensRange(c, doc, rng)
 	if err != nil {
 		return nil, err
@@ -760,6 +772,12 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 func (c *Cache) ComputeInlayHints(doc protocol.TextDocumentIdentifier, rng protocol.Range) ([]protocol.InlayHint, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
+	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI.SpanURI()); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, fmt.Errorf("document contents not well formed")
+	}
+
 	hints := []protocol.InlayHint{}
 	hints = append(hints, c.computeMessageLiteralHints(doc, rng)...)
 	return hints, nil
@@ -1456,7 +1474,7 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 				// } else {
 				// 	want.desc = findByName[protoreflect.FieldDescriptor](haveDesc.Message().Fields(), string(wantNode.Name.AsIdentifier()))
 				// }
-			case *ast.MessageLiteralNode:
+			case *ast.MessageLiteralNode, *ast.ArrayLiteralNode:
 				want.desc = haveDesc
 			case *ast.MessageFieldNode:
 				name := wantNode.Name
@@ -1695,6 +1713,9 @@ func (c *Cache) ComputeHover(params protocol.TextDocumentPositionParams) (*proto
 	if err != nil {
 		return nil, err
 	}
+	if desc == nil {
+		return nil, nil
+	}
 	tooltip := makeTooltip(desc)
 	if tooltip == nil {
 		return nil, nil
@@ -1792,7 +1813,38 @@ func makeTooltip(d protoreflect.Descriptor) *protocol.OrPTooltipPLabel {
 	}
 }
 
+// Checks if the most recently parsed version of the given document has any
+// syntax errors, as reported by the diagnostic handler.
+func (c *Cache) LatestDocumentContentsWellFormed(uri span.URI) (bool, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	return c.latestDocumentContentsWellFormedLocked(uri)
+}
+
+func (c *Cache) latestDocumentContentsWellFormedLocked(uri span.URI) (bool, error) {
+	path, err := c.resolver.URIToPath(uri)
+	if err != nil {
+		return false, err
+	}
+	diagnostics, _, _ := c.diagHandler.GetDiagnosticsForPath(path)
+	for _, diag := range diagnostics {
+		var parseErr parser.ParseError
+		if errors.As(diag.Error, &parseErr) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options protocol.FormattingOptions, maybeRange ...protocol.Range) ([]protocol.TextEdit, error) {
+	// check if the file has any parse errors; if it does, don't try to format
+	// the document as we will end up erasing anything the user has typed
+	// since the last time the document was successfully parsed.
+	if ok, err := c.LatestDocumentContentsWellFormed(doc.URI.SpanURI()); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, nil
+	}
 	mapper, err := c.GetMapper(doc.URI.SpanURI())
 	if err != nil {
 		return nil, err

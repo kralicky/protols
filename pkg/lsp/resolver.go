@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,13 +19,13 @@ import (
 	"github.com/bufbuild/protocompile"
 	"github.com/bufbuild/protocompile/linker"
 	gogo "github.com/gogo/protobuf/proto"
-	"github.com/jhump/protoreflect/desc"
 	"github.com/kralicky/protols/pkg/format"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/lsp/source"
 	"golang.org/x/tools/gopls/pkg/span"
 	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoregistry"
 )
 
 type ImportSource int
@@ -189,7 +190,10 @@ func (r *Resolver) CheckIncompleteDescriptors(results linker.Files) []string {
 		if strings.HasPrefix(string(uri), "proto://") {
 			if _, ok := r.syntheticFiles[uri]; !ok {
 				res := results.FindFileByPath(path)
-				newFile, err := protodesc.NewFile(protodesc.ToFileDescriptorProto(res), results.AsResolver())
+				if res == nil {
+					continue
+				}
+				newFile, err := protodesc.NewFile(protodesc.ToFileDescriptorProto(res), linker.ResolverFromFile(res))
 				if err != nil {
 					slog.With(
 						"uri", string(uri),
@@ -219,17 +223,17 @@ func (r *Resolver) CheckIncompleteDescriptors(results linker.Files) []string {
 // 3. Check if the path is a go module containing proto sources
 // 3.5. Check if the path is a go module path containing generated code, but no proto sources
 // 4. Check if the path is found in the global message cache
-func (r *Resolver) FindFileByPath(path string, whence protocompile.ImportContext) (protocompile.SearchResult, error) {
+func (r *Resolver) FindFileByPath(path protocompile.UnresolvedPath, whence protocompile.ImportContext) (protocompile.SearchResult, error) {
 	r.pathsMu.Lock()
 	defer r.pathsMu.Unlock()
-	res, err := r.findFileByPathLocked(path, whence)
+	res, err := r.findFileByPathLocked(string(path), whence)
 	if err != nil {
 		if whence != nil {
-			path, err2 := r.translatePathLocked(path, whence)
+			path, err2 := r.translatePathLocked(string(path), whence)
 			if err2 == nil {
 				res, err2 = r.findFileByPathLocked(path, whence)
 				if err2 == nil {
-					res.EffectiveImportPath = path
+					res.ResolvedPath = protocompile.ResolvedPath(path)
 					return res, nil
 				}
 			}
@@ -271,12 +275,14 @@ func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportC
 		lg.Debug("failed to check go module")
 		return protocompile.SearchResult{}, err
 	}
-	if result, err := r.checkGlobalCache(path); err == nil {
-		lg.Debug("resolved to type in global descriptor cache")
-		return result, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		lg.Debug("failed to check global descriptor cache")
-		return protocompile.SearchResult{}, err
+	if strings.HasPrefix(path, "google/") {
+		if result, err := r.checkGlobalCache(path); err == nil {
+			lg.Debug("resolved to type in global descriptor cache")
+			return result, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			lg.Debug("failed to check global descriptor cache")
+			return protocompile.SearchResult{}, err
+		}
 	}
 
 	lg.Debug("could not resolve path")
@@ -305,7 +311,8 @@ func (r *Resolver) checkWellKnownImportPath(path string) (protocompile.SearchRes
 			r.fileURIsByPath[path] = uri
 			r.importSourcesByURI[uri] = SourceWellKnown
 			return protocompile.SearchResult{
-				Proto: fd,
+				ResolvedPath: protocompile.ResolvedPath(path),
+				Proto:        fd,
 			}, nil
 		}
 	}
@@ -324,7 +331,8 @@ func (r *Resolver) checkFS(path string, whence protocompile.ImportContext) (prot
 			}
 			if err == nil && content != nil {
 				return protocompile.SearchResult{
-					Source: bytes.NewReader(content),
+					ResolvedPath: protocompile.ResolvedPath(path),
+					Source:       bytes.NewReader(content),
 				}, nil
 			}
 		}
@@ -351,18 +359,19 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 		} else {
 			r.importSourcesByURI[uri] = SourceGoModuleCache
 		}
-		// todo: need to fix the incomplete go_package values in some imports
 		return protocompile.SearchResult{
-			Source: src, // this is closed by the compiler
+			ResolvedPath: protocompile.ResolvedPath(path),
+			Source:       src, // this is closed by the compiler
 		}, nil
 	} else if src, ok := r.syntheticFiles[r.fileURIsByPath[path]]; ok {
 		return protocompile.SearchResult{
-			Source: strings.NewReader(src),
+			ResolvedPath: protocompile.ResolvedPath(path),
+			Source:       strings.NewReader(src),
 		}, nil
 	} else if synthesized, err := r.synthesizer.SynthesizeFromGoSource(path, res); err == nil {
 		syntheticURI := url.URL{
 			Scheme:   "proto",
-			Path:     synthesized.GetName(),
+			Path:     path,
 			Fragment: r.folder.Name,
 		}
 		uri := span.URI(syntheticURI.String())
@@ -370,14 +379,15 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 		r.fileURIsByPath[path] = uri
 		r.importSourcesByURI[uri] = SourceSynthetic
 		return protocompile.SearchResult{
-			Proto: synthesized,
+			ResolvedPath: protocompile.ResolvedPath(path),
+			Proto:        synthesized,
 		}, nil
 	}
 	return protocompile.SearchResult{}, fmt.Errorf("failed to synthesize %s: %w", path, err)
 }
 
 func (r *Resolver) checkGlobalCache(path string) (protocompile.SearchResult, error) {
-	fd, err := desc.LoadFileDescriptor(path)
+	fd, err := protoregistry.GlobalFiles.FindFileByPath(path)
 	if err != nil {
 		return protocompile.SearchResult{}, err
 	}
@@ -391,11 +401,15 @@ func (r *Resolver) checkGlobalCache(path string) (protocompile.SearchResult, err
 	r.fileURIsByPath[path] = uri
 	src, err := format.PrintDescriptor(fd.UnwrapFile())
 	if err != nil {
-		return protocompile.SearchResult{Desc: fd.UnwrapFile()}, nil
+		return protocompile.SearchResult{
+			ResolvedPath: protocompile.ResolvedPath(path),
+			Proto:        protodesc.ToFileDescriptorProto(fd),
+		}, nil
 	}
-	r.syntheticFiles[uri] = src
+	r.syntheticFiles[uri] = src.String()
 	return protocompile.SearchResult{
-		Source: strings.NewReader(src),
+		ResolvedPath: protocompile.ResolvedPath(path),
+		Source:       strings.NewReader(r.syntheticFiles[uri]),
 	}, nil
 }
 

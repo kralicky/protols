@@ -159,7 +159,12 @@ PACKAGES:
 		// only one catch: the go package path is not necessarily the same as the import path.
 		// luckily, there's a comment at the top of the file that tells us what the import path is.
 		// it looks like "// source: example.com/foo/bar/baz.proto"
-		for _, f := range pkg.Files {
+		for filename, f := range pkg.Files {
+			// find the source file with the matching basename and the .pb.go extension
+			if strings.TrimSuffix(path.Base(filename), ".pb.go") != strings.TrimSuffix(path.Base(importName), ".proto") {
+				// generated from a different proto file
+				continue
+			}
 			for _, comment := range f.Comments {
 				text := comment.Text()
 				_, path, ok := strings.Cut(text, "source: ")
@@ -228,7 +233,7 @@ PACKAGES:
 		edits := diff.Strings(alternateImportPath, resolvedImportPath)
 		s.knownAlternativePackages = append(s.knownAlternativePackages, edits)
 
-		*fd.Name = importName
+		// *fd.Name = importName
 	}
 	return fd, nil
 }

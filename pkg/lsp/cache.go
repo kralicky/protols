@@ -37,18 +37,21 @@ import (
 // Cache is responsible for keeping track of all the known proto source files
 // and definitions.
 type Cache struct {
-	workspace      protocol.WorkspaceFolder
-	compiler       *Compiler
-	resolver       *Resolver
-	diagHandler    *DiagnosticHandler
-	resultsMu      sync.RWMutex
-	results        linker.Files
-	partialResults map[string]parser.Result
-	indexMu        sync.RWMutex
-	compileLock    sync.Mutex
+	workspace   protocol.WorkspaceFolder
+	compiler    *Compiler
+	resolver    *Resolver
+	diagHandler *DiagnosticHandler
+	resultsMu   sync.RWMutex
+	results     linker.Files
+	// unlinkedResultsMu has an invariant that resultsMu is write-locked; it expects
+	// to be required only during compilation. This means that if resultsMu is
+	// held (for reading or writing), unlinkedResultsMu does not need to be held.
+	unlinkedResultsMu sync.Mutex
+	unlinkedResults   map[protocompile.ResolvedPath]parser.Result
+	indexMu           sync.RWMutex
 
-	inflightTasksInvalidate gsync.Map[string, time.Time]
-	inflightTasksCompile    gsync.Map[string, time.Time]
+	inflightTasksInvalidate gsync.Map[protocompile.ResolvedPath, time.Time]
+	inflightTasksCompile    gsync.Map[protocompile.ResolvedPath, time.Time]
 }
 
 // FindDescriptorByName implements linker.Resolver.
@@ -105,25 +108,26 @@ func (c *Cache) FindResultByURI(uri span.URI) (linker.Result, error) {
 func (c *Cache) FindParseResultByURI(uri span.URI) (parser.Result, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
-	if c.results == nil && len(c.partialResults) == 0 {
+	if c.results == nil && len(c.unlinkedResults) == 0 {
 		return nil, fmt.Errorf("no results or partial results exist")
 	}
 	path, err := c.resolver.URIToPath(uri)
 	if err != nil {
 		return nil, err
 	}
-	if pr, ok := c.partialResults[path]; ok {
+	if pr, ok := c.unlinkedResults[protocompile.ResolvedPath(path)]; ok {
 		return pr, nil
 	}
 	return c.FindResultByURI(uri)
 }
 
-// FindFileByPath implements linker.Resolver.
-func (c *Cache) FindFileByPath(path string) (protoreflect.FileDescriptor, error) {
-	c.resultsMu.RLock()
-	defer c.resultsMu.RUnlock()
-	return c.results.AsResolver().FindFileByPath(path)
-}
+// // FindFileByPath implements linker.Resolver.
+// func (c *Cache) FindFileByPath(path protocompile.UnresolvedPath) (protoreflect.FileDescriptor, error) {
+// 	c.resultsMu.RLock()
+// 	defer c.resultsMu.RUnlock()
+// 	c.resolver.f
+// 	return c.results.AsResolver().FindFileByPath(path)
+// }
 
 func (c *Cache) FindFileByURI(uri span.URI) (protoreflect.FileDescriptor, error) {
 	c.resultsMu.RLock()
@@ -154,7 +158,7 @@ func (c *Cache) FindMessageByURL(url string) (protoreflect.MessageType, error) {
 	return c.results.AsResolver().FindMessageByURL(url)
 }
 
-var _ linker.Resolver = (*Cache)(nil)
+// var _ linker.Resolver = (*Cache)(nil)
 
 type Compiler struct {
 	*protocompile.Compiler
@@ -199,11 +203,11 @@ func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
 		workdir: workdir,
 	}
 	cache := &Cache{
-		workspace:      workspace,
-		compiler:       compiler,
-		resolver:       resolver,
-		diagHandler:    diagHandler,
-		partialResults: make(map[string]parser.Result),
+		workspace:       workspace,
+		compiler:        compiler,
+		resolver:        resolver,
+		diagHandler:     diagHandler,
+		unlinkedResults: make(map[protocompile.ResolvedPath]parser.Result),
 	}
 	compiler.Hooks = protocompile.CompilerHooks{
 		PreInvalidate:  cache.preInvalidateHook,
@@ -285,13 +289,13 @@ func contentChangeEventsToDiffEdits(mapper *protocol.Mapper, changes []protocol.
 	return source.FromProtocolEdits(mapper, edits)
 }
 
-func (c *Cache) preInvalidateHook(path string, reason string) {
+func (c *Cache) preInvalidateHook(path protocompile.ResolvedPath, reason string) {
 	slog.Debug("invalidating file", "path", path, "reason", reason)
 	c.inflightTasksInvalidate.Store(path, time.Now())
-	c.diagHandler.ClearDiagnosticsForPath(path)
+	c.diagHandler.ClearDiagnosticsForPath(string(path))
 }
 
-func (c *Cache) postInvalidateHook(path string, prevResult linker.File, willRecompile bool) {
+func (c *Cache) postInvalidateHook(path protocompile.ResolvedPath, prevResult linker.File, willRecompile bool) {
 	startTime, _ := c.inflightTasksInvalidate.LoadAndDelete(path)
 	slog.Debug("file invalidated", "path", path, "took", time.Since(startTime))
 	// if !willRecompile {
@@ -307,15 +311,15 @@ func (c *Cache) postInvalidateHook(path string, prevResult linker.File, willReco
 	// }
 }
 
-func (c *Cache) preCompile(path string) {
+func (c *Cache) preCompile(path protocompile.ResolvedPath) {
 	slog.Debug(fmt.Sprintf("compiling %s\n", path))
 	c.inflightTasksCompile.Store(path, time.Now())
-	// c.resultsMu.Lock()
-	delete(c.partialResults, path)
-	// c.resultsMu.Unlock()
+	c.unlinkedResultsMu.Lock()
+	defer c.unlinkedResultsMu.Unlock()
+	delete(c.unlinkedResults, path)
 }
 
-func (c *Cache) postCompile(path string) {
+func (c *Cache) postCompile(path protocompile.ResolvedPath) {
 	startTime, ok := c.inflightTasksCompile.LoadAndDelete(path)
 	if ok {
 		slog.Debug(fmt.Sprintf("compiled %s (took %s)\n", path, time.Since(startTime)))
@@ -335,7 +339,11 @@ func (c *Cache) Compile(protos ...string) {
 func (c *Cache) compileLocked(protos ...string) {
 	slog.Info("compiling", "protos", len(protos))
 
-	res, err := c.compiler.Compile(context.TODO(), protos...)
+	resolved := make([]protocompile.ResolvedPath, 0, len(protos))
+	for _, proto := range protos {
+		resolved = append(resolved, protocompile.ResolvedPath(proto))
+	}
+	res, err := c.compiler.Compile(context.TODO(), resolved...)
 	if err != nil {
 		if !errors.Is(err, reporter.ErrInvalidSource) {
 			slog.With("error", err).Error("failed to compile")
@@ -363,20 +371,21 @@ func (c *Cache) compileLocked(protos ...string) {
 			c.results = append(c.results, r)
 		}
 	}
-
+	c.unlinkedResultsMu.Lock()
 	for path, partial := range res.UnlinkedParserResults {
 		partial := partial
 		slog.With("path", path).Debug("adding new partial linker result")
-		c.partialResults[path] = partial
+		c.unlinkedResults[path] = partial
 	}
+	c.unlinkedResultsMu.Unlock()
 	// c.resultsMu.Unlock()
 
-	// syntheticFiles := c.resolver.CheckIncompleteDescriptors(c.results)
-	// if len(syntheticFiles) == 0 {
-	// 	return
-	// }
-	// slog.Debug("building new synthetic sources", "sources", len(syntheticFiles))
-	// c.compileLocked(syntheticFiles...)
+	syntheticFiles := c.resolver.CheckIncompleteDescriptors(c.results)
+	if len(syntheticFiles) == 0 {
+		return
+	}
+	slog.Debug("building new synthetic sources", "sources", len(syntheticFiles))
+	c.compileLocked(syntheticFiles...)
 }
 
 // func (s *Cache) OnFileOpened(doc protocol.TextDocumentItem) {
@@ -734,11 +743,14 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 	for i, imp := range imports {
 		path := dependencyPaths[i]
 		nameInfo := resAst.NodeInfo(imp.Name)
-		if uri, err := c.resolver.PathToURI(path); err == nil {
-			links = append(links, protocol.DocumentLink{
-				Range:  toRange(nameInfo),
-				Target: (*string)(&uri),
-			})
+		if sr, err := c.resolver.FindFileByPath(protocompile.UnresolvedPath(path), res); err == nil {
+			targetUri, err := c.resolver.PathToURI(string(sr.ResolvedPath))
+			if err == nil {
+				links = append(links, protocol.DocumentLink{
+					Range:  toRange(nameInfo),
+					Target: (*string)(&targetUri),
+				})
+			}
 		}
 	}
 

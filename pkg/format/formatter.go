@@ -607,12 +607,43 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 
 			// group this field with the previous field if they are on directly
 			// consecutive lines
-			if fieldNode, ok := ast.Node(e).(*ast.FieldNode); ok {
+			switch fieldNode := ast.Node(e).(type) {
+			case *ast.FieldNode:
 				// check if we are about to expand a compact options group
 				if fieldNode.Options != nil && f.compactOptionsShouldBeExpanded(fieldNode.Options) {
 					startNewGroup()
 					currentGroup = append(currentGroup, e)
 					startNewGroup()
+					continue
+				}
+			case *ast.MessageFieldNode:
+				// break groups on multiline message/array literals.
+				// this prevents code that looks like:
+				// option ... {
+				//   foo:               a
+				//   bar:               b
+				//   some_other_message {
+				//     ...
+				//   }
+				// }
+				isMessageOrArrayLiteral := false
+			LOOP:
+				for _, c := range fieldNode.Children() {
+					switch c := c.(type) {
+					case *ast.MessageLiteralNode:
+						if f.compactMessageLiteralShouldBeExpanded(c) {
+							isMessageOrArrayLiteral = true
+						}
+						break LOOP
+					case *ast.ArrayLiteralNode:
+						if f.compactArrayLiteralShouldBeExpanded(c) {
+							isMessageOrArrayLiteral = true
+						}
+					}
+				}
+				if isMessageOrArrayLiteral {
+					startNewGroup()
+					currentGroup = append(currentGroup, e)
 					continue
 				}
 			}
@@ -893,6 +924,18 @@ func (f *formatter) compactMessageLiteralShouldBeExpanded(messageLiteralNode *as
 	// if the node is not currently formatted on a single line, then
 	// preserve the existing formatting
 	info := f.fileNode.NodeInfo(messageLiteralNode.Elements[0])
+	whitespace := info.LeadingWhitespace()
+	if strings.Contains(whitespace, "\n") {
+		return true
+	}
+	return false
+}
+func (f *formatter) compactArrayLiteralShouldBeExpanded(arrayLiteralNode *ast.ArrayLiteralNode) bool {
+	if len(arrayLiteralNode.Elements) == 0 {
+		return false
+	}
+
+	info := f.fileNode.NodeInfo(arrayLiteralNode.Elements[0])
 	whitespace := info.LeadingWhitespace()
 	if strings.Contains(whitespace, "\n") {
 		return true

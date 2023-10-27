@@ -54,7 +54,7 @@ func PrintDescriptor(d protoreflect.Descriptor) (string, error) {
 	printer := protoprint.Printer{
 		CustomSortFunction: SortElements,
 		Indent:             "  ",
-		Compact:            protoprint.CompactAll,
+		Compact:            protoprint.CompactDefault | protoprint.CompactTopLevelDeclarations,
 	}
 	str, err := printer.PrintProtoToString(d)
 	if err != nil {
@@ -67,7 +67,7 @@ func NewDefaultPrinter() *protoprint.Printer {
 	return &protoprint.Printer{
 		CustomSortFunction: SortElements,
 		Indent:             "  ",
-		Compact:            protoprint.CompactAll,
+		Compact:            protoprint.CompactDefault | protoprint.CompactTopLevelDeclarations,
 	}
 }
 

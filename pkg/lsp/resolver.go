@@ -200,7 +200,8 @@ func (r *Resolver) CheckIncompleteDescriptors(results linker.Files) []string {
 						"error", err,
 					).Error("failed to generate synthetic file descriptor")
 				}
-				src, err := format.PrintDescriptor(newFile)
+				var src bytes.Buffer
+				err = format.PrintAndFormatFileDescriptor(newFile, &src)
 				if err != nil {
 					slog.With(
 						"uri", string(uri),
@@ -208,7 +209,7 @@ func (r *Resolver) CheckIncompleteDescriptors(results linker.Files) []string {
 					).Error("failed to generate synthetic file source")
 					continue
 				}
-				r.syntheticFiles[uri] = src
+				r.syntheticFiles[uri] = src.String()
 				// these files aren't going to have ASTs yet and will need to be recompiled
 				compileAgain = append(compileAgain, path)
 			}
@@ -399,7 +400,8 @@ func (r *Resolver) checkGlobalCache(path string) (protocompile.SearchResult, err
 	uri := span.URI(syntheticURI.String())
 	r.filePathsByURI[uri] = path
 	r.fileURIsByPath[path] = uri
-	src, err := format.PrintDescriptor(fd.UnwrapFile())
+	var src bytes.Buffer
+	err = format.PrintAndFormatFileDescriptor(fd, &src)
 	if err != nil {
 		return protocompile.SearchResult{
 			ResolvedPath: protocompile.ResolvedPath(path),

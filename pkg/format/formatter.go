@@ -333,26 +333,23 @@ func (f *formatter) writeFileHeader() {
 		// Both options are custom, so we defer to the standard sorting.
 		return left < right
 	})
-	for i, optionNode := range optionNodes {
-		if i == 0 && f.previousNode != nil && !f.leadingCommentsContainBlankLine(optionNode) {
-			f.P("")
-		}
-		f.writeFileOption(optionNode, i > 0)
+
+	if len(optionNodes) > 0 && f.previousNode != nil && !f.leadingCommentsContainBlankLine(optionNodes[0]) {
+		f.P("")
 	}
+	f.writeFileOptions(optionNodes)
 }
 
 // writeFileTypes writes the types defined in a .proto file. This includes the messages, enums,
 // services, etc. All other elements are ignored since they are handled by f.writeFileHeader.
 func (f *formatter) writeFileTypes() {
-	for i, fileElement := range f.fileNode.Decls {
+	for _, fileElement := range f.fileNode.Decls {
 		switch node := fileElement.(type) {
 		case *ast.PackageNode, *ast.OptionNode, *ast.ImportNode, *ast.EmptyDeclNode:
 			// These elements have already been written by f.writeFileHeader.
 			continue
 		default:
-			info := f.fileNode.NodeInfo(node)
-			wantNewline := f.previousNode != nil && (i == 0 || info.LeadingComments().Len() > 0)
-			if wantNewline && !f.leadingCommentsContainBlankLine(node) {
+			if f.previousNode != nil && !f.leadingCommentsContainBlankLine(node) {
 				f.P("")
 			}
 			f.writeNode(node)
@@ -406,6 +403,10 @@ func (f *formatter) writeImport(importNode *ast.ImportNode, forceCompact bool) {
 	}
 	f.writeInline(importNode.Name)
 	f.writeLineEnd(importNode.Semicolon)
+}
+
+func (f *formatter) writeFileOptions(optionNodes []*ast.OptionNode) {
+	columnFormatElements(f, optionNodes)
 }
 
 // writeFileOption writes a file option. This function is slightly
@@ -574,7 +575,7 @@ func (f *formatter) writeMessage(messageNode *ast.MessageNode) {
 
 func groupableNodeType(t ast.Node) bool {
 	switch t.(type) {
-	case *ast.FieldNode, *ast.MapFieldNode, *ast.EnumValueNode, *ast.MessageFieldNode:
+	case *ast.FieldNode, *ast.MapFieldNode, *ast.EnumValueNode, *ast.MessageFieldNode, *ast.OptionNode:
 		return true
 	}
 	return false
@@ -737,7 +738,45 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 				fclone.writeLineEnd(elem.Val)
 				field.lineEnd, _ = io.ReadAll(colBuf)
 			case *ast.OptionNode:
-				// TODO
+				// column format for options that look like:
+				// option go_package = "...";
+				// option java_multiple_files = true;
+				// option java_outer_classname = "...";
+				// option java_package = "...";
+
+				// to align the equals signs:
+				// option go_package           = "...";
+				// option java_multiple_files  = true;
+				// option java_outer_classname = "...";
+				// option java_package         = "...";
+
+				// Write the 'option' keyword
+				fclone.writeStartMaybeCompact(elem.Keyword, false, nodeWriter)
+				field.typeName, _ = io.ReadAll(colBuf)
+
+				// write the option name
+				if elem.Name != nil {
+					fclone.writeNode(elem.Name)
+					field.fieldName, _ = io.ReadAll(colBuf)
+				}
+
+				// Write the equals sign
+				fclone.writeInline(elem.Equals)
+				field.equalsTag, _ = io.ReadAll(colBuf)
+
+				// Write the option value
+				if node, ok := elem.Val.(*ast.CompoundStringLiteralNode); ok {
+					// Compound string literals are written across multiple lines
+					// immediately after the '=', so we don't need a trailing
+					// space in the option prefix.
+					fclone.writeCompoundStringLiteralIndentEndInline(node)
+					fclone.writeLineEnd(elem.Semicolon)
+					field.lineEnd, _ = io.ReadAll(colBuf)
+				} else {
+					fclone.writeInline(elem.Val)
+					fclone.writeLineEnd(elem.Semicolon)
+					field.lineEnd, _ = io.ReadAll(colBuf)
+				}
 			case *ast.ReservedNode:
 
 			default:
@@ -782,13 +821,6 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 		}
 		f.mergeState(fclone, colBuf)
 	}
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // writeMessageLiteral writes a message literal.
@@ -923,21 +955,22 @@ func arrayLiteralHasNestedMessageOrArray(arrayLiteralNode *ast.ArrayLiteralNode)
 //	foo: 2
 func (f *formatter) writeMessageLiteralElements(messageLiteralNode *ast.MessageLiteralNode) {
 	canColumnFormat := true
-	for _, elem := range messageLiteralNode.Seps {
-		if elem != nil {
-			canColumnFormat = false
-			break
-		}
-	}
-	if canColumnFormat {
-		for _, elem := range messageLiteralNode.Elements {
-			switch elem.Val.(type) {
-			case *ast.CompoundStringLiteralNode, *ast.MessageLiteralNode:
-				canColumnFormat = false
-				break
-			}
-		}
-	}
+	// for _, elem := range messageLiteralNode.Seps {
+	// 	if elem != nil {
+	// 		canColumnFormat = false
+	// 		break
+	// 	}
+	// }
+	// if canColumnFormat {
+	// 	LOOP:
+	// 	for _, elem := range messageLiteralNode.Elements {
+	// 		switch elem.Val.(type) {
+	// 		case *ast.CompoundStringLiteralNode, *ast.MessageLiteralNode:
+	// 			canColumnFormat = false
+	// 			break LOOP
+	// 		}
+	// 	}
+	// }
 	if canColumnFormat {
 		columnFormatElements(f, messageLiteralNode.Elements)
 		return

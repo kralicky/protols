@@ -1,15 +1,22 @@
 package lsp
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"sort"
 	"strings"
+	"unsafe"
 
 	"github.com/bufbuild/protocompile"
 	"github.com/bufbuild/protocompile/ast"
 	"github.com/bufbuild/protocompile/linker"
 	"github.com/bufbuild/protocompile/parser"
+	"github.com/bufbuild/protovalidate-go/celext"
+	"github.com/google/cel-go/cel"
+	celcommon "github.com/google/cel-go/common"
+	celast "github.com/google/cel-go/common/ast"
+	"github.com/google/cel-go/common/operators"
 	"golang.org/x/exp/slices"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -57,7 +64,16 @@ const (
 	semanticModifierDefaultLibrary
 )
 
+type tokenLanguage uint32
+
+const (
+	tokenLanguageProto tokenLanguage = iota
+	tokenLanguageCel
+)
+
 type semanticItem struct {
+	lang tokenLanguage
+
 	line, start uint32 // 0-indexed
 	len         uint32
 	typ         tokenType
@@ -141,6 +157,10 @@ func findNarrowestSemanticToken(parseRes parser.Result, tokens []semanticItem, p
 	narrowestLen := uint32(math.MaxUint32)
 
 	for _, token := range tokens {
+		if token.lang != tokenLanguageProto {
+			// ignore non-proto tokens
+			continue
+		}
 		if pos.Line != token.line {
 			if token.line > pos.Line {
 				// Stop searching once we've passed the line
@@ -174,6 +194,7 @@ func (s *semanticItems) mktokens(node ast.Node, path []ast.Node, tt tokenType, m
 	length := (info.End().Col - 1) - (info.Start().Col - 1)
 
 	nodeTk := semanticItem{
+		lang:  tokenLanguageProto,
 		line:  uint32(info.Start().Line - 1),
 		start: uint32(info.Start().Col - 1),
 		len:   uint32(length),
@@ -185,6 +206,40 @@ func (s *semanticItems) mktokens(node ast.Node, path []ast.Node, tt tokenType, m
 	s.items = append(s.items, nodeTk)
 
 	s.mkcomments(node)
+}
+
+func (s *semanticItems) mktokens_cel(str *ast.StringLiteralNode, start, end int32, tt tokenType, mods tokenModifier) {
+	lineInfo := s.parseRes.AST().NodeInfo(str)
+	lineStart := lineInfo.Start()
+	// lineEnd := lineInfo.End()
+
+	// quoteStartTk := semanticItem{
+	// 	lang:  tokenLanguageCel,
+	// 	line:  uint32(lineStart.Line - 1),
+	// 	start: uint32(lineStart.Col - 1),
+	// 	len:   1,
+	// 	typ:   semanticTypeOperator,
+	// 	mods:  0,
+	// }
+	// quoteEndTk := semanticItem{
+	// 	lang:  tokenLanguageCel,
+	// 	line:  uint32(lineStart.Line - 1),
+	// 	start: uint32(lineEnd.Col - 1),
+	// 	len:   1,
+	// 	typ:   semanticTypeOperator,
+	// 	mods:  0,
+	// }
+
+	nodeTk := semanticItem{
+		lang:  tokenLanguageCel,
+		line:  uint32(lineStart.Line - 1),
+		start: uint32(int32(lineStart.Col) + start),
+		len:   uint32(end - start),
+		typ:   tt,
+		mods:  mods,
+	}
+	// s.items = append(s.items, quoteStartTk, nodeTk, quoteEndTk)
+	s.items = append(s.items, nodeTk)
 }
 
 func (s *semanticItems) mkcomments(node ast.Node) {
@@ -259,6 +314,13 @@ func (s *semanticItems) multilineComment(comment ast.Comment, cstart, cend ast.S
 	})
 }
 
+var celEnv *cel.Env
+
+func init() {
+	celEnv, _ = celext.DefaultEnv(false)
+	celEnv, _ = celEnv.Extend(cel.EnableMacroCallTracking())
+}
+
 func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.WalkOption) {
 	tracker := &ast.AncestorTracker{}
 	// check if node is a non-nil interface to a nil pointer
@@ -266,6 +328,7 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 		return
 	}
 	walkOptions = append(walkOptions, tracker.AsWalkOptions()...)
+	embeddedStringLiterals := make(map[*ast.StringLiteralNode]struct{})
 	// NB: when calling mktokens in composite node visitors:
 	// - ensure node paths are manually adjusted if creating tokens for a child node
 	// - ensure tokens for child nodes are created in the correct order
@@ -281,6 +344,9 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			return nil
 		},
 		DoVisitStringLiteralNode: func(node *ast.StringLiteralNode) error {
+			if _, ok := embeddedStringLiterals[node]; ok {
+				return nil
+			}
 			s.mktokens(node, tracker.Path(), semanticTypeString, 0)
 			return nil
 		},
@@ -345,17 +411,55 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			return nil
 		},
 		// DoVisitOptionNode: func(node *ast.OptionNode) error {
+		// 	if node.Name != nil {
+		// 		if len(node.Name.Parts) >= 2 &&
+		// 			strings.HasPrefix(string(node.Name.Parts[0].Name.AsIdentifier()), "buf.validate.") &&
+		// 			node.Name.Parts[1].Name.AsIdentifier() == "cel" {
+		// 			for _, n := range node.Name.Children() {
+		// 				fr, ok := n.(*ast.FieldReferenceNode)
+		// 				if !ok {
+		// 					continue
+		// 				}
+		// 				if fr.Name.AsIdentifier() != "cel" {
+		// 					continue
+		// 				}
+		// 				if messageLit, ok := node.Val.(*ast.MessageLiteralNode); ok {
+		// 					for _, lit := range s.inspectCelExpr(messageLit) {
+		// 						embeddedStringLiterals[lit] = struct{}{}
+		// 					}
+		// 				}
+		// 			}
+		// 		}
+		// 	}
 		// 	return nil
 		// },
 		// DoVisitMessageFieldNode: func(node *ast.MessageFieldNode) error {
 		// 	// <field reference>: <value>
 		// 	return nil
 		// },
-		// DoVisitMessageLiteralNode: func(node *ast.MessageLiteralNode) error {
-		// 	s.mktokens(node.Open, semanticTypeOperator, 0)
-		// 	s.mktokens(node.Close, semanticTypeOperator, 0)
-		// 	return nil
-		// },
+		DoVisitMessageLiteralNode: func(node *ast.MessageLiteralNode) error {
+			hasExpressionField := false
+			hasIdField := false
+			for _, elem := range node.Elements {
+				if elem.Name == nil {
+					continue
+				}
+				if elem.Name.Name.AsIdentifier() == "expression" {
+					hasExpressionField = true
+				} else if elem.Name.Name.AsIdentifier() == "id" {
+					hasIdField = true
+				}
+				if hasExpressionField && hasIdField {
+					break
+				}
+			}
+			if hasExpressionField && hasIdField {
+				for _, lit := range s.inspectCelExpr(node) {
+					embeddedStringLiterals[lit] = struct{}{}
+				}
+			}
+			return nil
+		},
 		DoVisitMapFieldNode: func(node *ast.MapFieldNode) error {
 			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeProperty, 0)
 			s.mktokens(node.MapType.KeyType, append(tracker.Path(), node.MapType, node.MapType.KeyType), semanticTypeType, 0)
@@ -391,6 +495,88 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			return nil
 		},
 	}, walkOptions...)
+}
+
+func (s *semanticItems) inspectCelExpr(messageLit *ast.MessageLiteralNode) []*ast.StringLiteralNode {
+	for _, elem := range messageLit.Elements {
+		if elem.Name.Name.AsIdentifier() == "expression" {
+			stringNodes := []*ast.StringLiteralNode{}
+			var celExpr string
+			switch val := elem.Val.(type) {
+			case *ast.StringLiteralNode:
+				stringNodes = append(stringNodes, val)
+				celExpr = val.AsString()
+			case *ast.CompoundStringLiteralNode:
+				lines := []string{}
+				for _, part := range val.Children() {
+					if str, ok := part.(*ast.StringLiteralNode); ok {
+						stringNodes = append(stringNodes, str)
+						strVal := strings.TrimSpace(str.AsString())
+						lines = append(lines, strVal)
+					}
+				}
+				celExpr = strings.Join(lines, "\n")
+			}
+			parsed, issues := celEnv.Parse(celExpr)
+			if issues != nil && issues.Err() != nil {
+				return nil
+			}
+			ast := getAst(parsed)
+			sourceInfo := ast.SourceInfo()
+			celast.PreOrderVisit(ast.Expr(), celast.NewExprVisitor(func(e celast.Expr) {
+				switch e.Kind() {
+				case celast.UnspecifiedExprKind:
+				case celast.CallKind:
+					call := e.AsCall()
+					if displayName, ok := operators.FindReverse(call.FunctionName()); ok && len(displayName) > 0 {
+						start := sourceInfo.GetStartLocation(e.ID())
+						end := start.Column() + len(displayName)
+						s.mktokens_cel(stringNodes[start.Line()-1], int32(start.Column()), int32(end), semanticTypeOperator, 0)
+						return
+					}
+				case celast.IdentKind:
+					ident := e.AsIdent()
+					start := sourceInfo.GetStartLocation(e.ID())
+					end := start.Column() + len(ident)
+
+					tokenType := semanticTypeVariable
+					if ident == "this" {
+						tokenType = semanticTypeKeyword
+					}
+					s.mktokens_cel(stringNodes[start.Line()-1], int32(start.Column()), int32(end), tokenType, 0)
+				case celast.LiteralKind:
+					val := e.AsLiteral().Value()
+					switch val.(type) {
+					case int, int32, int64, uint, uint32, uint64, float32, float64:
+						start := sourceInfo.GetStartLocation(e.ID())
+						end := start.Column() + len(fmt.Sprint(val))
+
+						s.mktokens_cel(stringNodes[start.Line()-1], int32(start.Column()), int32(end), semanticTypeNumber, 0)
+					case string:
+						start := sourceInfo.GetStartLocation(e.ID())
+						end := start.Column() + len(val.(string)) + 2 // +2 for quotes
+						s.mktokens_cel(stringNodes[start.Line()-1], int32(start.Column()), int32(end), semanticTypeString, 0)
+					case bool:
+						start := sourceInfo.GetStartLocation(e.ID())
+						end := start.Column() + len(fmt.Sprint(val))
+
+						s.mktokens_cel(stringNodes[start.Line()-1], int32(start.Column()), int32(end), semanticTypeKeyword, 0)
+					}
+				}
+			}))
+
+			return stringNodes
+		}
+	}
+	return nil
+}
+
+// there is no method to get the underlying ast i guess?? lol
+func getAst(parsed *cel.Ast) *celast.AST {
+	return (*struct {
+		source celcommon.Source
+		impl   *celast.AST
+	})(unsafe.Pointer(parsed)).impl
 }
 
 func (e *semanticItems) Data() []uint32 {

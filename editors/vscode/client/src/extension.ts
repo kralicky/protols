@@ -1,6 +1,6 @@
 import * as vscode from "vscode"
 import { LanguageClient } from "vscode-languageclient/node"
-import { ASTViewer, fromProtoAstURi } from "./astviewer"
+import { ASTViewer, fromProtoAstUri } from "./astviewer"
 import { buildLanguageClient } from "./client"
 import { initCommands } from "./commands"
 
@@ -13,11 +13,18 @@ export async function activate(context: vscode.ExtensionContext) {
   client.start()
 
   const astViewer = new ASTViewer((uri) => {
-    return client.sendRequest("protols/ast", fromProtoAstURi(uri).toString())
+    return client.sendRequest("protols/ast", fromProtoAstUri(uri).toString())
   })
   context.subscriptions.push(
     astViewer,
     vscode.workspace.registerTextDocumentContentProvider("protoast", astViewer),
+  )
+  context.subscriptions.push(
+    astViewer,
+    vscode.workspace.registerTextDocumentContentProvider(
+      "protoast2",
+      astViewer,
+    ),
   )
 
   context.subscriptions.push(

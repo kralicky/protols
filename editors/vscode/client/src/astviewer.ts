@@ -14,8 +14,9 @@ export class ASTViewer implements vscode.TextDocumentContentProvider {
           this.virtualUrisByFile.delete(doc.uri.toString())
           break
         }
+        case "protoast2":
         case "protoast": {
-          this.virtualUrisByFile.delete(fromProtoAstURi(doc.uri).toString())
+          this.virtualUrisByFile.delete(fromProtoAstUri(doc.uri).toString())
           break
         }
       }
@@ -57,7 +58,7 @@ export class ASTViewer implements vscode.TextDocumentContentProvider {
     uri: vscode.Uri,
     token: vscode.CancellationToken,
   ): vscode.ProviderResult<string> {
-    const fileUri = fromProtoAstURi(uri)
+    const fileUri = fromProtoAstUri(uri)
     if (!this.virtualUrisByFile.has(fileUri.toString())) {
       return ""
     }
@@ -71,15 +72,33 @@ export class ASTViewer implements vscode.TextDocumentContentProvider {
 }
 
 export function toProtoAstUri(uri: vscode.Uri): vscode.Uri {
-  return uri.with({
-    scheme: "protoast",
-    path: uri.path + " [AST]",
-  })
+  if (uri.scheme === "file") {
+    return uri.with({
+      scheme: "protoast",
+      path: uri.path + " [AST]",
+    })
+  } else if (uri.scheme === "proto") {
+    return uri.with({
+      scheme: "protoast2",
+      path: uri.path + " [AST]",
+    })
+  } else {
+    return uri
+  }
 }
 
-export function fromProtoAstURi(uri: vscode.Uri): vscode.Uri {
-  return uri.with({
-    scheme: "file",
-    path: uri.path.replace(/ \[AST\]$/, ""),
-  })
+export function fromProtoAstUri(uri: vscode.Uri): vscode.Uri {
+  if (uri.scheme === "protoast") {
+    return uri.with({
+      scheme: "file",
+      path: uri.path.replace(/ \[AST\]$/, ""),
+    })
+  } else if (uri.scheme === "protoast2") {
+    return uri.with({
+      scheme: "proto",
+      path: uri.path.replace(/ \[AST\]$/, ""),
+    })
+  } else {
+    return uri
+  }
 }

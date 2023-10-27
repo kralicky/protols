@@ -1,6 +1,6 @@
 package format
 
-import "github.com/jhump/protoreflect/desc/protoprint"
+import "github.com/kralicky/protols/pkg/format/protoprint"
 
 // Sort logic w.r.t. the file:
 // 1. Package is always first, and imports are always second

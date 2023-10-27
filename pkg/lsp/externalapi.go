@@ -34,6 +34,12 @@ func (c *Cache) XGetLinkerResults() []linker.Result {
 	return results
 }
 
+func (c *Cache) XGetResolver() linker.Resolver {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	return c.results.AsResolver()
+}
+
 func (c *Cache) XGetMapper(uri span.URI) (*protocol.Mapper, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()

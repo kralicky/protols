@@ -89,7 +89,13 @@ func (d *Driver) Compile(protos []string) (*Results, error) {
 				}
 				// show the source line with dimmed text before and after the error range,
 				// and highlight the error range
-				relativePath, _ := filepath.Rel(span.URIFromURI(d.workspace.URI).Filename(), uri.Filename())
+				var uriFilename string
+				if uri.IsFile() {
+					uriFilename = uri.Filename()
+				} else {
+					uriFilename = string(uri)
+				}
+				relativePath, _ := filepath.Rel(span.URIFromURI(d.workspace.URI).Filename(), uriFilename)
 				color := severityToColor[diag.Severity]
 				if !showSourceContext {
 					results.Messages = append(results.Messages,
@@ -103,6 +109,12 @@ func (d *Driver) Compile(protos []string) (*Results, error) {
 				}
 
 				fullLine := string(mapper.Content[startPos : endPos-1])
+				if diag.Range.Start.Character > uint32(len(fullLine)) ||
+					diag.Range.End.Character > uint32(len(fullLine)) ||
+					diag.Range.Start.Character > diag.Range.End.Character {
+					diag.Range.Start.Character = 0
+					diag.Range.End.Character = uint32(len(fullLine))
+				}
 				highlightedLine := fmt.Sprintf("%s%s%s",
 					"\x1b[2m"+fullLine[:diag.Range.Start.Character]+"\x1b[0m",
 					color+fullLine[diag.Range.Start.Character:diag.Range.End.Character]+"\x1b[0m",

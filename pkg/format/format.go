@@ -7,8 +7,7 @@ import (
 
 	"github.com/bufbuild/protocompile/parser"
 	"github.com/bufbuild/protocompile/reporter"
-	"github.com/jhump/protoreflect/desc"
-	"github.com/jhump/protoreflect/desc/protoprint"
+	"github.com/kralicky/protols/pkg/format/protoprint"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -52,16 +51,12 @@ func FileInPlace(filename string) error {
 }
 
 func PrintDescriptor(d protoreflect.Descriptor) (string, error) {
-	wrap, err := desc.WrapDescriptor(d)
-	if err != nil {
-		return "", err
-	}
 	printer := protoprint.Printer{
 		CustomSortFunction: SortElements,
 		Indent:             "  ",
-		Compact:            protoprint.CompactDefault,
+		Compact:            protoprint.CompactAll,
 	}
-	str, err := printer.PrintProtoToString(wrap)
+	str, err := printer.PrintProtoToString(d)
 	if err != nil {
 		return "", err
 	}
@@ -72,6 +67,16 @@ func NewDefaultPrinter() *protoprint.Printer {
 	return &protoprint.Printer{
 		CustomSortFunction: SortElements,
 		Indent:             "  ",
-		Compact:            protoprint.CompactDefault,
+		Compact:            protoprint.CompactAll,
 	}
+}
+
+func PrintAndFormatFileDescriptor(fd protoreflect.FileDescriptor, out io.Writer) error {
+	printer := NewDefaultPrinter()
+	var buf bytes.Buffer
+	err := printer.PrintProto(fd, &buf)
+	if err != nil {
+		return err
+	}
+	return Format(&buf, out)
 }

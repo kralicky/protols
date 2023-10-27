@@ -780,6 +780,7 @@ func (c *Cache) ComputeInlayHints(doc protocol.TextDocumentIdentifier, rng proto
 
 	hints := []protocol.InlayHint{}
 	hints = append(hints, c.computeMessageLiteralHints(doc, rng)...)
+	hints = append(hints, c.computeImportHints(doc, rng)...)
 	return hints, nil
 }
 
@@ -1029,6 +1030,81 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 	// }
 
 	// return hints
+}
+
+func (c *Cache) computeImportHints(doc protocol.TextDocumentIdentifier, rng protocol.Range) []protocol.InlayHint {
+	// show inlay hints for imports that resolve to different paths
+	var hints []protocol.InlayHint
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+
+	res, err := c.FindParseResultByURI(doc.URI.SpanURI())
+	if err != nil {
+		return nil
+	}
+	resAst := res.AST()
+	if resAst == nil {
+		return nil
+	}
+	var imports []*ast.ImportNode
+	// get the source positions of the import statements
+	for _, decl := range resAst.Decls {
+		if imp, ok := decl.(*ast.ImportNode); ok {
+			imports = append(imports, imp)
+		}
+	}
+
+	dependencyPaths := res.FileDescriptorProto().Dependency
+	// if the ast doesn't contain "google/protobuf/descriptor.proto" but the file descriptor does, filter it
+
+	found := false
+	for _, imp := range imports {
+		if imp.Name.AsString() == "google/protobuf/descriptor.proto" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		for i, dep := range dependencyPaths {
+			if dep == "google/protobuf/descriptor.proto" {
+				dependencyPaths = append(dependencyPaths[:i], dependencyPaths[i+1:]...)
+				break
+			}
+		}
+	}
+
+	for i, imp := range imports {
+		importPath := imp.Name.AsString()
+		resolvedPath := dependencyPaths[i]
+		nameInfo := resAst.NodeInfo(imp.Name)
+		if resolvedPath != importPath {
+			hints = append(hints, protocol.InlayHint{
+				Kind:         protocol.Type,
+				PaddingLeft:  true,
+				PaddingRight: false,
+				Position: protocol.Position{
+					Line:      uint32(nameInfo.Start().Line) - 1,
+					Character: uint32(nameInfo.End().Col) + 2,
+				},
+				TextEdits: []protocol.TextEdit{
+					{
+						Range:   adjustColumns(toRange(nameInfo), +1, -1),
+						NewText: resolvedPath,
+					},
+				},
+				Label: []protocol.InlayHintLabelPart{
+					{
+						Tooltip: &protocol.OrPTooltipPLabel{
+							Value: fmt.Sprintf("Import resolves to %s", resolvedPath),
+						},
+						Value: resolvedPath,
+					},
+				},
+			})
+		}
+	}
+
+	return hints
 }
 
 func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]protocol.DocumentSymbol, error) {
@@ -1287,6 +1363,23 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 
 	for i := len(item.path) - 1; i >= 0; i-- {
 		currentNode := item.path[i]
+		switch currentNode.(type) {
+		// short-circuit for some nodes that we know don't map to descriptors -
+		// keywords and numbers
+		case *ast.KeywordNode,
+			*ast.SyntaxNode,
+			*ast.PackageNode,
+			*ast.EmptyDeclNode,
+			*ast.RuneNode,
+			*ast.UintLiteralNode,
+			*ast.PositiveUintLiteralNode,
+			*ast.NegativeIntLiteralNode,
+			*ast.FloatLiteralNode,
+			*ast.SpecialFloatLiteralNode,
+			*ast.SignedFloatLiteralNode,
+			*ast.StringLiteralNode, *ast.CompoundStringLiteralNode: // TODO: this could change in the future
+			return nil, protocol.Range{}, nil
+		}
 		nodeDescriptor := parseRes.Descriptor(currentNode)
 		if nodeDescriptor == nil {
 			// this node does not directly map to a descriptor. push it on the stack
@@ -1394,6 +1487,14 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 					if wantNode.AsIdentifier() == prevNode.Extendee.AsIdentifier() {
 						want.desc = linkRes.FindExtendeeDescriptorByName(protoreflect.FullName(wantNode.AsIdentifier()))
 					}
+				}
+			case *ast.StringLiteralNode:
+				if fd, ok := have.desc.(protoreflect.FileImport); ok {
+					if fd.FileDescriptor == nil {
+						// nothing to do
+						return nil, protocol.Range{}, nil
+					}
+					want.desc = fd.FileDescriptor
 				}
 			}
 		case protoreflect.MessageDescriptor:
@@ -1629,7 +1730,20 @@ func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([
 		node = containingFileResolver.MethodNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.MethodDescriptorProto)).GetName()
 	case protoreflect.FieldDescriptor:
 		if !desc.IsExtension() {
-			node = containingFileResolver.FieldNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.FieldDescriptorProto))
+			switch desc.(type) {
+			case protoutil.DescriptorProtoWrapper:
+				node = containingFileResolver.FieldNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.FieldDescriptorProto))
+			default:
+				// these can be internal filedesc.Field descriptors for e.g. builtin file options
+				containingFileResolver.RangeFieldReferenceNodesWithDescriptors(func(n ast.Node, fd protoreflect.FieldDescriptor) bool {
+					// TODO: this is a workaround, figure out why the linker wrapper types aren't being used here
+					if desc.FullName() == fd.FullName() {
+						node = n
+						return false
+					}
+					return true
+				})
+			}
 		} else {
 			exts := desc.ParentFile().Extensions()
 			for i := 0; i < exts.Len(); i++ {

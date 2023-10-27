@@ -211,24 +211,6 @@ func (s *semanticItems) mktokens(node ast.Node, path []ast.Node, tt tokenType, m
 func (s *semanticItems) mktokens_cel(str *ast.StringLiteralNode, start, end int32, tt tokenType, mods tokenModifier) {
 	lineInfo := s.parseRes.AST().NodeInfo(str)
 	lineStart := lineInfo.Start()
-	// lineEnd := lineInfo.End()
-
-	// quoteStartTk := semanticItem{
-	// 	lang:  tokenLanguageCel,
-	// 	line:  uint32(lineStart.Line - 1),
-	// 	start: uint32(lineStart.Col - 1),
-	// 	len:   1,
-	// 	typ:   semanticTypeOperator,
-	// 	mods:  0,
-	// }
-	// quoteEndTk := semanticItem{
-	// 	lang:  tokenLanguageCel,
-	// 	line:  uint32(lineStart.Line - 1),
-	// 	start: uint32(lineEnd.Col - 1),
-	// 	len:   1,
-	// 	typ:   semanticTypeOperator,
-	// 	mods:  0,
-	// }
 
 	nodeTk := semanticItem{
 		lang:  tokenLanguageCel,
@@ -238,7 +220,6 @@ func (s *semanticItems) mktokens_cel(str *ast.StringLiteralNode, start, end int3
 		typ:   tt,
 		mods:  mods,
 	}
-	// s.items = append(s.items, quoteStartTk, nodeTk, quoteEndTk)
 	s.items = append(s.items, nodeTk)
 }
 
@@ -345,6 +326,7 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 		},
 		DoVisitStringLiteralNode: func(node *ast.StringLiteralNode) error {
 			if _, ok := embeddedStringLiterals[node]; ok {
+				s.mkcomments(node)
 				return nil
 			}
 			s.mktokens(node, tracker.Path(), semanticTypeString, 0)
@@ -368,7 +350,7 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 		},
 		DoVisitRuneNode: func(node *ast.RuneNode) error {
 			switch node.Rune {
-			case '}', '{', '.', ',', '<', '>', '(', ')', '[', ']', ';':
+			case '}', '{', '.', ',', '<', '>', '(', ')', '[', ']', ';', ':':
 				s.mkcomments(node)
 			default:
 				s.mktokens(node, tracker.Path(), semanticTypeOperator, 0)
@@ -454,7 +436,8 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 				}
 			}
 			if hasExpressionField && hasIdField {
-				for _, lit := range s.inspectCelExpr(node) {
+				tokens := s.inspectCelExpr(node)
+				for _, lit := range tokens {
 					embeddedStringLiterals[lit] = struct{}{}
 				}
 			}
@@ -491,6 +474,14 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			return nil
 		},
 		DoVisitTerminalNode: func(node ast.TerminalNode) error {
+			// handle bool ident nodes here, since this is the lowest precedence visitor.
+			// DoVisitIdentNode matches too many things we have specific visitors for,
+			// and bool values aren't their own node type
+			if ident, ok := node.(*ast.IdentNode); ok {
+				if ident.Val == "true" || ident.Val == "false" {
+					s.mktokens(ident, append(tracker.Path(), ident), semanticTypeKeyword, 0)
+				}
+			}
 			s.mkcomments(node)
 			return nil
 		},
@@ -517,6 +508,8 @@ func (s *semanticItems) inspectCelExpr(messageLit *ast.MessageLiteralNode) []*as
 				}
 				celExpr = strings.Join(lines, "\n")
 			}
+			// escape backslashes that would have been un-escaped by the parser
+			celExpr = strings.ReplaceAll(celExpr, `\`, `\\`)
 			parsed, issues := celEnv.Parse(celExpr)
 			if issues != nil && issues.Err() != nil {
 				return nil

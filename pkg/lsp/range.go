@@ -14,6 +14,19 @@ func toRange[T ranger](t T) protocol.Range {
 	return positionsToRange(t.Start(), t.End())
 }
 
+func adjustColumns(r protocol.Range, leftAdjust int, rightAdjust int) protocol.Range {
+	return protocol.Range{
+		Start: protocol.Position{
+			Line:      r.Start.Line,
+			Character: r.Start.Character + uint32(leftAdjust),
+		},
+		End: protocol.Position{
+			Line:      r.End.Line,
+			Character: r.End.Character + uint32(rightAdjust),
+		},
+	}
+}
+
 func positionsToRange(start, end ast.SourcePos) protocol.Range {
 	return protocol.Range{
 		Start: protocol.Position{

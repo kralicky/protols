@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -320,7 +319,7 @@ func (r *Resolver) checkWellKnownImportPath(path string) (protocompile.SearchRes
 	return protocompile.SearchResult{}, os.ErrNotExist
 }
 
-const largeFileThreshold = 100 * 1024 // 100KB
+const largeFileThreshold = 1024 * 1024 // 1MB
 
 func (r *Resolver) checkFS(path string, whence protocompile.ImportContext) (protocompile.SearchResult, error) {
 	uri, ok := r.fileURIsByPath[path]
@@ -328,7 +327,7 @@ func (r *Resolver) checkFS(path string, whence protocompile.ImportContext) (prot
 		if fh, err := r.ReadFile(context.TODO(), uri); err == nil {
 			content, err := fh.Content()
 			if len(content) > largeFileThreshold {
-				return protocompile.SearchResult{}, fmt.Errorf("refusing to load file %q larger than 100KB", path)
+				return protocompile.SearchResult{}, fmt.Errorf("refusing to load file %q larger than 1MB", path)
 			}
 			if err == nil && content != nil {
 				return protocompile.SearchResult{

@@ -3,6 +3,7 @@ package lsp
 import (
 	"fmt"
 	"math"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -18,9 +19,12 @@ import (
 	celast "github.com/google/cel-go/common/ast"
 	"github.com/google/cel-go/common/operators"
 	"golang.org/x/exp/slices"
+	"golang.org/x/exp/slog"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
+
+//go:generate stringer -type=tokenType,tokenModifier -trimprefix=semantic
 
 type tokenType uint32
 
@@ -112,7 +116,6 @@ func semanticTokensFull(cache *Cache, doc protocol.TextDocumentIdentifier) (*pro
 		linkRes:  maybeLinkRes,
 	}
 	computeSemanticTokens(cache, &enc)
-
 	ret := &protocol.SemanticTokens{
 		Data: enc.Data(),
 	}
@@ -146,8 +149,92 @@ func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng 
 	return ret, err
 }
 
+const debugCheckOverlappingTokens = false
+
 func computeSemanticTokens(cache *Cache, e *semanticItems, walkOptions ...ast.WalkOption) {
 	e.inspect(cache, e.parseRes.AST(), walkOptions...)
+	sort.Slice(e.items, func(i, j int) bool {
+		if e.items[i].line != e.items[j].line {
+			return e.items[i].line < e.items[j].line
+		}
+		return e.items[i].start < e.items[j].start
+	})
+	if !debugCheckOverlappingTokens {
+		return
+	}
+
+	// check for overlapping tokens, at most five times per run
+	reportCount := 0
+	overlapping := []semanticItem{}
+	for i := 1; i < len(e.items)-1; i++ {
+		if reportCount >= 5 {
+			break
+		}
+		prevItem := e.items[i-1]
+		item := e.items[i]
+		if prevItem.line == item.line && prevItem.start+prevItem.len > item.start {
+			// add the rest of the tokens on this line to the list of overlapping tokens
+			for j := i - 1; j >= 0; j-- {
+				if e.items[j].line != item.line {
+					break
+				}
+				overlapping = append(overlapping, e.items[j])
+			}
+			slices.Reverse(overlapping)
+			overlapping = append(overlapping, item)
+			skip := 0
+			for j := i + 1; j < len(e.items); j++ {
+				if e.items[j].line != item.line {
+					break
+				}
+				overlapping = append(overlapping, e.items[j])
+				skip++
+			}
+			// log a detailed error message
+			path, _ := cache.resolver.PathToURI(*e.parseRes.FileDescriptorProto().Name)
+			mapper, _ := cache.GetMapper(path)
+			lineStart, lineEnd, err := mapper.RangeOffsets(protocol.Range{
+				Start: protocol.Position{
+					Line:      uint32(item.line),
+					Character: 0,
+				},
+				End: protocol.Position{
+					Line:      uint32(item.line + 1),
+					Character: 0,
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+			lineText := mapper.Content[lineStart:lineEnd]
+			// example output:
+			// ==== overlapping tokens ====
+			// /path/to/file.proto:line
+			//   optional foo = bar;
+			//   ^^^^^^^^             [token 1 info]
+			//            ^^^^^^^^^   [token 1 info]
+			//            ^^^ 				[token 2 info]
+
+			msg := strings.Builder{}
+			msg.WriteString("==== overlapping tokens ====\n")
+			msg.WriteString(fmt.Sprintf("%s:%d\n", path, item.line+1))
+			msg.WriteString(fmt.Sprintf("%s\n", lineText))
+			for _, item := range overlapping {
+				// write spaces, then ^s, then spaces until the end of the line + 1, then a message
+				msg.WriteString(strings.Repeat(" ", int(item.start)))
+				msg.WriteString(strings.Repeat("^", int(item.len)))
+				msg.WriteString(strings.Repeat(" ", max(len(lineText)+1-int(item.start+item.len), 0)))
+				msg.WriteString(fmt.Sprintf("  [type: %s; modifiers: %s]\n", item.typ.String(), item.mods.String()))
+			}
+			fmt.Fprintln(os.Stderr, msg.String())
+			reportCount++
+			overlapping = []semanticItem{}
+
+			// continue to the next line
+			i += skip - 1
+		}
+	}
+
 }
 
 func findNarrowestSemanticToken(parseRes parser.Result, tokens []semanticItem, pos protocol.Position) (narrowest semanticItem, found bool) {
@@ -314,16 +401,6 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 	// - ensure node paths are manually adjusted if creating tokens for a child node
 	// - ensure tokens for child nodes are created in the correct order
 	ast.Walk(node, &ast.SimpleVisitor{
-		DoVisitSyntaxNode: func(node *ast.SyntaxNode) error {
-			s.mktokens(node.Keyword, append(tracker.Path(), node.Keyword), semanticTypeKeyword, 0)
-			s.mktokens(node.Equals, append(tracker.Path(), node.Equals), semanticTypeOperator, 0)
-			s.mktokens(node.Syntax, append(tracker.Path(), node.Syntax), semanticTypeString, 0)
-			return nil
-		},
-		DoVisitFileNode: func(node *ast.FileNode) error {
-			s.mkcomments(node.EOF)
-			return nil
-		},
 		DoVisitStringLiteralNode: func(node *ast.StringLiteralNode) error {
 			if _, ok := embeddedStringLiterals[node]; ok {
 				s.mkcomments(node)
@@ -388,37 +465,28 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 				s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeVariable, semanticModifierStatic)
 				s.mktokens(node.Close, append(tracker.Path(), node.Close), semanticTypeOperator, 0)
 			} else {
-				s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeParameter, 0)
+				// handle "default" and "json_name" pseudo-options
+				if node.Name.AsIdentifier() == "default" || node.Name.AsIdentifier() == "json_name" {
+					// treat it as a keyword
+					s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeKeyword, 0)
+				} else {
+					s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeProperty, 0)
+				}
 			}
 			return nil
 		},
-		// DoVisitOptionNode: func(node *ast.OptionNode) error {
-		// 	if node.Name != nil {
-		// 		if len(node.Name.Parts) >= 2 &&
-		// 			strings.HasPrefix(string(node.Name.Parts[0].Name.AsIdentifier()), "buf.validate.") &&
-		// 			node.Name.Parts[1].Name.AsIdentifier() == "cel" {
-		// 			for _, n := range node.Name.Children() {
-		// 				fr, ok := n.(*ast.FieldReferenceNode)
-		// 				if !ok {
-		// 					continue
-		// 				}
-		// 				if fr.Name.AsIdentifier() != "cel" {
-		// 					continue
-		// 				}
-		// 				if messageLit, ok := node.Val.(*ast.MessageLiteralNode); ok {
-		// 					for _, lit := range s.inspectCelExpr(messageLit) {
-		// 						embeddedStringLiterals[lit] = struct{}{}
-		// 					}
-		// 				}
-		// 			}
-		// 		}
-		// 	}
-		// 	return nil
-		// },
-		// DoVisitMessageFieldNode: func(node *ast.MessageFieldNode) error {
-		// 	// <field reference>: <value>
-		// 	return nil
-		// },
+		DoVisitOptionNode: func(node *ast.OptionNode) error {
+			switch val := node.Val.(type) {
+			case ast.IdentValueNode:
+				// handle bool literal identifiers
+				if id := val.AsIdentifier(); id == "true" || id == "false" {
+					s.mktokens(node.Val, append(tracker.Path(), node.Val), semanticTypeKeyword, 0)
+				} else {
+					s.mktokens(node.Val, append(tracker.Path(), node.Val), semanticTypeVariable, semanticModifierReadonly)
+				}
+			}
+			return nil
+		},
 		DoVisitMessageLiteralNode: func(node *ast.MessageLiteralNode) error {
 			hasExpressionField := false
 			hasIdField := false
@@ -430,15 +498,29 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 					hasExpressionField = true
 				} else if elem.Name.Name.AsIdentifier() == "id" {
 					hasIdField = true
+				} else if elem.Name.Name.AsIdentifier() == "key" {
+					_ = 1
 				}
 				if hasExpressionField && hasIdField {
 					break
 				}
 			}
 			if hasExpressionField && hasIdField {
-				tokens := s.inspectCelExpr(node)
+				tokens, _ := s.inspectCelExpr(node)
 				for _, lit := range tokens {
 					embeddedStringLiterals[lit] = struct{}{}
+				}
+			}
+			return nil
+		},
+		DoVisitMessageFieldNode: func(node *ast.MessageFieldNode) error {
+			// check for enum value fields
+			switch val := node.Val.(type) {
+			case ast.IdentValueNode:
+				if id := val.AsIdentifier(); id == "true" || id == "false" {
+					s.mktokens(node.Val, append(tracker.Path(), node.Val), semanticTypeKeyword, 0)
+				} else {
+					s.mktokens(node.Val, append(tracker.Path(), node.Val), semanticTypeVariable, semanticModifierReadonly)
 				}
 			}
 			return nil
@@ -474,23 +556,16 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			return nil
 		},
 		DoVisitTerminalNode: func(node ast.TerminalNode) error {
-			// handle bool ident nodes here, since this is the lowest precedence visitor.
-			// DoVisitIdentNode matches too many things we have specific visitors for,
-			// and bool values aren't their own node type
-			if ident, ok := node.(*ast.IdentNode); ok {
-				if ident.Val == "true" || ident.Val == "false" {
-					s.mktokens(ident, append(tracker.Path(), ident), semanticTypeKeyword, 0)
-				}
-			}
 			s.mkcomments(node)
 			return nil
 		},
 	}, walkOptions...)
 }
 
-func (s *semanticItems) inspectCelExpr(messageLit *ast.MessageLiteralNode) []*ast.StringLiteralNode {
+func (s *semanticItems) inspectCelExpr(messageLit *ast.MessageLiteralNode) ([]*ast.StringLiteralNode, []ProtoDiagnostic) {
 	for _, elem := range messageLit.Elements {
 		if elem.Name.Name.AsIdentifier() == "expression" {
+			diagnostics := []ProtoDiagnostic{}
 			stringNodes := []*ast.StringLiteralNode{}
 			var celExpr string
 			switch val := elem.Val.(type) {
@@ -512,7 +587,17 @@ func (s *semanticItems) inspectCelExpr(messageLit *ast.MessageLiteralNode) []*as
 			celExpr = strings.ReplaceAll(celExpr, `\`, `\\`)
 			parsed, issues := celEnv.Parse(celExpr)
 			if issues != nil && issues.Err() != nil {
-				return nil
+				slog.Warn("error parsing CEL expression",
+					"location", s.parseRes.AST().NodeInfo(stringNodes[0]).String(),
+				)
+				fmt.Println(issues.Err())
+				// TODO
+				// diagnostics = append(diagnostics, ProtoDiagnostic{
+				// 	Pos:      s.parseRes.AST().NodeInfo(stringNodes[0]),
+				// 	Severity: protocol.SeverityWarning,
+				// 	Error:    issues.Err(),
+				// })
+				continue
 			}
 			ast := getAst(parsed)
 			sourceInfo := ast.SourceInfo()
@@ -558,10 +643,10 @@ func (s *semanticItems) inspectCelExpr(messageLit *ast.MessageLiteralNode) []*as
 				}
 			}))
 
-			return stringNodes
+			return stringNodes, diagnostics
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // there is no method to get the underlying ast i guess?? lol
@@ -573,13 +658,6 @@ func getAst(parsed *cel.Ast) *celast.AST {
 }
 
 func (e *semanticItems) Data() []uint32 {
-	// binary operators, at least, will be out of order
-	sort.Slice(e.items, func(i, j int) bool {
-		if e.items[i].line != e.items[j].line {
-			return e.items[i].line < e.items[j].line
-		}
-		return e.items[i].start < e.items[j].start
-	})
 	// each semantic token needs five values
 	// (see Integer Encoding for Tokens in the LSP spec)
 	x := make([]uint32, 5*len(e.items))

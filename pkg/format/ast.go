@@ -106,7 +106,7 @@ func (v *dumpVisitor) VisitFieldReferenceNode(node *ast.FieldReferenceNode) erro
 }
 
 func (v *dumpVisitor) VisitFileNode(node *ast.FileNode) error {
-	v.buf.WriteString(fmt.Sprintf("(syntax=%s) (#decls=%d)\n", maybe(node.Syntax).Syntax.Value(), len(node.Decls)))
+	v.buf.WriteString(fmt.Sprintf("(syntax=%s) (#decls=%d)\n", maybe(node.Syntax).Syntax, len(node.Decls)))
 	return nil
 }
 

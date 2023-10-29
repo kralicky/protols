@@ -396,6 +396,12 @@ func (r *Resolver) checkGlobalCache(path string) (protocompile.SearchResult, err
 		Path:     path,
 		Fragment: r.folder.Name,
 	}
+	if src, ok := r.syntheticFiles[span.URI(syntheticURI.String())]; ok {
+		return protocompile.SearchResult{
+			ResolvedPath: protocompile.ResolvedPath(path),
+			Source:       strings.NewReader(src),
+		}, nil
+	}
 	uri := span.URI(syntheticURI.String())
 	r.filePathsByURI[uri] = path
 	r.fileURIsByPath[path] = uri

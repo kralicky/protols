@@ -405,8 +405,14 @@ func (f *formatter) writeImport(importNode *ast.ImportNode, forceCompact bool) {
 	f.writeLineEnd(importNode.Semicolon)
 }
 
+type fileOptionNodesGroup []*ast.OptionNode
+
+func (g fileOptionNodesGroup) GetElements() []*ast.OptionNode {
+	return g
+}
+
 func (f *formatter) writeFileOptions(optionNodes []*ast.OptionNode) {
-	columnFormatElements(f, optionNodes)
+	columnFormatElements(f, fileOptionNodesGroup(optionNodes))
 }
 
 // writeFileOption writes a file option. This function is slightly
@@ -559,7 +565,7 @@ func (f *formatter) writeMessage(messageNode *ast.MessageNode) {
 	var elementWriterFunc func()
 	if len(messageNode.Decls) != 0 {
 		elementWriterFunc = func() {
-			columnFormatElements(f, messageNode.Decls)
+			columnFormatElements(f, messageNode)
 		}
 	}
 	f.writeStart(messageNode.Keyword)
@@ -581,7 +587,12 @@ func groupableNodeType(t ast.Node) bool {
 	return false
 }
 
-func columnFormatElements[T ast.Node](f *formatter, elems []T) {
+type elementsContainer[T ast.Node] interface {
+	GetElements() []T
+}
+
+func columnFormatElements[T ast.Node, C elementsContainer[T]](f *formatter, ctr C) {
+	elems := ctr.GetElements()
 	if len(elems) < 2 {
 		for _, decl := range elems {
 			f.writeNode(decl)
@@ -671,15 +682,22 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 		lineEnd           []byte
 	}
 
-	for _, groupElem := range groups {
-		if len(groupElem) == 1 {
-			f.writeNode(groupElem[0])
+	groupStartIndexes := make([]int, len(groups))
+	for i := range groups {
+		if i == 0 {
+			groupStartIndexes[i] = 0
 			continue
 		}
+		groupStartIndexes[i] = groupStartIndexes[i-1] + len(groups[i-1])
+	}
+GROUPS:
+	for groupIdx, groupElem := range groups {
 		bufferedFields := []segmentedField{}
 		colBuf := new(bytes.Buffer)
 		fclone := f.saveState(colBuf)
-		for _, elem := range groupElem {
+		startIndex := groupStartIndexes[groupIdx]
+		for i, elem := range groupElem {
+			elemIdx := startIndex + i
 			field := segmentedField{}
 			nodeWriter := func(n ast.Node) {
 				field.contextBytesStart, _ = io.ReadAll(colBuf)
@@ -760,6 +778,10 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 				if elem.Options != nil {
 					fclone.writeNode(elem.Options)
 				}
+				if elem.Semicolon.Rune != ';' {
+					// fix extended syntax
+					elem.Semicolon.Rune = ';'
+				}
 				fclone.writeLineEnd(elem.Semicolon)
 				// flush the buffer to save the options and semicolon
 				field.lineEnd, _ = io.ReadAll(colBuf)
@@ -781,13 +803,25 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 				// option java_outer_classname = "...";
 				// option java_package         = "...";
 
+				// also handle the following:
+				// optional int foo = 1 [
+				//   (testing) = 1,
+				//   (test)    = 2
+				// ]
+
 				// Write the 'option' keyword
-				fclone.writeStartMaybeCompact(elem.Keyword, false, nodeWriter)
-				field.typeName, _ = io.ReadAll(colBuf)
+				if elem.Keyword != nil {
+					fclone.writeStartMaybeCompact(elem.Keyword, false, nodeWriter)
+					field.typeName, _ = io.ReadAll(colBuf)
+				}
 
 				// write the option name
 				if elem.Name != nil {
-					fclone.writeNode(elem.Name)
+					if elem.Keyword == nil {
+						fclone.writeStartMaybeCompact(elem.Name, false, nodeWriter)
+					} else {
+						fclone.writeNode(elem.Name)
+					}
 					field.fieldName, _ = io.ReadAll(colBuf)
 				}
 
@@ -804,13 +838,28 @@ func columnFormatElements[T ast.Node](f *formatter, elems []T) {
 					fclone.writeLineEnd(elem.Semicolon)
 					field.lineEnd, _ = io.ReadAll(colBuf)
 				} else {
-					fclone.writeInline(elem.Val)
-					fclone.writeLineEnd(elem.Semicolon)
+					if f.inCompactOptions {
+						compactOptionsNode := any(ctr).(*ast.CompactOptionsNode)
+						if elemIdx == len(elems)-1 {
+							fclone.writeLineEnd(elem.Val)
+						} else {
+							fclone.writeNode(elem.Val)
+							fclone.writeLineEnd(compactOptionsNode.Commas[elemIdx])
+						}
+					} else {
+						fclone.writeNode(elem.Val)
+						fclone.writeLineEnd(elem.Semicolon)
+					}
 					field.lineEnd, _ = io.ReadAll(colBuf)
 				}
-			case *ast.ReservedNode:
-
 			default:
+				if len(groupElem) == 1 {
+					// still need to handle the node-specific formatting logic above,
+					// since there could be some non-groupable nodes mixed in, each
+					// of which will be in its own group.
+					f.writeNode(elem)
+					continue GROUPS
+				}
 				panic(fmt.Sprintf("column formatting not implemented for element type %T", elem))
 			}
 			bufferedFields = append(bufferedFields, field)
@@ -1015,7 +1064,7 @@ func (f *formatter) writeMessageLiteralElements(messageLiteralNode *ast.MessageL
 	// 	}
 	// }
 	if canColumnFormat {
-		columnFormatElements(f, messageLiteralNode.Elements)
+		columnFormatElements(f, messageLiteralNode)
 		return
 	}
 	for i := 0; i < len(messageLiteralNode.Elements); i++ {
@@ -1100,7 +1149,7 @@ func (f *formatter) writeEnum(enumNode *ast.EnumNode) {
 	var elementWriterFunc func()
 	if len(enumNode.Decls) > 0 {
 		elementWriterFunc = func() {
-			columnFormatElements(f, enumNode.Decls)
+			columnFormatElements(f, enumNode)
 		}
 	}
 	f.writeStart(enumNode.Keyword)
@@ -1229,9 +1278,7 @@ func (f *formatter) writeExtend(extendNode *ast.ExtendNode) {
 	var elementWriterFunc func()
 	if len(extendNode.Decls) > 0 {
 		elementWriterFunc = func() {
-			for _, decl := range extendNode.Decls {
-				f.writeNode(decl)
-			}
+			columnFormatElements(f, extendNode)
 		}
 	}
 	f.writeStart(extendNode.Keyword)
@@ -1340,7 +1387,7 @@ func (f *formatter) writeOneOf(oneOfNode *ast.OneofNode) {
 	var elementWriterFunc func()
 	if len(oneOfNode.Decls) > 0 {
 		elementWriterFunc = func() {
-			columnFormatElements(f, oneOfNode.Decls)
+			columnFormatElements(f, oneOfNode)
 		}
 	}
 	f.writeStart(oneOfNode.Keyword)
@@ -1558,15 +1605,16 @@ func (f *formatter) writeCompactOptions(compactOptionsNode *ast.CompactOptionsNo
 	var elementWriterFunc func()
 	if len(compactOptionsNode.Options) > 0 {
 		elementWriterFunc = func() {
-			for i, opt := range compactOptionsNode.Options {
-				if i == len(compactOptionsNode.Options)-1 {
-					// The last element won't have a trailing comma.
-					f.writeLastCompactOption(opt)
-					return
-				}
-				f.writeNode(opt)
-				f.writeLineEnd(compactOptionsNode.Commas[i])
-			}
+			columnFormatElements(f, compactOptionsNode)
+			// for i, opt := range compactOptionsNode.Options {
+			// 	if i == len(compactOptionsNode.Options)-1 {
+			// 		// The last element won't have a trailing comma.
+			// 		f.writeLastCompactOption(opt)
+			// 		return
+			// 	}
+			// 	f.writeNode(opt)
+			// 	f.writeLineEnd(compactOptionsNode.Commas[i])
+			// }
 		}
 	}
 	f.writeCompositeValueBody(

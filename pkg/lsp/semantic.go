@@ -2,9 +2,11 @@ package lsp
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"unsafe"
@@ -18,8 +20,6 @@ import (
 	celcommon "github.com/google/cel-go/common"
 	celast "github.com/google/cel-go/common/ast"
 	"github.com/google/cel-go/common/operators"
-	"golang.org/x/exp/slices"
-	"golang.org/x/exp/slog"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )

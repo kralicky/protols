@@ -3,10 +3,9 @@ package commands
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
-
-	"log/slog"
 
 	"github.com/kralicky/protols/pkg/lsp"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"

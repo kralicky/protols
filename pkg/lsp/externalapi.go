@@ -1,8 +1,9 @@
 package lsp
 
 import (
+	"maps"
+
 	"github.com/bufbuild/protocompile/linker"
-	"golang.org/x/exp/maps"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/span"
 )

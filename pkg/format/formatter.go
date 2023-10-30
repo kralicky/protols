@@ -593,12 +593,6 @@ type elementsContainer[T ast.Node] interface {
 
 func columnFormatElements[T ast.Node, C elementsContainer[T]](f *formatter, ctr C) {
 	elems := ctr.GetElements()
-	if len(elems) < 2 {
-		for _, decl := range elems {
-			f.writeNode(decl)
-		}
-		return
-	}
 	groups := [][]T{}
 	currentGroup := []T{}
 	startNewGroup := func() {

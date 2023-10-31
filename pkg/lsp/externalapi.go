@@ -47,8 +47,18 @@ func (c *Cache) XGetMapper(uri span.URI) (*protocol.Mapper, error) {
 	return c.GetMapper(uri)
 }
 
-func (c *Cache) XGetURIPathMappings() (map[string]span.URI, map[span.URI]string) {
+type PathMappings struct {
+	FileURIsByPath                  map[string]span.URI
+	FilePathsByURI                  map[span.URI]string
+	SyntheticFileOriginalNamesByURI map[span.URI]string
+}
+
+func (c *Cache) XGetURIPathMappings() PathMappings {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
-	return maps.Clone(c.resolver.fileURIsByPath), maps.Clone(c.resolver.filePathsByURI)
+	return PathMappings{
+		FileURIsByPath:                  maps.Clone(c.resolver.fileURIsByPath),
+		FilePathsByURI:                  maps.Clone(c.resolver.filePathsByURI),
+		SyntheticFileOriginalNamesByURI: maps.Clone(c.resolver.syntheticFileOriginalNames),
+	}
 }

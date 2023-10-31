@@ -13,12 +13,54 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
+type RenameStrategy int
+
+const (
+	KeepLSPResolvedNames RenameStrategy = iota
+
+	// If set, this will restore the original names of the files that were
+	// synthesized from external (previously generated) Go module sources.
+	// This can be necessary if those dependencies are intended to be linked
+	// into a binary alongside newly generated code containing references to
+	// the LSP-resolved names for those files. Because the linked dependencies
+	// will register their own file descriptors to the global file descriptor
+	// cache using the original names at runtime, any workspace-local descriptor
+	// protos must also refer to those dependencies with the expected runtime
+	// names during code generation.
+	// This only modifies the contents of AllDescriptorProtos and
+	// WorkspaceLocalDescriptorProtos.
+	RestoreExternalGoModuleDescriptorNames
+)
+
+type DriverOptions struct {
+	renameStrategy RenameStrategy
+}
+
+type DriverOption func(*DriverOptions)
+
+func (o *DriverOptions) apply(opts ...DriverOption) {
+	for _, op := range opts {
+		op(o)
+	}
+}
+
+func WithRenameStrategy(renameStrategy RenameStrategy) DriverOption {
+	return func(o *DriverOptions) {
+		o.renameStrategy = renameStrategy
+	}
+}
+
 type Driver struct {
+	DriverOptions
 	workspace protocol.WorkspaceFolder
 }
 
-func NewDriver(workspaceFolder string) *Driver {
+func NewDriver(workspaceFolder string, opts ...DriverOption) *Driver {
+	options := DriverOptions{}
+	options.apply(opts...)
+
 	return &Driver{
+		DriverOptions: options,
 		workspace: protocol.WorkspaceFolder{
 			URI: string(span.URIFromPath(workspaceFolder)),
 		},
@@ -133,15 +175,22 @@ func (d *Driver) Compile(protos []string) (*Results, error) {
 	}
 	if !results.Error {
 		unsorted := cache.XGetLinkerResults()
-		results.FileURIsByPath, results.FilePathsByURI = cache.XGetURIPathMappings()
+		pathMappings := cache.XGetURIPathMappings()
+		results.FileURIsByPath = pathMappings.FileURIsByPath
+		results.FilePathsByURI = pathMappings.FilePathsByURI
 		results.AllDescriptors, results.WorkspaceLocalDescriptors = d.sortAndFilterResults(unsorted, results.FileURIsByPath)
 		results.AllDescriptorProtos = make([]*descriptorpb.FileDescriptorProto, len(results.AllDescriptors))
 		results.WorkspaceLocalDescriptorProtos = make([]*descriptorpb.FileDescriptorProto, len(results.WorkspaceLocalDescriptors))
+
 		for i, desc := range results.AllDescriptors {
 			results.AllDescriptorProtos[i] = desc.(linker.Result).FileDescriptorProto()
 		}
 		for i, desc := range results.WorkspaceLocalDescriptors {
 			results.WorkspaceLocalDescriptorProtos[i] = desc.(linker.Result).FileDescriptorProto()
+		}
+		switch d.renameStrategy {
+		case RestoreExternalGoModuleDescriptorNames:
+			restoreDescriptorNames(&results, pathMappings)
 		}
 	}
 	return &results, nil
@@ -186,5 +235,47 @@ func topologicalSort[F linker.File, S ~[]F](results S, sorted *[]protoreflect.Fi
 		}
 		topologicalSort(deps, sorted, seen)
 		*sorted = append(*sorted, res)
+	}
+}
+
+func restoreDescriptorNames(results *Results, pathMapping lsp.PathMappings) {
+	for _, fpb := range results.AllDescriptorProtos {
+		uri, ok := pathMapping.FileURIsByPath[fpb.GetName()]
+		if !ok {
+			continue
+		}
+		if orig, hasOriginalName := pathMapping.SyntheticFileOriginalNamesByURI[uri]; hasOriginalName {
+			if orig == fpb.GetName() {
+				continue
+			}
+			*fpb.Name = orig
+		}
+		for i, dep := range fpb.Dependency {
+			uri, ok := pathMapping.FileURIsByPath[dep]
+			if !ok {
+				continue
+			}
+			if orig, hasOriginalName := pathMapping.SyntheticFileOriginalNamesByURI[uri]; hasOriginalName {
+				if orig == dep {
+					continue
+				}
+				fpb.Dependency[i] = orig
+			}
+		}
+	}
+
+	for _, fpb := range results.WorkspaceLocalDescriptorProtos {
+		for i, dep := range fpb.Dependency {
+			uri, ok := pathMapping.FileURIsByPath[dep]
+			if !ok {
+				continue
+			}
+			if orig, hasOriginalName := pathMapping.SyntheticFileOriginalNamesByURI[uri]; hasOriginalName {
+				if orig == dep {
+					continue
+				}
+				fpb.Dependency[i] = orig
+			}
+		}
 	}
 }

@@ -39,24 +39,26 @@ const (
 
 type Resolver struct {
 	*cache.OverlayFS
-	folder             protocol.WorkspaceFolder
-	synthesizer        *ProtoSourceSynthesizer
-	pathsMu            sync.RWMutex
-	filePathsByURI     map[span.URI]string // URI -> canonical file path (go package + file name)
-	fileURIsByPath     map[string]span.URI // canonical file path (go package + file name) -> URI
-	importSourcesByURI map[span.URI]ImportSource
-	syntheticFiles     map[span.URI]string
+	folder                     protocol.WorkspaceFolder
+	synthesizer                *ProtoSourceSynthesizer
+	pathsMu                    sync.RWMutex
+	filePathsByURI             map[span.URI]string // URI -> canonical file path (go package + file name)
+	fileURIsByPath             map[string]span.URI // canonical file path (go package + file name) -> URI
+	importSourcesByURI         map[span.URI]ImportSource
+	syntheticFileOriginalNames map[span.URI]string
+	syntheticFiles             map[span.URI]string
 }
 
 func NewResolver(folder protocol.WorkspaceFolder) *Resolver {
 	return &Resolver{
-		folder:             folder,
-		OverlayFS:          cache.NewOverlayFS(cache.NewMemoizedFS()),
-		synthesizer:        NewProtoSourceSynthesizer(span.URIFromURI(folder.URI).Filename()),
-		filePathsByURI:     make(map[span.URI]string),
-		fileURIsByPath:     make(map[string]span.URI),
-		syntheticFiles:     make(map[span.URI]string),
-		importSourcesByURI: map[span.URI]ImportSource{},
+		folder:                     folder,
+		OverlayFS:                  cache.NewOverlayFS(cache.NewMemoizedFS()),
+		synthesizer:                NewProtoSourceSynthesizer(span.URIFromURI(folder.URI).Filename()),
+		filePathsByURI:             make(map[span.URI]string),
+		fileURIsByPath:             make(map[string]span.URI),
+		syntheticFileOriginalNames: make(map[span.URI]string),
+		syntheticFiles:             make(map[span.URI]string),
+		importSourcesByURI:         map[span.URI]ImportSource{},
 	}
 }
 
@@ -378,6 +380,7 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 		r.filePathsByURI[uri] = path
 		r.fileURIsByPath[path] = uri
 		r.importSourcesByURI[uri] = SourceSynthetic
+		r.syntheticFileOriginalNames[uri] = *synthesized.Name
 		return protocompile.SearchResult{
 			ResolvedPath: protocompile.ResolvedPath(path),
 			Proto:        synthesized,

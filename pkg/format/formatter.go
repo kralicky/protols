@@ -579,12 +579,21 @@ func (f *formatter) writeMessage(messageNode *ast.MessageNode) {
 	)
 }
 
-func groupableNodeType(t ast.Node) bool {
+type elemKind int
+
+const (
+	nonOptionKind elemKind = iota + 1
+	optionKind
+)
+
+func groupableNodeType(t ast.Node) (elemKind, bool) {
 	switch t.(type) {
-	case *ast.FieldNode, *ast.MapFieldNode, *ast.EnumValueNode, *ast.MessageFieldNode, *ast.OptionNode:
-		return true
+	case *ast.FieldNode, *ast.MapFieldNode, *ast.EnumValueNode, *ast.MessageFieldNode:
+		return nonOptionKind, true
+	case *ast.OptionNode:
+		return optionKind, true
 	}
-	return false
+	return 0, false
 }
 
 type elementsContainer[T ast.Node] interface {
@@ -601,9 +610,21 @@ func columnFormatElements[T ast.Node, C elementsContainer[T]](f *formatter, ctr 
 		}
 		currentGroup = []T{}
 	}
+	var kind elemKind
+	var isGroupable bool
 	for i := 0; i < len(elems); i++ {
 		e := elems[i]
-		if groupableNodeType(e) {
+		if i > 0 {
+			k, g := groupableNodeType(e)
+			if k != kind || g != isGroupable {
+				startNewGroup()
+			}
+			kind = k
+			isGroupable = g
+		} else {
+			kind, isGroupable = groupableNodeType(e)
+		}
+		if isGroupable {
 			fieldInfo := f.fileNode.NodeInfo(e)
 			if len(currentGroup) == 0 {
 				currentGroup = append(currentGroup, e)

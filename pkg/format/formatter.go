@@ -674,7 +674,7 @@ func columnFormatElements[T ast.Node, C elementsContainer[T]](f *formatter, ctr 
 				}
 			}
 			prevFieldInfo := f.fileNode.NodeInfo(currentGroup[len(currentGroup)-1])
-			if fieldInfo.Start().Line == prevFieldInfo.Start().Line+1 {
+			if line, prevLine := fieldInfo.Start().Line, prevFieldInfo.Start().Line; line == prevLine || line == prevLine+1 {
 				currentGroup = append(currentGroup, e)
 				continue
 			} else {
@@ -801,8 +801,27 @@ GROUPS:
 				// flush the buffer to save the options and semicolon
 				field.lineEnd, _ = io.ReadAll(colBuf)
 			case *ast.MessageFieldNode:
-				fclone.writeMessageFieldPrefix(elem, nodeWriter)
-				field.typeName, _ = io.ReadAll(colBuf) // these column names don't exactly match up with the others
+				if elem.Name.Open != nil {
+					fclone.writeStart(elem.Name.Open, nodeWriter)
+					if elem.Name.URLPrefix != nil {
+						fclone.writeInline(elem.Name.URLPrefix)
+					}
+					if elem.Name.Slash != nil {
+						fclone.writeInline(elem.Name.Slash)
+					}
+					fclone.writeInline(elem.Name.Name)
+				} else {
+					fclone.writeStart(elem.Name.Name, nodeWriter)
+				}
+				if elem.Name.Close != nil {
+					fclone.writeInline(elem.Name.Close)
+				}
+				if elem.Sep != nil {
+					fclone.writeInline(elem.Sep)
+				}
+				// flush the buffer to save the field name
+				field.fieldName, _ = io.ReadAll(colBuf)
+
 				fclone.writeLineEnd(elem.Val)
 				field.lineEnd, _ = io.ReadAll(colBuf)
 			case *ast.OptionNode:
@@ -955,6 +974,9 @@ func (f *formatter) writeMessageLiteralForArray(
 	lastElement bool,
 ) {
 	if f.maybeWriteCompactMessageLiteral(messageLiteralNode, true) {
+		if lastElement {
+			f.P("")
+		}
 		return
 	}
 	var elementWriterFunc func()
@@ -979,6 +1001,10 @@ func (f *formatter) writeMessageLiteralForArray(
 func (f *formatter) compactMessageLiteralShouldBeExpanded(messageLiteralNode *ast.MessageLiteralNode) bool {
 	if len(messageLiteralNode.Elements) == 0 {
 		return false
+	}
+	// note: array literals always print multiline at the moment, so this check needs to be here
+	if messageLiteralHasNestedArray(messageLiteralNode) {
+		return true
 	}
 	// if len(messageLiteralNode.Elements) == 0 || len(messageLiteralNode.Elements) > 1 ||
 	// 	f.hasInteriorComments(messageLiteralNode.Children()...) ||
@@ -1038,6 +1064,15 @@ func messageLiteralHasNestedMessageOrArray(messageLiteralNode *ast.MessageLitera
 	for _, elem := range messageLiteralNode.Elements {
 		switch elem.Val.(type) {
 		case *ast.ArrayLiteralNode, *ast.MessageLiteralNode:
+			return true
+		}
+	}
+	return false
+}
+func messageLiteralHasNestedArray(messageLiteralNode *ast.MessageLiteralNode) bool {
+	for _, elem := range messageLiteralNode.Elements {
+		switch elem.Val.(type) {
+		case *ast.ArrayLiteralNode:
 			return true
 		}
 	}
@@ -1583,7 +1618,7 @@ func (f *formatter) writeCompactOptions(compactOptionsNode *ast.CompactOptionsNo
 	defer func() {
 		f.inCompactOptions = false
 	}()
-	if !f.compactOptionsShouldBeExpanded(compactOptionsNode) {
+	if !f.compactOptionsShouldBeExpanded(compactOptionsNode) && !f.hasInteriorComments(compactOptionsNode.Children()...) {
 		// If there's only a single compact scalar option without comments, we can write it
 		// in-line. For example:
 		//

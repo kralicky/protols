@@ -9,13 +9,18 @@
 		"url": "https://github.com/kralicky/protols"
 	},
 	"publisher": "kralicky",
-	"categories": [],
+	"categories": [
+		"Programming Languages"
+	],
 	"keywords": [
 		"protobuf",
-		"language-server"
+		"protocol buffers",
+		"proto",
+		"language-server",
+		"lsp"
 	],
 	"engines": {
-		"vscode": "^1.75.0"
+		"vscode": "^1.84.0"
 	},
 	"activationEvents": [
 		"workspaceContains:**/*.proto"
@@ -28,6 +33,10 @@
 				"id": "protobuf",
 				"extensions": [
 					".proto"
+				],
+				"aliases": [
+					"Protocol Buffers",
+					"proto"
 				]
 			}
 		],

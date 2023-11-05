@@ -3,6 +3,7 @@ package format
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/bufbuild/protocompile/ast"
@@ -14,11 +15,16 @@ func DumpAST(node ast.Node, parseRes parser.Result) string {
 	buf := new(bytes.Buffer)
 	v := &dumpVisitor{buf: buf}
 	indentLevel := -1
+	fileNode := parseRes.AST()
+	lineCount := fileNode.NodeInfo(fileNode).End().Line
+	maxLeftPad := int(math.Log10(float64(lineCount)) + 1)
 	ast.Walk(node, v,
 		ast.WithBefore(func(n ast.Node) error {
 			indentLevel++
-			buf.WriteString(strings.Repeat("  ", indentLevel))
 			desc := parseRes.Descriptor(n)
+			line := fileNode.NodeInfo(n).Start().Line
+			fmt.Fprintf(buf, "%*d ", maxLeftPad, line)
+			buf.WriteString(strings.Repeat("  ", indentLevel))
 			if desc != nil {
 				buf.WriteString(strings.Replace(fmt.Sprintf("[%T]{%T} ", n, desc), "*ast.", "", 1))
 			} else {

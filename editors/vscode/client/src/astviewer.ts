@@ -47,6 +47,7 @@ export class ASTViewer implements vscode.TextDocumentContentProvider {
     await vscode.window.showTextDocument(virtualDoc, {
       preview: false,
       viewColumn: vscode.ViewColumn.Beside,
+      preserveFocus: true,
     })
   }
 

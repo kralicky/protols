@@ -39,6 +39,7 @@ Features in progress:
   - [ ] Rename symbols
   - [x] Multi-workspace support
 - [ ] Workspace symbol index/search
+  - [ ] Editor Breadcrumbs
 - [ ] Code completion:
   - [ ] (partial) Message and enum types
   - [x] Automatic imports

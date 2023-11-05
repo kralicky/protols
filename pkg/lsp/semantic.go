@@ -3,7 +3,6 @@ package lsp
 import (
 	"fmt"
 	"log/slog"
-	"math"
 	"os"
 	"reflect"
 	"slices"
@@ -235,41 +234,6 @@ func computeSemanticTokens(cache *Cache, e *semanticItems, walkOptions ...ast.Wa
 		}
 	}
 
-}
-
-func findNarrowestSemanticToken(parseRes parser.Result, tokens []semanticItem, pos protocol.Position) (narrowest semanticItem, found bool) {
-	// find the narrowest token that contains the position and also has a node
-	// associated with it. The set of tokens will contain all the tokens that
-	// contain the position, scoped to the narrowest top-level declaration (message, service, etc.)
-	narrowestLen := uint32(math.MaxUint32)
-
-	for _, token := range tokens {
-		if token.lang != tokenLanguageProto {
-			// ignore non-proto tokens
-			continue
-		}
-		if pos.Line != token.line {
-			if token.line > pos.Line {
-				// Stop searching once we've passed the line
-				break
-			}
-			continue // Skip tokens not on the same line
-		}
-		if pos.Character < token.start || pos.Character > token.start+token.len {
-			continue // Skip tokens that don't contain the position
-		}
-		if token.len < narrowestLen {
-			// Found a narrower token
-			narrowest, narrowestLen = token, token.len
-			found = true
-
-			if _, isTerminal := token.node.(ast.TerminalNode); isTerminal {
-				break
-			}
-		}
-	}
-
-	return
 }
 
 func (s *semanticItems) mktokens(node ast.Node, path []ast.Node, tt tokenType, mods tokenModifier) {

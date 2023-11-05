@@ -111,7 +111,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 				Value: protocol.DocumentFormattingOptions{},
 			},
 			CompletionProvider: &protocol.CompletionOptions{
-				TriggerCharacters: []string{"."},
+				TriggerCharacters: []string{".", "("},
 			},
 			CodeActionProvider: &protocol.CodeActionOptions{
 				CodeActionKinds: []protocol.CodeActionKind{

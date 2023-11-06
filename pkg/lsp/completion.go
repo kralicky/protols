@@ -60,13 +60,13 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		searchTarget = currentParseRes
 	}
 	tokenAtOffset := searchTarget.AST().TokenAtOffset(posOffset)
-	completions := []protocol.CompletionItem{}
 
-	// Option name completion after "option "
+	// complete within options
 	indexOfOptionKeyword := strings.LastIndex(textPrecedingCursor, "option ") // note the space; don't match 'optional'
 	if indexOfOptionKeyword != -1 {
-		// if the cursor is before the next semicolon, then we're in the middle of an option name
-		if !strings.Contains(textPrecedingCursor[indexOfOptionKeyword:], ";") {
+		// if the cursor is before the next =, then we're in the middle of an option name
+		if !strings.Contains(textPrecedingCursor[indexOfOptionKeyword:], "=") {
+			completions := []protocol.CompletionItem{}
 			// check if we have a partial option name on the line
 			partialName := strings.TrimSpace(textPrecedingCursor[indexOfOptionKeyword+len("option "):])
 			// find the current scope, then complete option names that would be valid here
@@ -74,32 +74,28 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				// if we have a previous link result, use its option index
 				path, found := findNarrowestEnclosingScope(currentParseRes, tokenAtOffset, params.Position)
 				if found {
-					c, err := completeOptionNames(path, partialName, maybeCurrentLinkRes)
+					c, err := completeOptionNames(path, partialName, maybeCurrentLinkRes, params.Position)
 					if err != nil {
 						return nil, err
 					}
 					completions = append(completions, c...)
 				}
 			}
+			return &protocol.CompletionList{
+				Items: completions,
+			}, nil
 		}
 	}
 
-	// thisPackage := searchTarget.FileDescriptorProto().GetPackage()
-
-	enc := semanticItems{
-		options: semanticItemsOptions{
-			skipComments: false,
-		},
-		parseRes: searchTarget,
-	}
-	computeSemanticTokens(c, &enc, ast.WithIntersection(tokenAtOffset))
-
+	// complete within message literals
 	path, found := findNarrowestEnclosingScope(searchTarget, tokenAtOffset, params.Position)
 	if found && maybeCurrentLinkRes != nil {
 		desc, _, err := deepPathSearch(path, maybeCurrentLinkRes)
 		if err != nil {
 			return nil, err
 		}
+		completions := []protocol.CompletionItem{}
+
 		switch desc := desc.(type) {
 		case protoreflect.MessageDescriptor:
 			// complete field names
@@ -124,13 +120,16 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 					}
 					completions = append(completions, fieldCompletion(fld, insertPos))
 				}
+			case *ast.MessageNode:
+				completions = append(completions, messageKeywordCompletions(searchTarget)...)
 			}
 		}
+		return &protocol.CompletionList{
+			Items: completions,
+		}, nil
 	}
 
-	return &protocol.CompletionList{
-		Items: completions,
-	}, nil
+	return nil, nil
 }
 
 func editAddImport(parseRes parser.Result, path string) protocol.TextEdit {
@@ -195,7 +194,7 @@ func fieldCompletion(fld protoreflect.FieldDescriptor, rng protocol.Range) proto
 		compl.Detail = fmt.Sprintf("repeated %s", compl.Detail)
 		compl.TextEdit = &protocol.TextEdit{
 			Range:   rng,
-			NewText: fmt.Sprintf("%s: [\n  ${0}\n]", name),
+			NewText: fmt.Sprintf("%s: [${0}]", name),
 		}
 		textFmt := protocol.SnippetTextFormat
 		compl.InsertTextFormat = &textFmt
@@ -246,17 +245,17 @@ var fieldDescType = reflect.TypeOf((*protoreflect.FieldDescriptor)(nil)).Elem()
 var adjustIndentationMode = protocol.AdjustIndentation
 var snippetMode = protocol.SnippetTextFormat
 
-func completeOptionNames(path []ast.Node, maybePartialName string, linkRes linker.Result) ([]protocol.CompletionItem, error) {
+func completeOptionNames(path []ast.Node, maybePartialName string, linkRes linker.Result, pos protocol.Position) ([]protocol.CompletionItem, error) {
 	switch path[len(path)-1].(type) {
 	case *ast.MessageNode:
-		return completeMessageOptionNames(path, maybePartialName, linkRes)
+		return completeMessageOptionNames(path, maybePartialName, linkRes, pos)
 	case *ast.FieldNode:
 		// return completeFieldOptionNames(path, maybePartialName, linkRes)
 	}
 	return nil, nil
 }
 
-func completeMessageOptionNames(path []ast.Node, maybePartialName string, linkRes linker.Result) ([]protocol.CompletionItem, error) {
+func completeMessageOptionNames(path []ast.Node, maybePartialName string, linkRes linker.Result, pos protocol.Position) ([]protocol.CompletionItem, error) {
 	parts := strings.Split(maybePartialName, ".")
 	if len(parts) == 1 && !strings.HasSuffix(maybePartialName, ")") {
 		wantExtension := strings.HasPrefix(maybePartialName, "(")
@@ -277,6 +276,7 @@ func completeMessageOptionNames(path []ast.Node, maybePartialName string, linkRe
 		if err != nil {
 			return nil, err
 		}
+
 		items := []protocol.CompletionItem{}
 		for _, candidate := range candidates {
 			fd := candidate.(protoreflect.FieldDescriptor)
@@ -288,7 +288,9 @@ func completeMessageOptionNames(path []ast.Node, maybePartialName string, linkRe
 					items = append(items, newMessageFieldCompletionItem(fd))
 				}
 			default:
-				if fd.IsExtension() && wantExtension {
+				if fd.Cardinality() == protoreflect.Repeated {
+					items = append(items, newNonMessageRepeatedOptionCompletionItem(fd, maybePartialName, pos))
+				} else if fd.IsExtension() && wantExtension {
 					items = append(items, newExtensionNonMessageFieldCompletionItem(fd, false))
 				} else if !fd.IsExtension() && !wantExtension {
 					items = append(items, newNonMessageFieldCompletionItem(fd))
@@ -382,7 +384,11 @@ func completeMessageOptionNames(path []ast.Node, maybePartialName string, linkRe
 					}
 				default:
 					if strings.Contains(string(fld.Name()), lastPart) {
-						items = append(items, newNonMessageFieldCompletionItem(fld))
+						if fld.Cardinality() == protoreflect.Repeated {
+							items = append(items, newNonMessageRepeatedOptionCompletionItem(fld, maybePartialName, pos))
+						} else {
+							items = append(items, newNonMessageFieldCompletionItem(fld))
+						}
 					}
 				}
 			}
@@ -421,7 +427,7 @@ func newExtensionFieldCompletionItem(fld protoreflect.FieldDescriptor, needsLead
 	}
 	return protocol.CompletionItem{
 		Label:            string(fld.Name()),
-		Kind:             protocol.ModuleCompletion,
+		Kind:             protocol.InterfaceCompletion,
 		Detail:           fieldTypeDetail(fld),
 		InsertText:       fmt.Sprintf(fmtStr, fld.Name()),
 		CommitCharacters: []string{"."},
@@ -429,12 +435,47 @@ func newExtensionFieldCompletionItem(fld protoreflect.FieldDescriptor, needsLead
 }
 
 func newNonMessageFieldCompletionItem(fld protoreflect.FieldDescriptor) protocol.CompletionItem {
+
 	return protocol.CompletionItem{
 		Label:            string(fld.Name()),
 		Kind:             protocol.ValueCompletion,
 		Detail:           fieldTypeDetail(fld),
 		InsertTextFormat: &snippetMode,
 		InsertText:       fmt.Sprintf("%s = ${0};", fld.Name()),
+	}
+}
+
+func newNonMessageRepeatedOptionCompletionItem(fld protoreflect.FieldDescriptor, partialName string, pos protocol.Position) protocol.CompletionItem {
+	// If we're completing from a top-level option, e.g. 'option (foo).bar'
+	// where bar is a repeated field, we need to rewrite the expression to
+	// 'option (foo) = {bar: []}'. The syntax 'option (foo).bar = []' is
+	// not valid.
+
+	cursorPos := pos
+	lastIndexDotInPartialName := strings.LastIndexByte(partialName, '.')
+	offset := len(partialName) - lastIndexDotInPartialName
+	startInsertPos := protocol.Position{
+		Line:      cursorPos.Line,
+		Character: cursorPos.Character - uint32(offset),
+	}
+	return protocol.CompletionItem{
+		Label:  string(fld.Name()),
+		Kind:   protocol.ValueCompletion,
+		Detail: fieldTypeDetail(fld),
+		AdditionalTextEdits: []protocol.TextEdit{
+			{
+				Range: protocol.Range{
+					Start: startInsertPos,
+					End: protocol.Position{
+						Line:      cursorPos.Line,
+						Character: cursorPos.Character,
+					},
+				},
+				NewText: " = {",
+			},
+		},
+		InsertText:       fmt.Sprintf("%s: [${0}]};", fld.Name()),
+		InsertTextFormat: &snippetMode,
 	}
 }
 
@@ -452,4 +493,29 @@ func newExtensionNonMessageFieldCompletionItem(fld protoreflect.FieldDescriptor,
 		InsertTextFormat: &snippetMode,
 		InsertText:       fmt.Sprintf(fmtStr, fld.Name()),
 	}
+}
+
+func messageKeywordCompletions(searchTarget parser.Result) []protocol.CompletionItem {
+	// add keyword completions for messages
+	keywords := completeKeywords("option", "optional", "repeated", "enum", "message", "reserved")
+	if searchTarget.AST().Syntax.Syntax.AsString() == "proto2" {
+		keywords = append(keywords, completeKeywords("required", "extend", "group")...)
+	}
+	// score in order
+	for i := range keywords {
+		keywords[i].SortText = fmt.Sprint(-(i + 1))
+	}
+	return keywords
+}
+
+func completeKeywords(keywords ...string) []protocol.CompletionItem {
+	items := []protocol.CompletionItem{}
+	for _, keyword := range keywords {
+		items = append(items, protocol.CompletionItem{
+			Label:      keyword,
+			Kind:       protocol.KeywordCompletion,
+			InsertText: fmt.Sprintf("%s ", keyword),
+		})
+	}
+	return items
 }

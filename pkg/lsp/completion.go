@@ -90,7 +90,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	// complete within message literals
 	path, found := findNarrowestEnclosingScope(searchTarget, tokenAtOffset, params.Position)
 	if found && maybeCurrentLinkRes != nil {
-		desc, _, err := deepPathSearch(path, maybeCurrentLinkRes)
+		desc, _, err := deepPathSearch(path, searchTarget, maybeCurrentLinkRes)
 		if err != nil {
 			return nil, err
 		}

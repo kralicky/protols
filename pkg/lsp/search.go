@@ -24,7 +24,7 @@ import (
 // Traverses the given path backwards to find the closest top-level mapped
 // descriptor, then traverses forwards to find the deeply nested descriptor
 // for the original ast node.
-func deepPathSearch(path []ast.Node, linkRes linker.Result) (protoreflect.Descriptor, protocol.Range, error) {
+func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Result) (protoreflect.Descriptor, protocol.Range, error) {
 	root := linkRes.AST()
 	stack := stack{}
 	// var haveDescriptor protoreflect.Descriptor
@@ -48,7 +48,7 @@ func deepPathSearch(path []ast.Node, linkRes linker.Result) (protoreflect.Descri
 			*ast.StringLiteralNode, *ast.CompoundStringLiteralNode: // TODO: this could change in the future
 			return nil, protocol.Range{}, nil
 		}
-		nodeDescriptor := linkRes.Descriptor(currentNode)
+		nodeDescriptor := parseRes.Descriptor(currentNode)
 		if nodeDescriptor == nil {
 			// this node does not directly map to a descriptor. push it on the stack
 			// and go up one level
@@ -426,6 +426,42 @@ func deepPathSearch(path []ast.Node, linkRes linker.Result) (protoreflect.Descri
 	}
 
 	return stack[0].desc, toRange(root.NodeInfo(stack[0].node)), nil
+}
+
+type stackEntry struct {
+	node ast.Node
+	desc protoreflect.Descriptor
+	prev *stackEntry
+}
+
+func (s *stackEntry) isResolved() bool {
+	return s.desc != nil
+}
+
+func (s *stackEntry) nextResolved() *stackEntry {
+	res := s
+	for {
+		if res == nil {
+			panic("bug: stackEntry.nextResolved() called with no resolved entry")
+		}
+		if res.isResolved() {
+			return res
+		}
+		res = res.prev
+	}
+}
+
+type stack []*stackEntry
+
+func (s *stack) push(node ast.Node, desc protoreflect.Descriptor) {
+	e := &stackEntry{
+		node: node,
+		desc: desc,
+	}
+	if len(*s) > 0 {
+		(*s)[len(*s)-1].prev = e
+	}
+	*s = append(*s, e)
 }
 
 // find the narrowest token that contains the position and also has a node

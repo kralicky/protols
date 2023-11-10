@@ -982,42 +982,6 @@ func (c *Cache) GetSyntheticFileContents(ctx context.Context, uri string) (strin
 	return c.resolver.SyntheticFileContents(span.URIFromURI(uri))
 }
 
-type stackEntry struct {
-	node ast.Node
-	desc protoreflect.Descriptor
-	prev *stackEntry
-}
-
-func (s *stackEntry) isResolved() bool {
-	return s.desc != nil
-}
-
-func (s *stackEntry) nextResolved() *stackEntry {
-	res := s
-	for {
-		if res == nil {
-			panic("bug: stackEntry.nextResolved() called with no resolved entry")
-		}
-		if res.isResolved() {
-			return res
-		}
-		res = res.prev
-	}
-}
-
-type stack []*stackEntry
-
-func (s *stack) push(node ast.Node, desc protoreflect.Descriptor) {
-	e := &stackEntry{
-		node: node,
-		desc: desc,
-	}
-	if len(*s) > 0 {
-		(*s)[len(*s)-1].prev = e
-	}
-	*s = append(*s, e)
-}
-
 func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositionParams) (protoreflect.Descriptor, protocol.Range, error) {
 	parseRes, err := c.FindParseResultByURI(params.TextDocument.URI.SpanURI())
 	if err != nil {
@@ -1054,7 +1018,7 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 		return nil, protocol.Range{}, nil
 	}
 
-	return deepPathSearch(item.path, linkRes)
+	return deepPathSearch(item.path, parseRes, linkRes)
 }
 
 func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([]protocol.Location, error) {

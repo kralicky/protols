@@ -70,6 +70,7 @@ Features in progress:
 4. Install `vsce` if you don't have it: `npm install --global @vscode/vsce`
 5. cd to editors/vscode, then run `vsce package`
 6. Install the vsix plugin: `code --install-extension ./protols-vscode-<version>.vsix`
+   * Note: you may need to change the vscode language association for ".proto" files to `protobuf`, if it is currently set to `proto`.
 
 # Special Thanks
 

@@ -17,7 +17,6 @@ import (
 
 	"github.com/bufbuild/protocompile"
 	"github.com/bufbuild/protocompile/linker"
-	gogo "github.com/gogo/protobuf/proto"
 	"github.com/kralicky/protols/pkg/format"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
@@ -287,6 +286,13 @@ func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportC
 		}
 	}
 
+	if filepath.Base(path) == "gogo.proto" {
+		if result, err := r.checkGoModule("github.com/gogo/protobuf/gogoproto/gogo.proto", whence); err == nil {
+			lg.Debug("resolved to special case (go module: gogo.proto)")
+			return result, nil
+		}
+	}
+
 	lg.Debug("could not resolve path")
 	return protocompile.SearchResult{}, os.ErrNotExist
 }
@@ -294,29 +300,6 @@ func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportC
 func (r *Resolver) checkWellKnownImportPath(path string) (protocompile.SearchResult, error) {
 	if strings.HasPrefix(path, "google/") {
 		return r.checkGlobalCache(path)
-	}
-	if filepath.Base(path) == "gogo.proto" {
-		descriptorBytes := gogo.FileDescriptor("gogo.proto")
-		if descriptorBytes != nil {
-			fd, err := DecodeRawFileDescriptor(descriptorBytes)
-			if err != nil {
-				return protocompile.SearchResult{}, err
-			}
-			*fd.Name = path
-			syntheticURI := url.URL{
-				Scheme:   "proto",
-				Path:     path,
-				Fragment: r.folder.Name,
-			}
-			uri := span.URI(syntheticURI.String())
-			r.filePathsByURI[uri] = path
-			r.fileURIsByPath[path] = uri
-			r.importSourcesByURI[uri] = SourceWellKnown
-			return protocompile.SearchResult{
-				ResolvedPath: protocompile.ResolvedPath(path),
-				Proto:        fd,
-			}, nil
-		}
 	}
 	return protocompile.SearchResult{}, os.ErrNotExist
 }

@@ -6,7 +6,6 @@ require (
 	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/bufbuild/protocompile v0.4.0
 	github.com/bufbuild/protovalidate-go v0.3.4
-	github.com/gogo/protobuf v1.3.2
 	github.com/google/cel-go v0.18.1
 	github.com/kralicky/gpkg v0.0.0-20220311205216-0d8ea9557555
 	github.com/mattn/go-tty v0.0.5

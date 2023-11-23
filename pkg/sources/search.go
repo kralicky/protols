@@ -20,6 +20,8 @@ func SearchDirs(dirs ...string) []string {
 			if d.IsDir() {
 				if name == "node_modules" {
 					return fs.SkipDir
+				} else if name == "vendor" {
+					return fs.SkipDir
 				}
 				return nil
 			}

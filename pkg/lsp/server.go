@@ -8,8 +8,8 @@ import (
 	"maps"
 	"net/url"
 	"os"
-	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/kralicky/protols/pkg/format"
@@ -162,7 +162,11 @@ func (s *Server) CacheForURI(uri protocol.DocumentURI) (*Cache, error) {
 		return nil, fmt.Errorf("%w: workspace %s does not exist", jsonrpc2.ErrMethodNotFound, u.Fragment)
 	}
 	for path, c := range caches {
-		if filepath.HasPrefix(u.Path, path) {
+		if strings.HasPrefix(u.Path, path) {
+			// special case: ignore ${workspaceFolder}/vendor
+			if strings.HasPrefix(u.Path, path+"/vendor") {
+				continue
+			}
 			return c, nil
 		}
 	}

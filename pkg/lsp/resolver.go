@@ -269,6 +269,7 @@ func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportC
 			return protocompile.SearchResult{}, err
 		}
 	}
+
 	if result, err := r.checkGoModule(path, whence); err == nil {
 		lg.Debug("resolved to go module")
 		return result, nil
@@ -327,6 +328,11 @@ func (r *Resolver) checkFS(path string, whence protocompile.ImportContext) (prot
 }
 
 func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext) (protocompile.SearchResult, error) {
+	if strings.HasPrefix(path, "github.com/gogo/googleapis/") {
+		// these are vendored in the gogo/protobuf repo, so we need to special case them
+		// to avoid conflicting symbols
+		return r.checkWellKnownImportPath(strings.TrimPrefix(path, "github.com/gogo/googleapis/"))
+	}
 	res, err := r.synthesizer.ImportFromGoModule(path)
 	if err != nil {
 		return protocompile.SearchResult{}, err
@@ -504,6 +510,27 @@ func (r *Resolver) translatePathLocked(path string, whence protocompile.ImportCo
 			// relative, but the path prefix is duplicated
 			candidates = append(candidates, filepath.Join(filepath.Dir(filepath.Dir(filename)), path))
 		}
+		// relative, but to a suffix-matched parent directory
+		// for example, thanos:
+		// store/
+		// ├── hintspb/
+		// │  └── hints.proto
+		// ├── labelpb/
+		// │  └── types.proto
+		// └── storepb/
+		//    ├── prompb/
+		//    │  ├── remote.proto
+		//    │  └── types.proto
+		//    ├── rpc.proto
+		//    └── types.proto
+		//
+		// importing "store/storepb/types.proto" from github.com/thanos-io/pkg/store/storepb/rpc.proto
+		// will match the "store/storepb/" suffix and add "github.com/thanos-io/pkg/store/storepb/types.proto"
+		// as a possible candidate.
+		if match, ok := FindSuffixMatchedPath(path, filename); ok {
+			candidates = append(candidates, match)
+		}
+
 		// relative but to the parent directory
 		candidates = append(candidates, filepath.Join(filepath.Dir(filepath.Dir(filename)), path))
 
@@ -548,11 +575,11 @@ func (r *Resolver) translatePathLocked(path string, whence protocompile.ImportCo
 			return "", err // perhaps
 		}
 		originalPkg := r.filePathsByURI[uri]
-		canonicalName := filepath.Join(originalPkg, relative)
+		canonicalName := filepath.Join(filepath.Dir(originalPkg), relative, filepath.Base(translatedPath))
 		r.filePathsByURI[translatedURI] = canonicalName
 		r.fileURIsByPath[canonicalName] = translatedURI
 		r.importSourcesByURI[translatedURI] = SourceGoModuleCache
-		return translatedPath, nil
+		return canonicalName, nil
 	case SourceRelativePath:
 		// it's already a relative path, so just make it relative to that one
 		originalDir := filepath.Dir(filename)
@@ -563,4 +590,76 @@ func (r *Resolver) translatePathLocked(path string, whence protocompile.ImportCo
 	default:
 	}
 	return "", os.ErrNotExist
+}
+
+type match struct {
+	path  string
+	score int
+}
+
+func FindSuffixMatchedPath(target, source string) (string, bool) {
+	targetDir := filepath.Dir(target)
+	if targetDir == "." {
+		return filepath.Join(filepath.Dir(source), target), true
+	}
+	sourceDir := filepath.Dir(source)
+
+	// github.com/thanos-io/thanos/pkg/store/storepb/rpc.proto
+	//                                 store/storepb/prompb/types.proto
+	//                                 store/storepb/types.proto
+
+	targetParts := strings.Split(targetDir, "/") // ["store", "storepb", "prompb"] or ["store", "storepb"]
+	sourceParts := strings.Split(sourceDir, "/") // ["github.com", "thanos-io", "thanos", "pkg", "store", "storepb"]
+	if sourceParts[0] == "" {
+		sourceParts[0] = "/" // make sure joining results in an absolute path
+	}
+	var matches []match
+	for offset := 1; offset <= len(sourceParts); offset++ {
+		// apply an offset as follows:
+		// |"pkg"|"store"|"storepb"|
+		// |     |       |         |"store"  |"labelpb"|"prompb"| <- offset 0 (for reference, not checked)
+		// |     |       |"store"  |"labelpb"|"prompb" |          <- offset 1 (no match)
+		// |     |"store"|"labelpb"|"prompb" |                    <- offset 2 (match, score=1)
+		//        ^^^^^^^ (1)
+		// |"pkg"|"store"|"storepb"|
+		// |     |       |         |"store"  |"storepb"|"prompb"| <- offset 0 (for reference, not checked)
+		// |     |       |"store"  |"storepb"|"prompb" |          <- offset 1 (no match)
+		// |     |"store"|"storepb"|"prompb" |                    <- offset 2 (match, score=2)
+		//        ^^^^^^^ ^^^^^^^^^ (2)
+		// |"pkg"|"store"|"storepb"|
+		// |     |       |         |"store"  |"storepb"| <- offset 0 (for reference, not checked)
+		// |     |       |"store"  |"storepb"|           <- offset 1 (no match)
+		// |     |"store"|"storepb"|                     <- offset 2 (match, score=2)
+		//        ^^^^^^^ ^^^^^^^^^ (2)
+
+		// increase the offset until the first part of the target matches the last part of the source
+		// then score based on how many parts match
+
+		sourceStart := len(sourceParts) - offset
+		score := 0
+		for i := 0; i < min(len(targetParts), len(sourceParts)-sourceStart); i++ {
+			if targetParts[i] == sourceParts[sourceStart+i] {
+				score++
+			} else {
+				break
+			}
+		}
+		if score > 0 {
+			matches = append(matches, match{
+				path:  filepath.Join(append(append(sourceParts[:sourceStart], targetParts...), filepath.Base(target))...),
+				score: score,
+			})
+		}
+	}
+	if len(matches) == 0 {
+		return "", false
+	}
+	if len(matches) == 1 {
+		return matches[0].path, true
+	}
+	// sort by score
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].score > matches[j].score
+	})
+	return matches[0].path, true
 }

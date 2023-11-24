@@ -44,6 +44,12 @@ type dumpVisitor struct {
 	buf *bytes.Buffer
 }
 
+// VisitEditionNode implements ast.Visitor.
+func (v *dumpVisitor) VisitEditionNode(node *ast.EditionNode) error {
+	v.buf.WriteString(fmt.Sprintf("(val=%s)\n", node.Edition.AsString()))
+	return nil
+}
+
 func maybe[T any](t *T) (_ T) {
 	if t == nil {
 		return

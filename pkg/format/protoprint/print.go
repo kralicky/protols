@@ -934,7 +934,12 @@ func (p *Printer) printMessageBody(md protoreflect.MessageDescriptor, reg *proto
 	pkg := md.ParentFile().Package()
 	scope := md.FullName()
 
+	skipAddrs := 0
 	for i, el := range elements.addrs {
+		if skipAddrs > 0 {
+			skipAddrs--
+			continue
+		}
 		d := elements.at(el)
 
 		// skip[d] will panic if d is a slice (which it could be for []option),
@@ -995,7 +1000,7 @@ func (p *Printer) printMessageBody(md protoreflect.MessageDescriptor, reg *proto
 				}
 				ranges = append(ranges, extr)
 				addrs = append(addrs, elnext)
-				skip[extr] = true
+				skipAddrs++
 			}
 			p.printExtensionRanges(md, ranges, maxTag, addrs, reg, w, sourceInfo, path, indent)
 		case reservedRange:
@@ -1010,7 +1015,7 @@ func (p *Printer) printMessageBody(md protoreflect.MessageDescriptor, reg *proto
 				rr := elements.at(elnext).(reservedRange)
 				ranges = append(ranges, rr)
 				addrs = append(addrs, elnext)
-				skip[rr] = true
+				skipAddrs++
 			}
 			p.printReservedRanges(ranges, maxTag, addrs, w, sourceInfo, path, indent)
 		case string: // reserved name
@@ -1025,7 +1030,7 @@ func (p *Printer) printMessageBody(md protoreflect.MessageDescriptor, reg *proto
 				rn := elements.at(elnext).(string)
 				names = append(names, rn)
 				addrs = append(addrs, elnext)
-				skip[rn] = true
+				skipAddrs++
 			}
 			p.printReservedNames(names, addrs, w, sourceInfo, path, indent)
 		}

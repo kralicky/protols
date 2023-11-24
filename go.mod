@@ -13,13 +13,13 @@ require (
 	github.com/spf13/cobra v1.7.0
 	go.uber.org/multierr v1.11.0
 	golang.org/x/mod v0.13.0
-	golang.org/x/sync v0.4.0
+	golang.org/x/sync v0.5.0
 	golang.org/x/tools v0.14.0
 	golang.org/x/tools/gopls v0.12.4
 	google.golang.org/genproto v0.0.0-20230815205213-6bfd019c3878
 	google.golang.org/genproto/googleapis/api v0.0.0-20230913181813-007df8e322eb
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20230913181813-007df8e322eb
-	google.golang.org/protobuf v1.31.0
+	google.golang.org/protobuf v1.31.1-0.20231027082548-f4a6c1f6e5c1
 )
 
 require (

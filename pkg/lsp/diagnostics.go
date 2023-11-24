@@ -17,7 +17,7 @@ import (
 )
 
 type ProtoDiagnostic struct {
-	Pos                ast.SourcePosInfo
+	Pos                ast.SourceSpan
 	Severity           protocol.DiagnosticSeverity
 	Error              error
 	Tags               []protocol.DiagnosticTag

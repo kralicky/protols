@@ -668,9 +668,9 @@ func findDefinition(desc protoreflect.Descriptor, linkRes linker.Result) (ast.No
 	return node, nil
 }
 
-func findReferences(desc protoreflect.Descriptor, files linker.Files) <-chan ast.SourcePosInfo {
+func findReferences(desc protoreflect.Descriptor, files linker.Files) <-chan ast.SourceSpan {
 	var wg sync.WaitGroup
-	referencePositions := make(chan ast.SourcePosInfo, len(files))
+	referencePositions := make(chan ast.SourceSpan, len(files))
 	wg.Add(len(files))
 	for _, res := range files {
 		res := res

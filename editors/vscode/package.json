@@ -35,8 +35,7 @@
 					".proto"
 				],
 				"aliases": [
-					"Protocol Buffers",
-					"proto"
+					"Protocol Buffers"
 				]
 			}
 		],

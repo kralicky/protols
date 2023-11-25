@@ -104,11 +104,11 @@ type semanticItems struct {
 }
 
 func semanticTokensFull(cache *Cache, doc protocol.TextDocumentIdentifier) (*protocol.SemanticTokens, error) {
-	parseRes, err := cache.FindParseResultByURI(doc.URI.SpanURI())
+	parseRes, err := cache.FindParseResultByURI(doc.URI)
 	if err != nil {
 		return nil, err
 	}
-	maybeLinkRes, _ := cache.FindResultByURI(doc.URI.SpanURI())
+	maybeLinkRes, _ := cache.FindResultByURI(doc.URI)
 
 	enc := semanticItems{
 		parseRes: parseRes,
@@ -122,13 +122,13 @@ func semanticTokensFull(cache *Cache, doc protocol.TextDocumentIdentifier) (*pro
 }
 
 func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng protocol.Range) (*protocol.SemanticTokens, error) {
-	parseRes, err := cache.FindParseResultByURI(doc.URI.SpanURI())
+	parseRes, err := cache.FindParseResultByURI(doc.URI)
 	if err != nil {
 		return nil, err
 	}
-	maybeLinkRes, _ := cache.FindResultByURI(doc.URI.SpanURI())
+	maybeLinkRes, _ := cache.FindResultByURI(doc.URI)
 
-	mapper, err := cache.GetMapper(doc.URI.SpanURI())
+	mapper, err := cache.GetMapper(doc.URI)
 	if err != nil {
 		return nil, err
 	}

@@ -20,10 +20,10 @@ import (
 	gsync "github.com/kralicky/gpkg/sync"
 	"github.com/kralicky/protols/pkg/format"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/tools/gopls/pkg/file"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/gopls/pkg/lsp/source"
-	"golang.org/x/tools/gopls/pkg/span"
 	"golang.org/x/tools/pkg/diff"
 	"golang.org/x/tools/pkg/jsonrpc2"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -85,7 +85,7 @@ func (c *Cache) FindResultByPath(path string) (linker.Result, error) {
 	return f.(linker.Result), nil
 }
 
-func (c *Cache) FindResultByURI(uri span.URI) (linker.Result, error) {
+func (c *Cache) FindResultByURI(uri protocol.DocumentURI) (linker.Result, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
 	if c.results == nil {
@@ -102,7 +102,7 @@ func (c *Cache) FindResultByURI(uri span.URI) (linker.Result, error) {
 	return f.(linker.Result), nil
 }
 
-func (c *Cache) FindParseResultByURI(uri span.URI) (parser.Result, error) {
+func (c *Cache) FindParseResultByURI(uri protocol.DocumentURI) (parser.Result, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
 	if c.results == nil && len(c.unlinkedResults) == 0 {
@@ -126,7 +126,7 @@ func (c *Cache) FindParseResultByURI(uri span.URI) (parser.Result, error) {
 // 	return c.results.AsResolver().FindFileByPath(path)
 // }
 
-func (c *Cache) FindFileByURI(uri span.URI) (protoreflect.FileDescriptor, error) {
+func (c *Cache) FindFileByURI(uri protocol.DocumentURI) (protoreflect.FileDescriptor, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
 	path, err := c.resolver.URIToPath(uri)
@@ -137,7 +137,7 @@ func (c *Cache) FindFileByURI(uri span.URI) (protoreflect.FileDescriptor, error)
 }
 
 func (c *Cache) TracksURI(uri protocol.DocumentURI) bool {
-	_, err := c.resolver.URIToPath(span.URIFromURI(string(uri)))
+	_, err := c.resolver.URIToPath(protocol.URIFromURI(string(uri)))
 	return err == nil
 }
 
@@ -180,7 +180,7 @@ func (o *CacheOptions) apply(opts ...CacheOption) {
 func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
 	options := CacheOptions{}
 	options.apply(opts...)
-	workdir := span.URIFromURI(workspace.URI).Filename()
+	workdir := protocol.URIFromURI(workspace.URI).Path()
 	// NewCache creates a new cache.
 	diagHandler := NewDiagnosticHandler()
 	reporter := reporter.NewReporter(diagHandler.HandleError, diagHandler.HandleWarning)
@@ -219,12 +219,12 @@ func (c *Cache) LoadFiles(files []string) {
 	slog.Debug("initializing")
 	defer slog.Debug("done initializing")
 
-	created := make([]source.FileModification, len(files))
+	created := make([]file.Modification, len(files))
 	for i, f := range files {
-		created[i] = source.FileModification{
-			Action: source.Create,
+		created[i] = file.Modification{
+			Action: file.Create,
 			OnDisk: true,
-			URI:    span.URIFromPath(f),
+			URI:    protocol.URIFromPath(f),
 		}
 	}
 
@@ -233,7 +233,7 @@ func (c *Cache) LoadFiles(files []string) {
 	}
 }
 
-func (r *Cache) GetMapper(uri span.URI) (*protocol.Mapper, error) {
+func (r *Cache) GetMapper(uri protocol.DocumentURI) (*protocol.Mapper, error) {
 	if !uri.IsFile() {
 		data, err := r.resolver.SyntheticFileContents(uri)
 		if err != nil {
@@ -252,7 +252,7 @@ func (r *Cache) GetMapper(uri span.URI) (*protocol.Mapper, error) {
 	return protocol.NewMapper(uri, content), nil
 }
 
-func (s *Cache) ChangedText(ctx context.Context, uri span.URI, changes []protocol.TextDocumentContentChangeEvent) ([]byte, error) {
+func (s *Cache) ChangedText(ctx context.Context, uri protocol.DocumentURI, changes []protocol.TextDocumentContentChangeEvent) ([]byte, error) {
 	if len(changes) == 0 {
 		return nil, fmt.Errorf("%w: no content changes provided", jsonrpc2.ErrInternal)
 	}
@@ -283,7 +283,7 @@ func contentChangeEventsToDiffEdits(mapper *protocol.Mapper, changes []protocol.
 		})
 	}
 
-	return source.FromProtocolEdits(mapper, edits)
+	return protocol.EditsToDiffEdits(mapper, edits)
 }
 
 func (c *Cache) preInvalidateHook(path protocompile.ResolvedPath, reason string) {
@@ -385,7 +385,7 @@ func (c *Cache) compileLocked(protos ...string) {
 	c.compileLocked(syntheticFiles...)
 }
 
-func (c *Cache) DidModifyFiles(ctx context.Context, modifications []source.FileModification) error {
+func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modification) error {
 	c.resolver.UpdateURIPathMappings(modifications)
 
 	var toRecompile []string
@@ -394,20 +394,20 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []source.FileM
 		if err != nil {
 			slog.With(
 				"error", err,
-				"uri", m.URI.Filename(),
+				"uri", m.URI.Path(),
 			).Error("failed to resolve uri to path")
 			continue
 		}
 		switch m.Action {
-		case source.Open:
-		case source.Close:
-		case source.Save:
+		case file.Open:
+		case file.Close:
+		case file.Save:
 			toRecompile = append(toRecompile, path)
-		case source.Change:
+		case file.Change:
 			toRecompile = append(toRecompile, path)
-		case source.Create:
+		case file.Create:
 			toRecompile = append(toRecompile, path)
-		case source.Delete:
+		case file.Delete:
 			toRecompile = append(toRecompile, path)
 		}
 	}
@@ -424,15 +424,15 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []source.FileM
 // 	slog.With(
 // 		"file", string(f.TextDocument.URI),
 // 	).Debug("file modified")
-// 	s.compiler.overlay.ReloadFromDisk(f.TextDocument.URI.SpanURI())
-// 	s.Compile(s.filePathsByURI[f.TextDocument.URI.SpanURI()])
+// 	s.compiler.overlay.ReloadFromDisk(f.TextDocument.URI)
+// 	s.Compile(s.filePathsByURI[f.TextDocument.URI])
 // 	return nil
 // }
 
 func (c *Cache) ComputeSemanticTokens(doc protocol.TextDocumentIdentifier) ([]uint32, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
-	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI.SpanURI()); err != nil {
+	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI); err != nil {
 		return nil, err
 	} else if !ok {
 		return nil, fmt.Errorf("document contents not well formed")
@@ -448,7 +448,7 @@ func (c *Cache) ComputeSemanticTokens(doc protocol.TextDocumentIdentifier) ([]ui
 func (c *Cache) ComputeSemanticTokensRange(doc protocol.TextDocumentIdentifier, rng protocol.Range) ([]uint32, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
-	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI.SpanURI()); err != nil {
+	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI); err != nil {
 		return nil, err
 	} else if !ok {
 		return nil, fmt.Errorf("document contents not well formed")
@@ -461,7 +461,7 @@ func (c *Cache) ComputeSemanticTokensRange(doc protocol.TextDocumentIdentifier, 
 	return result.Data, nil
 }
 
-func (c *Cache) ComputeDiagnosticReports(uri span.URI, prevResultId string) ([]protocol.Diagnostic, protocol.DocumentDiagnosticReportKind, string, error) {
+func (c *Cache) ComputeDiagnosticReports(uri protocol.DocumentURI, prevResultId string) ([]protocol.Diagnostic, protocol.DocumentDiagnosticReportKind, string, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
 	var maybePrevResultId []string
@@ -494,7 +494,7 @@ func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.
 		for i, info := range rawReport.RelatedInformation {
 			u, err := c.resolver.PathToURI(string(info.Location.URI))
 			if err == nil {
-				rawReport.RelatedInformation[i].Location.URI = protocol.URIFromSpanURI(u)
+				rawReport.RelatedInformation[i].Location.URI = u
 			}
 		}
 		report := protocol.Diagnostic{
@@ -528,7 +528,7 @@ func (c *Cache) ToProtocolCodeActions(rawCodeActions []CodeAction, associatedDia
 	}
 	var codeActions []protocol.CodeAction
 	for _, rawCodeAction := range rawCodeActions {
-		u, err := c.resolver.PathToURI(string(rawCodeAction.Path))
+		uri, err := c.resolver.PathToURI(string(rawCodeAction.Path))
 		if err != nil {
 			slog.With(
 				"error", err,
@@ -536,7 +536,6 @@ func (c *Cache) ToProtocolCodeActions(rawCodeActions []CodeAction, associatedDia
 			).Error("failed to resolve path to uri")
 			continue
 		}
-		uri := protocol.URIFromSpanURI(u)
 		codeActions = append(codeActions, protocol.CodeAction{
 			Title:       rawCodeAction.Title,
 			Kind:        rawCodeAction.Kind,
@@ -553,11 +552,11 @@ func (c *Cache) ToProtocolCodeActions(rawCodeActions []CodeAction, associatedDia
 	return codeActions
 }
 
-type workspaceDiagnosticCallbackFunc = func(uri span.URI, reports []protocol.Diagnostic, kind protocol.DocumentDiagnosticReportKind, resultId string)
+type workspaceDiagnosticCallbackFunc = func(uri protocol.DocumentURI, reports []protocol.Diagnostic, kind protocol.DocumentDiagnosticReportKind, resultId string)
 
 func (c *Cache) StreamWorkspaceDiagnostics(ctx context.Context, ch chan<- protocol.WorkspaceDiagnosticReportPartialResult) {
-	currentDiagnostics := make(map[span.URI][]protocol.Diagnostic)
-	diagnosticVersions := make(map[span.URI]int32)
+	currentDiagnostics := make(map[protocol.DocumentURI][]protocol.Diagnostic)
+	diagnosticVersions := make(map[protocol.DocumentURI]int32)
 	c.diagHandler.Stream(ctx, func(event DiagnosticEvent, path string, diagnostics ...*ProtoDiagnostic) {
 		uri, err := c.resolver.PathToURI(path)
 		if err != nil {
@@ -577,7 +576,7 @@ func (c *Cache) StreamWorkspaceDiagnostics(ctx context.Context, ch chan<- protoc
 					{
 						Value: protocol.WorkspaceFullDocumentDiagnosticReport{
 							Version: version,
-							URI:     protocol.URIFromSpanURI(uri),
+							URI:     uri,
 							FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
 								Kind:  string(protocol.DiagnosticFull),
 								Items: currentDiagnostics[uri],
@@ -593,7 +592,7 @@ func (c *Cache) StreamWorkspaceDiagnostics(ctx context.Context, ch chan<- protoc
 					{
 						Value: protocol.WorkspaceFullDocumentDiagnosticReport{
 							Version: version,
-							URI:     protocol.URIFromSpanURI(uri),
+							URI:     uri,
 							FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
 								Kind:  string(protocol.DiagnosticFull),
 								Items: []protocol.Diagnostic{},
@@ -612,7 +611,7 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
 
-	res, err := c.FindParseResultByURI(doc.URI.SpanURI())
+	res, err := c.FindParseResultByURI(doc.URI)
 	if err != nil {
 		return nil, err
 	}
@@ -667,7 +666,7 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 func (c *Cache) ComputeInlayHints(doc protocol.TextDocumentIdentifier, rng protocol.Range) ([]protocol.InlayHint, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
-	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI.SpanURI()); err != nil {
+	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI); err != nil {
 		return nil, err
 	} else if !ok {
 		return nil, fmt.Errorf("document contents not well formed")
@@ -698,11 +697,11 @@ func collectOptions[V proto.Message, T ast.OptionDeclNode, U optionGetter[V]](t 
 
 func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, rng protocol.Range) []protocol.InlayHint {
 	var hints []protocol.InlayHint
-	res, err := c.FindResultByURI(doc.URI.SpanURI())
+	res, err := c.FindResultByURI(doc.URI)
 	if err != nil {
 		return nil
 	}
-	mapper, err := c.GetMapper(doc.URI.SpanURI())
+	mapper, err := c.GetMapper(doc.URI)
 	if err != nil {
 		return nil
 	}
@@ -760,7 +759,7 @@ func (c *Cache) computeImportHints(doc protocol.TextDocumentIdentifier, rng prot
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
 
-	res, err := c.FindParseResultByURI(doc.URI.SpanURI())
+	res, err := c.FindParseResultByURI(doc.URI)
 	if err != nil {
 		return nil
 	}
@@ -833,7 +832,7 @@ func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]p
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
 
-	f, err := c.FindResultByURI(doc.URI.SpanURI())
+	f, err := c.FindResultByURI(doc.URI)
 	if err != nil {
 		return nil, err
 	}
@@ -979,20 +978,20 @@ func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]p
 }
 
 func (c *Cache) GetSyntheticFileContents(ctx context.Context, uri string) (string, error) {
-	return c.resolver.SyntheticFileContents(span.URIFromURI(uri))
+	return c.resolver.SyntheticFileContents(protocol.URIFromURI(uri))
 }
 
 func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositionParams) (protoreflect.Descriptor, protocol.Range, error) {
-	parseRes, err := c.FindParseResultByURI(params.TextDocument.URI.SpanURI())
+	parseRes, err := c.FindParseResultByURI(params.TextDocument.URI)
 	if err != nil {
 		return nil, protocol.Range{}, err
 	}
-	linkRes, err := c.FindResultByURI(params.TextDocument.URI.SpanURI())
+	linkRes, err := c.FindResultByURI(params.TextDocument.URI)
 	if err != nil {
 		return nil, protocol.Range{}, err
 	}
 
-	mapper, err := c.GetMapper(params.TextDocument.URI.SpanURI())
+	mapper, err := c.GetMapper(params.TextDocument.URI)
 	if err != nil {
 		return nil, protocol.Range{}, err
 	}
@@ -1041,7 +1040,7 @@ func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([
 	}
 	return []protocol.Location{
 		{
-			URI:   protocol.URIFromSpanURI(uri),
+			URI:   uri,
 			Range: toRange(info),
 		},
 	}, nil
@@ -1059,7 +1058,7 @@ func (c *Cache) FindReferencesForTypeDescriptor(desc protoreflect.Descriptor) ([
 			continue
 		}
 		locations = append(locations, protocol.Location{
-			URI:   protocol.URIFromSpanURI(uri),
+			URI:   uri,
 			Range: toRange(posInfo),
 		})
 	}
@@ -1173,13 +1172,13 @@ func makeTooltip(d protoreflect.Descriptor) *protocol.OrPTooltipPLabel {
 
 // Checks if the most recently parsed version of the given document has any
 // syntax errors, as reported by the diagnostic handler.
-func (c *Cache) LatestDocumentContentsWellFormed(uri span.URI) (bool, error) {
+func (c *Cache) LatestDocumentContentsWellFormed(uri protocol.DocumentURI) (bool, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
 	return c.latestDocumentContentsWellFormedLocked(uri)
 }
 
-func (c *Cache) latestDocumentContentsWellFormedLocked(uri span.URI) (bool, error) {
+func (c *Cache) latestDocumentContentsWellFormedLocked(uri protocol.DocumentURI) (bool, error) {
 	path, err := c.resolver.URIToPath(uri)
 	if err != nil {
 		return false, err
@@ -1198,16 +1197,16 @@ func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options prot
 	// check if the file has any parse errors; if it does, don't try to format
 	// the document as we will end up erasing anything the user has typed
 	// since the last time the document was successfully parsed.
-	if ok, err := c.LatestDocumentContentsWellFormed(doc.URI.SpanURI()); err != nil {
+	if ok, err := c.LatestDocumentContentsWellFormed(doc.URI); err != nil {
 		return nil, err
 	} else if !ok {
 		return nil, nil
 	}
-	mapper, err := c.GetMapper(doc.URI.SpanURI())
+	mapper, err := c.GetMapper(doc.URI)
 	if err != nil {
 		return nil, err
 	}
-	res, err := c.FindParseResultByURI(doc.URI.SpanURI())
+	res, err := c.FindParseResultByURI(doc.URI)
 	if err != nil {
 		return nil, err
 	}

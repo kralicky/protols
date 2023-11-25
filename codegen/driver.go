@@ -8,7 +8,6 @@ import (
 	"github.com/bufbuild/protocompile/linker"
 	"github.com/kralicky/protols/pkg/lsp"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
-	"golang.org/x/tools/gopls/pkg/span"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
@@ -62,7 +61,7 @@ func NewDriver(workspaceFolder string, opts ...DriverOption) *Driver {
 	return &Driver{
 		DriverOptions: options,
 		workspace: protocol.WorkspaceFolder{
-			URI: string(span.URIFromPath(workspaceFolder)),
+			URI: string(protocol.URIFromPath(workspaceFolder)),
 		},
 	}
 }
@@ -74,8 +73,8 @@ type Results struct {
 	AllDescriptorProtos            []*descriptorpb.FileDescriptorProto
 	WorkspaceLocalDescriptors      []protoreflect.FileDescriptor
 	WorkspaceLocalDescriptorProtos []*descriptorpb.FileDescriptorProto
-	FileURIsByPath                 map[string]span.URI
-	FilePathsByURI                 map[span.URI]string
+	FileURIsByPath                 map[string]protocol.DocumentURI
+	FilePathsByURI                 map[protocol.DocumentURI]string
 }
 
 var severityToColor = map[protocol.DiagnosticSeverity]string{
@@ -133,11 +132,11 @@ func (d *Driver) Compile(protos []string) (*Results, error) {
 				// and highlight the error range
 				var uriFilename string
 				if uri.IsFile() {
-					uriFilename = uri.Filename()
+					uriFilename = uri.Path()
 				} else {
 					uriFilename = string(uri)
 				}
-				relativePath, _ := filepath.Rel(span.URIFromURI(d.workspace.URI).Filename(), uriFilename)
+				relativePath, _ := filepath.Rel(protocol.URIFromURI(d.workspace.URI).Path(), uriFilename)
 				color := severityToColor[diag.Severity]
 				if !showSourceContext {
 					results.Messages = append(results.Messages,
@@ -200,7 +199,7 @@ func (d *Driver) Compile(protos []string) (*Results, error) {
 //  1. The sorted list of all descriptors
 //  2. A subset of the first list, containing only files that exist on disk
 //     and are local to the workspace.
-func (d *Driver) sortAndFilterResults(results []linker.Result, pathMapping map[string]span.URI) ([]protoreflect.FileDescriptor, []protoreflect.FileDescriptor) {
+func (d *Driver) sortAndFilterResults(results []linker.Result, pathMapping map[string]protocol.DocumentURI) ([]protoreflect.FileDescriptor, []protoreflect.FileDescriptor) {
 	sorted := make([]protoreflect.FileDescriptor, 0, len(results))
 	localToWorkspace := []protoreflect.FileDescriptor{}
 	topologicalSort(results, &sorted, make(map[string]struct{}))
@@ -209,7 +208,7 @@ func (d *Driver) sortAndFilterResults(results []linker.Result, pathMapping map[s
 		if !uri.IsFile() {
 			continue
 		}
-		path, err := filepath.Rel(span.URIFromURI(d.workspace.URI).Filename(), uri.Filename())
+		path, err := filepath.Rel(protocol.URIFromURI(d.workspace.URI).Path(), uri.Path())
 		if err != nil {
 			continue
 		}

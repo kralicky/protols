@@ -18,10 +18,9 @@ import (
 	"github.com/bufbuild/protocompile"
 	"github.com/bufbuild/protocompile/linker"
 	"github.com/kralicky/protols/pkg/format"
+	"golang.org/x/tools/gopls/pkg/file"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
-	"golang.org/x/tools/gopls/pkg/lsp/source"
-	"golang.org/x/tools/gopls/pkg/span"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoregistry"
 )
@@ -41,27 +40,27 @@ type Resolver struct {
 	folder                     protocol.WorkspaceFolder
 	synthesizer                *ProtoSourceSynthesizer
 	pathsMu                    sync.RWMutex
-	filePathsByURI             map[span.URI]string // URI -> canonical file path (go package + file name)
-	fileURIsByPath             map[string]span.URI // canonical file path (go package + file name) -> URI
-	importSourcesByURI         map[span.URI]ImportSource
-	syntheticFileOriginalNames map[span.URI]string
-	syntheticFiles             map[span.URI]string
+	filePathsByURI             map[protocol.DocumentURI]string // URI -> canonical file path (go package + file name)
+	fileURIsByPath             map[string]protocol.DocumentURI // canonical file path (go package + file name) -> URI
+	importSourcesByURI         map[protocol.DocumentURI]ImportSource
+	syntheticFileOriginalNames map[protocol.DocumentURI]string
+	syntheticFiles             map[protocol.DocumentURI]string
 }
 
 func NewResolver(folder protocol.WorkspaceFolder) *Resolver {
 	return &Resolver{
 		folder:                     folder,
 		OverlayFS:                  cache.NewOverlayFS(cache.NewMemoizedFS()),
-		synthesizer:                NewProtoSourceSynthesizer(span.URIFromURI(folder.URI).Filename()),
-		filePathsByURI:             make(map[span.URI]string),
-		fileURIsByPath:             make(map[string]span.URI),
-		syntheticFileOriginalNames: make(map[span.URI]string),
-		syntheticFiles:             make(map[span.URI]string),
-		importSourcesByURI:         map[span.URI]ImportSource{},
+		synthesizer:                NewProtoSourceSynthesizer(protocol.URIFromURI(folder.URI).Path()),
+		filePathsByURI:             make(map[protocol.DocumentURI]string),
+		fileURIsByPath:             make(map[string]protocol.DocumentURI),
+		syntheticFileOriginalNames: make(map[protocol.DocumentURI]string),
+		syntheticFiles:             make(map[protocol.DocumentURI]string),
+		importSourcesByURI:         map[protocol.DocumentURI]ImportSource{},
 	}
 }
 
-func (r *Resolver) PathToURI(path string) (span.URI, error) {
+func (r *Resolver) PathToURI(path string) (protocol.DocumentURI, error) {
 	r.pathsMu.RLock()
 	defer r.pathsMu.RUnlock()
 
@@ -76,7 +75,7 @@ func (r *Resolver) PathToURI(path string) (span.URI, error) {
 	return uri, nil
 }
 
-func (r *Resolver) URIToPath(uri span.URI) (string, error) {
+func (r *Resolver) URIToPath(uri protocol.DocumentURI) (string, error) {
 	r.pathsMu.RLock()
 	defer r.pathsMu.RUnlock()
 
@@ -87,7 +86,7 @@ func (r *Resolver) URIToPath(uri span.URI) (string, error) {
 	return path, nil
 }
 
-func (r *Resolver) SyntheticFileContents(uri span.URI) (string, error) {
+func (r *Resolver) SyntheticFileContents(uri protocol.DocumentURI) (string, error) {
 	r.pathsMu.RLock()
 	defer r.pathsMu.RUnlock()
 	contents, ok := r.syntheticFiles[uri]
@@ -97,17 +96,17 @@ func (r *Resolver) SyntheticFileContents(uri span.URI) (string, error) {
 	return contents, nil
 }
 
-func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification) {
+func (r *Resolver) UpdateURIPathMappings(modifications []file.Modification) {
 	r.pathsMu.Lock()
 	defer r.pathsMu.Unlock()
 	for _, m := range modifications {
 		switch m.Action {
-		case source.Close:
-		case source.Change, source.Save:
+		case file.Close:
+		case file.Change, file.Save:
 			// check for go_package modification
 			if r.importSourcesByURI[m.URI] == SourceLocalGoModule {
 				existingPath := r.filePathsByURI[m.URI]
-				filename := m.URI.Filename()
+				filename := m.URI.Path()
 				var f io.ReadCloser
 				if m.Text != nil {
 					f = io.NopCloser(bytes.NewReader(m.Text))
@@ -143,8 +142,8 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 					}
 				}
 			}
-		case source.Create:
-			filename := m.URI.Filename()
+		case file.Create:
+			filename := m.URI.Path()
 			f, err := os.Open(filename)
 			if err != nil {
 				slog.With(
@@ -166,12 +165,12 @@ func (r *Resolver) UpdateURIPathMappings(modifications []source.FileModification
 			r.filePathsByURI[m.URI] = canonicalName
 			r.fileURIsByPath[canonicalName] = m.URI
 			r.importSourcesByURI[m.URI] = SourceLocalGoModule
-		case source.Delete:
+		case file.Delete:
 			path := r.filePathsByURI[m.URI]
 			delete(r.filePathsByURI, m.URI)
 			delete(r.importSourcesByURI, m.URI)
 			delete(r.fileURIsByPath, path)
-		case source.Open:
+		case file.Open:
 			// not necessarily a local go module
 
 		}
@@ -342,7 +341,7 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 		if err != nil {
 			return protocompile.SearchResult{}, err
 		}
-		uri := span.URIFromPath(res.SourcePath)
+		uri := protocol.URIFromPath(res.SourcePath)
 		r.filePathsByURI[uri] = path
 		r.fileURIsByPath[path] = uri
 		if res.Module.Path == r.synthesizer.localModName {
@@ -365,7 +364,7 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 			Path:     path,
 			Fragment: r.folder.Name,
 		}
-		uri := span.URI(syntheticURI.String())
+		uri := protocol.DocumentURI(syntheticURI.String())
 		r.filePathsByURI[uri] = path
 		r.fileURIsByPath[path] = uri
 		r.importSourcesByURI[uri] = SourceSynthetic
@@ -388,13 +387,13 @@ func (r *Resolver) checkGlobalCache(path string) (protocompile.SearchResult, err
 		Path:     path,
 		Fragment: r.folder.Name,
 	}
-	if src, ok := r.syntheticFiles[span.URI(syntheticURI.String())]; ok {
+	if src, ok := r.syntheticFiles[protocol.DocumentURI(syntheticURI.String())]; ok {
 		return protocompile.SearchResult{
 			ResolvedPath: protocompile.ResolvedPath(path),
 			Source:       strings.NewReader(src),
 		}, nil
 	}
-	uri := span.URI(syntheticURI.String())
+	uri := protocol.DocumentURI(syntheticURI.String())
 	r.filePathsByURI[uri] = path
 	r.fileURIsByPath[path] = uri
 	var src bytes.Buffer
@@ -412,8 +411,8 @@ func (r *Resolver) checkGlobalCache(path string) (protocompile.SearchResult, err
 	}, nil
 }
 
-func (r *Resolver) SyntheticFiles() []span.URI {
-	var uris []span.URI
+func (r *Resolver) SyntheticFiles() []protocol.DocumentURI {
+	var uris []protocol.DocumentURI
 	for uri := range r.syntheticFiles {
 		uris = append(uris, uri)
 	}
@@ -501,7 +500,7 @@ func (r *Resolver) translatePathLocked(path string, whence protocompile.ImportCo
 	}
 	// simple cases:
 	// 1. check if the path is relative to the source file
-	filename := uri.Filename()
+	filename := uri.Path()
 	if filepath.IsLocal(path) { // does the path look like a local file (not absolute, no ../ etc)
 		candidates := []string{
 			filepath.Join(filepath.Dir(filename), path), // relative
@@ -546,7 +545,7 @@ func (r *Resolver) translatePathLocked(path string, whence protocompile.ImportCo
 	if translatedPath == "" {
 		return "", fmt.Errorf("could not find file %q relative to %q", path, uri)
 	}
-	translatedURI := span.URIFromPath(translatedPath)
+	translatedURI := protocol.URIFromPath(translatedPath)
 
 	// translate back to a URI that matches the importing file
 	switch r.importSourcesByURI[uri] {

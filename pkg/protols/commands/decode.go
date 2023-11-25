@@ -15,7 +15,6 @@ import (
 	"github.com/mattn/go-tty"
 	"github.com/spf13/cobra"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
-	"golang.org/x/tools/gopls/pkg/span"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
@@ -95,7 +94,7 @@ func decodeWithType(ctx context.Context, in io.Reader, msgType string) (proto.Me
 		return nil, err
 	}
 	cache := lsp.NewCache(protocol.WorkspaceFolder{
-		URI: string(span.URIFromPath(cwd)),
+		URI: string(protocol.URIFromPath(cwd)),
 	})
 	cache.LoadFiles(sources.SearchDirs(cwd))
 	allMsgs := cache.AllMessages()

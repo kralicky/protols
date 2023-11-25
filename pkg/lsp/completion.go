@@ -17,15 +17,15 @@ import (
 
 func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *protocol.CompletionList, err error) {
 	doc := params.TextDocument
-	currentParseRes, err := c.FindParseResultByURI(doc.URI.SpanURI())
+	currentParseRes, err := c.FindParseResultByURI(doc.URI)
 	if err != nil {
 		return nil, err
 	}
-	maybeCurrentLinkRes, err := c.FindResultByURI(doc.URI.SpanURI())
+	maybeCurrentLinkRes, err := c.FindResultByURI(doc.URI)
 	if err != nil {
 		return nil, err
 	}
-	mapper, err := c.GetMapper(doc.URI.SpanURI())
+	mapper, err := c.GetMapper(doc.URI)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	}
 	textPrecedingCursor := string(mapper.Content[start:end])
 
-	latestAstValid, err := c.LatestDocumentContentsWellFormed(doc.URI.SpanURI())
+	latestAstValid, err := c.LatestDocumentContentsWellFormed(doc.URI)
 	if err != nil {
 		return nil, err
 	}

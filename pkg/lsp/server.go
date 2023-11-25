@@ -16,11 +16,10 @@ import (
 	"github.com/kralicky/protols/pkg/sources"
 	"github.com/samber/lo"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/tools/gopls/pkg/file"
 	"golang.org/x/tools/gopls/pkg/lsp"
 	"golang.org/x/tools/gopls/pkg/lsp/progress"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
-	"golang.org/x/tools/gopls/pkg/lsp/source"
-	"golang.org/x/tools/gopls/pkg/span"
 	"golang.org/x/tools/pkg/jsonrpc2"
 )
 
@@ -57,7 +56,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 	s.tracker.SetSupportsWorkDoneProgress(params.Capabilities.Window.WorkDoneProgress)
 	s.cachesMu.Lock()
 	for _, folder := range folders {
-		path := span.URIFromURI(folder.URI).Filename()
+		path := protocol.URIFromURI(folder.URI).Path()
 		slog.Info("adding workspace folder", "path", path)
 		c := NewCache(folder)
 		c.LoadFiles(sources.SearchDirs(path))
@@ -231,14 +230,14 @@ func (s *Server) DidOpen(ctx context.Context, params *protocol.DidOpenTextDocume
 		return err
 	}
 
-	uri := params.TextDocument.URI.SpanURI()
+	uri := params.TextDocument.URI
 	if !uri.IsFile() {
 		return nil
 	}
-	return c.DidModifyFiles(ctx, []source.FileModification{
+	return c.DidModifyFiles(ctx, []file.Modification{
 		{
 			URI:        uri,
-			Action:     source.Open,
+			Action:     file.Open,
 			Version:    params.TextDocument.Version,
 			Text:       []byte(params.TextDocument.Text),
 			LanguageID: params.TextDocument.LanguageID,
@@ -253,14 +252,14 @@ func (s *Server) DidClose(ctx context.Context, params *protocol.DidCloseTextDocu
 		return err
 	}
 
-	uri := params.TextDocument.URI.SpanURI()
+	uri := params.TextDocument.URI
 	if !uri.IsFile() {
 		return nil
 	}
-	return c.DidModifyFiles(ctx, []source.FileModification{
+	return c.DidModifyFiles(ctx, []file.Modification{
 		{
 			URI:     uri,
-			Action:  source.Close,
+			Action:  file.Close,
 			Version: -1,
 			Text:    nil,
 		},
@@ -274,7 +273,7 @@ func (s *Server) DidChange(ctx context.Context, params *protocol.DidChangeTextDo
 		return err
 	}
 
-	uri := params.TextDocument.URI.SpanURI()
+	uri := params.TextDocument.URI
 	if !uri.IsFile() {
 		return nil
 	}
@@ -282,9 +281,9 @@ func (s *Server) DidChange(ctx context.Context, params *protocol.DidChangeTextDo
 	if err != nil {
 		return err
 	}
-	return c.DidModifyFiles(ctx, []source.FileModification{{
+	return c.DidModifyFiles(ctx, []file.Modification{{
 		URI:     uri,
-		Action:  source.Change,
+		Action:  file.Change,
 		Version: params.TextDocument.Version,
 		Text:    text,
 	}})
@@ -292,18 +291,18 @@ func (s *Server) DidChange(ctx context.Context, params *protocol.DidChangeTextDo
 
 // DidChangeWatchedFiles implements protocol.Server.
 func (s *Server) DidChangeWatchedFiles(ctx context.Context, params *protocol.DidChangeWatchedFilesParams) error {
-	mods := map[*Cache][]source.FileModification{}
+	mods := map[*Cache][]file.Modification{}
 	for _, change := range params.Changes {
 		uri := change.URI
-		if !uri.SpanURI().IsFile() {
+		if !uri.IsFile() {
 			continue
 		}
 		cache, err := s.CacheForURI(uri)
 		if err != nil {
 			continue
 		}
-		mods[cache] = append(mods[cache], source.FileModification{
-			URI:    uri.SpanURI(),
+		mods[cache] = append(mods[cache], file.Modification{
+			URI:    uri,
 			Action: lsp.ChangeTypeToFileAction(change.Type),
 			OnDisk: true,
 		})
@@ -318,7 +317,7 @@ func (s *Server) DidChangeWatchedFiles(ctx context.Context, params *protocol.Did
 
 // DidCreateFiles implements protocol.Server.
 func (s *Server) DidCreateFiles(ctx context.Context, params *protocol.CreateFilesParams) (err error) {
-	modifications := map[*Cache][]source.FileModification{}
+	modifications := map[*Cache][]file.Modification{}
 
 	for _, f := range params.Files {
 		uri := f.URI
@@ -326,9 +325,9 @@ func (s *Server) DidCreateFiles(ctx context.Context, params *protocol.CreateFile
 		if err != nil {
 			return err
 		}
-		modifications[c] = append(modifications[c], source.FileModification{
-			URI:     span.URIFromURI(uri),
-			Action:  source.Create,
+		modifications[c] = append(modifications[c], file.Modification{
+			URI:     protocol.URIFromURI(uri),
+			Action:  file.Create,
 			OnDisk:  true,
 			Version: -1,
 		})
@@ -341,7 +340,7 @@ func (s *Server) DidCreateFiles(ctx context.Context, params *protocol.CreateFile
 
 // DidDeleteFiles implements protocol.Server.
 func (s *Server) DidDeleteFiles(ctx context.Context, params *protocol.DeleteFilesParams) (err error) {
-	modifications := map[*Cache][]source.FileModification{}
+	modifications := map[*Cache][]file.Modification{}
 
 	for _, f := range params.Files {
 		uri := f.URI
@@ -349,9 +348,9 @@ func (s *Server) DidDeleteFiles(ctx context.Context, params *protocol.DeleteFile
 		if err != nil {
 			return err
 		}
-		modifications[c] = append(modifications[c], source.FileModification{
-			URI:     span.URIFromURI(uri),
-			Action:  source.Delete,
+		modifications[c] = append(modifications[c], file.Modification{
+			URI:     protocol.URIFromURI(uri),
+			Action:  file.Delete,
 			Version: -1,
 		})
 	}
@@ -363,7 +362,7 @@ func (s *Server) DidDeleteFiles(ctx context.Context, params *protocol.DeleteFile
 
 // DidRenameFiles implements protocol.Server.
 func (s *Server) DidRenameFiles(ctx context.Context, params *protocol.RenameFilesParams) (err error) {
-	modifications := map[*Cache][]source.FileModification{}
+	modifications := map[*Cache][]file.Modification{}
 
 	for _, f := range params.Files {
 		oldC, err := s.CacheForURI(protocol.DocumentURI(f.OldURI))
@@ -374,15 +373,15 @@ func (s *Server) DidRenameFiles(ctx context.Context, params *protocol.RenameFile
 		if err != nil {
 			return err
 		}
-		modifications[oldC] = append(modifications[oldC], source.FileModification{
-			URI:     span.URIFromURI(f.OldURI),
-			Action:  source.Delete,
+		modifications[oldC] = append(modifications[oldC], file.Modification{
+			URI:     protocol.URIFromURI(f.OldURI),
+			Action:  file.Delete,
 			OnDisk:  true,
 			Version: -1,
 		})
-		modifications[newC] = append(modifications[newC], source.FileModification{
-			URI:     span.URIFromURI(f.NewURI),
-			Action:  source.Create,
+		modifications[newC] = append(modifications[newC], file.Modification{
+			URI:     protocol.URIFromURI(f.NewURI),
+			Action:  file.Create,
 			OnDisk:  true,
 			Version: -1,
 		})
@@ -399,14 +398,14 @@ func (s *Server) DidSave(ctx context.Context, params *protocol.DidSaveTextDocume
 	if err != nil {
 		return err
 	}
-	mod := source.FileModification{
-		URI:    params.TextDocument.URI.SpanURI(),
-		Action: source.Save,
+	mod := file.Modification{
+		URI:    params.TextDocument.URI,
+		Action: file.Save,
 	}
 	if params.Text != nil {
 		mod.Text = []byte(*params.Text)
 	}
-	return c.DidModifyFiles(ctx, []source.FileModification{mod})
+	return c.DidModifyFiles(ctx, []file.Modification{mod})
 }
 
 // SemanticTokensFull implements protocol.Server.
@@ -510,7 +509,7 @@ func (s *Server) Diagnostic(ctx context.Context, params *protocol.DocumentDiagno
 		return nil, err
 	}
 
-	reports, kind, resultId, err := c.ComputeDiagnosticReports(params.TextDocument.URI.SpanURI(), params.PreviousResultID)
+	reports, kind, resultId, err := c.ComputeDiagnosticReports(params.TextDocument.URI, params.PreviousResultID)
 	if err != nil {
 		slog.Error("failed to compute diagnostic reports", "error", err)
 		return nil, err
@@ -646,7 +645,7 @@ func (s *Server) NonstandardRequest(ctx context.Context, method string, params i
 		if err != nil {
 			return nil, err
 		}
-		parseRes, err := c.FindParseResultByURI(span.URIFromURI(u))
+		parseRes, err := c.FindParseResultByURI(protocol.URIFromURI(u))
 		if err != nil {
 			return nil, err
 		}
@@ -661,7 +660,7 @@ func (s *Server) NonstandardRequest(ctx context.Context, method string, params i
 		clear(s.caches)
 		runtime.GC()
 		for _, folder := range allWorkspaces {
-			path := span.URIFromURI(folder.URI).Filename()
+			path := protocol.URIFromURI(folder.URI).Path()
 			c := NewCache(folder)
 			c.LoadFiles(sources.SearchDirs(path))
 			s.caches[path] = c
@@ -693,14 +692,14 @@ func (s *Server) DidChangeWorkspaceFolders(ctx context.Context, params *protocol
 	removed := params.Event.Removed
 	s.cachesMu.Lock()
 	for _, folder := range added {
-		path := span.URIFromURI(folder.URI).Filename()
+		path := protocol.URIFromURI(folder.URI).Path()
 		slog.Info("adding workspace folder", "path", path)
 		c := NewCache(folder)
 		c.LoadFiles(sources.SearchDirs(path))
 		s.caches[path] = c
 	}
 	for _, folder := range removed {
-		path := span.URIFromURI(folder.URI).Filename()
+		path := protocol.URIFromURI(folder.URI).Path()
 		slog.Info("removing workspace folder", "path", path)
 		delete(s.caches, path)
 	}

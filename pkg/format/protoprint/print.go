@@ -2048,7 +2048,7 @@ func uninterpretedToOptions(uninterp []*descriptorpb.UninterpretedOption) []opti
 		case unint.NegativeIntValue != nil:
 			v = unint.GetNegativeIntValue()
 		case unint.AggregateValue != nil:
-			v = ident(unint.GetAggregateValue())
+			v = ident("{ " + unint.GetAggregateValue() + " }")
 		}
 
 		opts[i] = option{name: buf.String(), val: v}

@@ -73,7 +73,7 @@ func asElement(v interface{}) Element {
 	case protoreflect.FieldDescriptor:
 		return fieldElement{v}
 	case protoreflect.MessageDescriptor:
-		return msgElement{v}
+		return msgElement{string(v.Name())}
 	case protoreflect.EnumDescriptor:
 		return enumElement{v}
 	case protoreflect.EnumValueDescriptor:
@@ -84,6 +84,8 @@ func asElement(v interface{}) Element {
 		return methodElement{v}
 	case *descriptorpb.DescriptorProto_ExtensionRange:
 		return (*extRangeElement)(v)
+	case protoreflect.Name:
+		return msgElement{string(v)}
 	default:
 		panic(fmt.Sprintf("unexpected type of element: %T", v))
 	}
@@ -268,7 +270,7 @@ func (f fieldElement) IsCustomOption() bool {
 }
 
 type msgElement struct {
-	protoreflect.MessageDescriptor
+	name string
 }
 
 func (m msgElement) Kind() ElementKind {
@@ -276,7 +278,7 @@ func (m msgElement) Kind() ElementKind {
 }
 
 func (m msgElement) Name() string {
-	return string(m.MessageDescriptor.Name())
+	return m.name
 }
 
 func (m msgElement) Number() int32 {

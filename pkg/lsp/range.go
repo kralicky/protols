@@ -27,6 +27,13 @@ func adjustColumns(r protocol.Range, leftAdjust int, rightAdjust int) protocol.R
 	}
 }
 
+func adjustColumn(r protocol.Position, adjust int) protocol.Position {
+	return protocol.Position{
+		Line:      r.Line,
+		Character: r.Character + uint32(adjust),
+	}
+}
+
 func positionsToRange(start, end ast.SourcePos) protocol.Range {
 	return protocol.Range{
 		Start: protocol.Position{

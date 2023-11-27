@@ -528,6 +528,9 @@ func (f *formatter) writeOptionName(optionNameNode *ast.OptionNameNode) {
 			}
 			if fieldReferenceNode.Close != nil {
 				f.writeInline(fieldReferenceNode.Close)
+			} else if fieldReferenceNode.Open != nil {
+				// (extended syntax rule) fill in missing close paren automatically
+				f.writeInline(&ast.RuneNode{Rune: ')'})
 			}
 			continue
 		}
@@ -815,6 +818,9 @@ GROUPS:
 				}
 				if elem.Name.Close != nil {
 					fclone.writeInline(elem.Name.Close)
+				} else if elem.Name.Open != nil {
+					// (extended syntax rule) fill in missing close paren automatically
+					fclone.writeInline(&ast.RuneNode{Rune: ')'})
 				}
 				if elem.Sep != nil {
 					fclone.writeInline(elem.Sep)
@@ -1071,8 +1077,12 @@ func messageLiteralHasNestedMessageOrArray(messageLiteralNode *ast.MessageLitera
 }
 func messageLiteralHasNestedArray(messageLiteralNode *ast.MessageLiteralNode) bool {
 	for _, elem := range messageLiteralNode.Elements {
-		switch elem.Val.(type) {
+		switch v := elem.Val.(type) {
 		case *ast.ArrayLiteralNode:
+			if len(v.Elements) == 0 {
+				// (extended syntax rule) empty array literals don't need to be expanded
+				continue
+			}
 			return true
 		}
 	}
@@ -1179,6 +1189,10 @@ func (f *formatter) writeMessageFieldPrefix(messageFieldNode *ast.MessageFieldNo
 	}
 	if fieldReferenceNode.Close != nil {
 		f.writeInline(fieldReferenceNode.Close)
+	} else if fieldReferenceNode.Open != nil {
+		// (extended syntax rule) fill in missing close paren automatically
+		f.writeInline(&ast.RuneNode{Rune: ')'})
+
 	}
 	if messageFieldNode.Sep != nil {
 		f.writeInline(messageFieldNode.Sep)
@@ -1314,6 +1328,9 @@ func (f *formatter) writeFieldReference(fieldReferenceNode *ast.FieldReferenceNo
 	f.writeInline(fieldReferenceNode.Name)
 	if fieldReferenceNode.Close != nil {
 		f.writeInline(fieldReferenceNode.Close)
+	} else if fieldReferenceNode.Open != nil {
+		// (extended syntax rule) fill in missing close paren automatically
+		f.writeInline(&ast.RuneNode{Rune: ')'})
 	}
 }
 
@@ -1633,23 +1650,31 @@ func (f *formatter) writeCompactOptions(compactOptionsNode *ast.CompactOptionsNo
 		//    deprecated = true
 		//  ]
 		//
-		f.writeInline(compactOptionsNode.OpenBracket)
-		if len(compactOptionsNode.Options) != 0 {
-			optionNode := compactOptionsNode.Options[0]
-			f.writeInline(optionNode.Name)
-			f.Space()
-			f.writeInline(optionNode.Equals)
-			if node, ok := optionNode.Val.(*ast.CompoundStringLiteralNode); ok {
-				// If there's only a single compact option, the value needs to
-				// write its comments (if any) in a way that preserves the closing ']'.
-				f.writeCompoundStringLiteralNoIndentEndInline(node)
-				f.writeInline(compactOptionsNode.CloseBracket)
-				return
+		if len(compactOptionsNode.Options) > 0 {
+			f.writeInline(compactOptionsNode.OpenBracket)
+			for i, optionNode := range compactOptionsNode.Options {
+				f.writeInline(optionNode.Name)
+				f.Space()
+				if optionNode.Equals != nil {
+					f.writeInline(optionNode.Equals)
+				}
+				if node, ok := optionNode.Val.(*ast.CompoundStringLiteralNode); ok {
+					// If there's only a single compact option, the value needs to
+					// write its comments (if any) in a way that preserves the closing ']'.
+					f.writeCompoundStringLiteralNoIndentEndInline(node)
+					f.writeInline(compactOptionsNode.CloseBracket)
+					return
+				}
+				f.Space()
+				f.writeInline(optionNode.Val)
+
+				if i < len(compactOptionsNode.Options)-1 && i < len(compactOptionsNode.Commas) {
+					f.writeInline(compactOptionsNode.Commas[i])
+					f.Space()
+				}
 			}
-			f.Space()
-			f.writeInline(optionNode.Val)
+			f.writeInline(compactOptionsNode.CloseBracket)
 		}
-		f.writeInline(compactOptionsNode.CloseBracket)
 		return
 	}
 	var elementWriterFunc func()
@@ -2790,6 +2815,9 @@ func StringForFieldReference(fieldReference *ast.FieldReferenceNode) string {
 	}
 	result += string(fieldReference.Name.AsIdentifier())
 	if fieldReference.Close != nil {
+		result += ")"
+	} else if fieldReference.Open != nil {
+		// (extended syntax rule) fill in missing close paren automatically
 		result += ")"
 	}
 	return result

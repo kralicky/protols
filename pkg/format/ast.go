@@ -158,7 +158,7 @@ func (v *dumpVisitor) VisitMapTypeNode(node *ast.MapTypeNode) error {
 }
 
 func (v *dumpVisitor) VisitMessageFieldNode(node *ast.MessageFieldNode) error {
-	v.buf.WriteString(fmt.Sprintf("(name=%s) (val=%T)\n", maybe(node.Name).Name.Value(), node.Val.Value()))
+	v.buf.WriteString(fmt.Sprintf("(name=%s) (val=%T)\n", maybe(node.Name).Name.Value(), maybeValue(node.Val)))
 	return nil
 }
 
@@ -188,7 +188,7 @@ func (v *dumpVisitor) VisitOptionNameNode(node *ast.OptionNameNode) error {
 }
 
 func (v *dumpVisitor) VisitOptionNode(node *ast.OptionNode) error {
-	v.buf.WriteString(fmt.Sprintf("(name=%s) (val=%T)\n", StringForOptionName(node.Name), node.Val.Value()))
+	v.buf.WriteString(fmt.Sprintf("(name=%s) (val=%T)\n", StringForOptionName(node.Name), maybeValue(node.Val)))
 	return nil
 }
 
@@ -257,3 +257,14 @@ func (v *dumpVisitor) VisitUintLiteralNode(node *ast.UintLiteralNode) error {
 }
 
 var _ ast.Visitor = (*dumpVisitor)(nil)
+
+func maybeValue(val ast.ValueNode) any {
+	if _, ok := val.(ast.NoSourceNode); ok {
+		return "(invalid)"
+	}
+	vi := val.Value()
+	if vi == nil {
+		return "(nil)"
+	}
+	return vi
+}

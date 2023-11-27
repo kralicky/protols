@@ -18,6 +18,8 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
+var ErrNoDescriptorFound = fmt.Errorf("failed to find descriptor")
+
 // This file contains various algorithms to search and traverse through an AST
 // to locate descriptors and nodes from position info.
 
@@ -27,7 +29,6 @@ import (
 func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Result) (protoreflect.Descriptor, protocol.Range, error) {
 	root := linkRes.AST()
 	stack := stack{}
-	// var haveDescriptor protoreflect.Descriptor
 
 	for i := len(path) - 1; i >= 0; i-- {
 		currentNode := path[i]
@@ -416,7 +417,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 			return nil, protocol.Range{}, fmt.Errorf("unknown descriptor type %T", have.desc)
 		}
 		if want.desc == nil {
-			return nil, protocol.Range{}, fmt.Errorf("failed to find descriptor for %T/%T", want.desc, want.node)
+			return nil, protocol.Range{}, fmt.Errorf("%w for %T/%T", ErrNoDescriptorFound, want.desc, want.node)
 		}
 	}
 
@@ -602,6 +603,18 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 			}
 			return nil
 		},
+		DoVisitFieldNode: func(node *ast.FieldNode) error {
+			if intersectsLocation(node) {
+				paths = append(paths, slices.Clone(tracker.Path()))
+			}
+			return nil
+		},
+		DoVisitFieldReferenceNode: func(node *ast.FieldReferenceNode) error {
+			if intersectsLocation(node) {
+				paths = append(paths, slices.Clone(tracker.Path()))
+			}
+			return nil
+		},
 	}, append(tracker.AsWalkOptions(), ast.WithIntersection(tokenAtOffset))...)
 	if len(paths) == 0 {
 		return nil, false
@@ -650,6 +663,7 @@ func findDefinition(desc protoreflect.Descriptor, linkRes linker.Result) (ast.No
 			}
 		}
 	case protoreflect.EnumValueDescriptor:
+		// TODO(editions): builtin enums aren't wrappers here yet
 		node = linkRes.EnumValueNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.EnumValueDescriptorProto)).GetName()
 	case protoreflect.OneofDescriptor:
 		node = linkRes.OneofNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.OneofDescriptorProto))

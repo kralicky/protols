@@ -148,7 +148,7 @@ func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng 
 	return ret, err
 }
 
-const debugCheckOverlappingTokens = false
+const debugCheckOverlappingTokens = true
 
 func computeSemanticTokens(cache *Cache, e *semanticItems, walkOptions ...ast.WalkOption) {
 	e.inspect(cache, e.parseRes.AST(), walkOptions...)
@@ -420,6 +420,9 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			return nil
 		},
 		DoVisitFieldReferenceNode: func(node *ast.FieldReferenceNode) error {
+			if node.IsIncomplete() {
+				return nil
+			}
 			if node.IsAnyTypeReference() {
 				s.mktokens(node.URLPrefix, append(tracker.Path(), node.URLPrefix), semanticTypeType, semanticModifierDefaultLibrary)
 				s.mktokens(node.Slash, append(tracker.Path(), node.Slash), semanticTypeType, semanticModifierDefaultLibrary)

@@ -136,7 +136,7 @@ func (d *Driver) Compile(protos []string) (*Results, error) {
 				} else {
 					uriFilename = string(uri)
 				}
-				relativePath, _ := filepath.Rel(protocol.URIFromURI(d.workspace.URI).Path(), uriFilename)
+				relativePath, _ := filepath.Rel(protocol.DocumentURI(d.workspace.URI).Path(), uriFilename)
 				color := severityToColor[diag.Severity]
 				if !showSourceContext {
 					results.Messages = append(results.Messages,
@@ -208,7 +208,7 @@ func (d *Driver) sortAndFilterResults(results []linker.Result, pathMapping map[s
 		if !uri.IsFile() {
 			continue
 		}
-		path, err := filepath.Rel(protocol.URIFromURI(d.workspace.URI).Path(), uri.Path())
+		path, err := filepath.Rel(protocol.DocumentURI(d.workspace.URI).Path(), uri.Path())
 		if err != nil {
 			continue
 		}

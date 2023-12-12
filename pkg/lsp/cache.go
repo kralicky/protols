@@ -23,7 +23,6 @@ import (
 	"golang.org/x/tools/gopls/pkg/file"
 	"golang.org/x/tools/gopls/pkg/lsp/cache"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
-	"golang.org/x/tools/gopls/pkg/lsp/source"
 	"golang.org/x/tools/pkg/diff"
 	"golang.org/x/tools/pkg/jsonrpc2"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -137,7 +136,7 @@ func (c *Cache) FindFileByURI(uri protocol.DocumentURI) (protoreflect.FileDescri
 }
 
 func (c *Cache) TracksURI(uri protocol.DocumentURI) bool {
-	_, err := c.resolver.URIToPath(protocol.URIFromURI(string(uri)))
+	_, err := c.resolver.URIToPath(uri)
 	return err == nil
 }
 
@@ -180,8 +179,6 @@ func (o *CacheOptions) apply(opts ...CacheOption) {
 func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
 	options := CacheOptions{}
 	options.apply(opts...)
-	workdir := protocol.URIFromURI(workspace.URI).Path()
-	// NewCache creates a new cache.
 	diagHandler := NewDiagnosticHandler()
 	reporter := reporter.NewReporter(diagHandler.HandleError, diagHandler.HandleWarning)
 	resolver := NewResolver(workspace)
@@ -197,7 +194,7 @@ func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
 			RetainASTs:                   true,
 			IncludeDependenciesInResults: true,
 		},
-		workdir: workdir,
+		workdir: protocol.DocumentURI(workspace.URI).Path(),
 	}
 	cache := &Cache{
 		workspace:       workspace,
@@ -977,8 +974,8 @@ func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]p
 	return symbols, nil
 }
 
-func (c *Cache) GetSyntheticFileContents(ctx context.Context, uri string) (string, error) {
-	return c.resolver.SyntheticFileContents(protocol.URIFromURI(uri))
+func (c *Cache) GetSyntheticFileContents(ctx context.Context, uri protocol.DocumentURI) (string, error) {
+	return c.resolver.SyntheticFileContents(uri)
 }
 
 func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositionParams) (protoreflect.Descriptor, protocol.Range, error) {
@@ -1218,7 +1215,7 @@ func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options prot
 	}
 
 	edits := diff.Bytes(mapper.Content, buf.Bytes())
-	return source.ToProtocolEdits(mapper, edits)
+	return protocol.EditsFromDiffEdits(mapper, edits)
 }
 
 func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, localPackage protoreflect.FullName) []protoreflect.Descriptor {

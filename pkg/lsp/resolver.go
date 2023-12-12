@@ -51,7 +51,7 @@ func NewResolver(folder protocol.WorkspaceFolder) *Resolver {
 	return &Resolver{
 		folder:                     folder,
 		OverlayFS:                  cache.NewOverlayFS(cache.NewMemoizedFS()),
-		synthesizer:                NewProtoSourceSynthesizer(protocol.URIFromURI(folder.URI).Path()),
+		synthesizer:                NewProtoSourceSynthesizer(protocol.DocumentURI(folder.URI).Path()),
 		filePathsByURI:             make(map[protocol.DocumentURI]string),
 		fileURIsByPath:             make(map[string]protocol.DocumentURI),
 		syntheticFileOriginalNames: make(map[protocol.DocumentURI]string),

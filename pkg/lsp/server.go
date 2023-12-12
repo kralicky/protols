@@ -17,7 +17,6 @@ import (
 	"github.com/samber/lo"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/tools/gopls/pkg/file"
-	"golang.org/x/tools/gopls/pkg/lsp"
 	"golang.org/x/tools/gopls/pkg/lsp/progress"
 	"golang.org/x/tools/gopls/pkg/lsp/protocol"
 	"golang.org/x/tools/pkg/jsonrpc2"
@@ -56,7 +55,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 	s.tracker.SetSupportsWorkDoneProgress(params.Capabilities.Window.WorkDoneProgress)
 	s.cachesMu.Lock()
 	for _, folder := range folders {
-		path := protocol.URIFromURI(folder.URI).Path()
+		path := protocol.DocumentURI(folder.URI).Path()
 		slog.Info("adding workspace folder", "path", path)
 		c := NewCache(folder)
 		c.LoadFiles(sources.SearchDirs(path))
@@ -87,7 +86,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 					InterFileDependencies: true,
 				},
 			},
-			Workspace: &protocol.Workspace6Gn{
+			Workspace: &protocol.WorkspaceOptions{
 				WorkspaceFolders: &protocol.WorkspaceFolders5Gn{
 					Supported:           true,
 					ChangeNotifications: "workspace/didChangeWorkspaceFolders",
@@ -137,7 +136,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			// DocumentSymbolProvider: &protocol.Or_ServerCapabilities_documentSymbolProvider{Value: true},
 		},
 
-		ServerInfo: &protocol.PServerInfoMsg_initialize{
+		ServerInfo: &protocol.ServerInfo{
 			Name:    "protols",
 			Version: "0.0.1",
 		},
@@ -303,7 +302,7 @@ func (s *Server) DidChangeWatchedFiles(ctx context.Context, params *protocol.Did
 		}
 		mods[cache] = append(mods[cache], file.Modification{
 			URI:    uri,
-			Action: lsp.ChangeTypeToFileAction(change.Type),
+			Action: changeTypeToFileAction(change.Type),
 			OnDisk: true,
 		})
 	}
@@ -313,6 +312,18 @@ func (s *Server) DidChangeWatchedFiles(ctx context.Context, params *protocol.Did
 		}
 	}
 	return nil
+}
+
+func changeTypeToFileAction(ct protocol.FileChangeType) file.Action {
+	switch ct {
+	case protocol.Changed:
+		return file.Change
+	case protocol.Created:
+		return file.Create
+	case protocol.Deleted:
+		return file.Delete
+	}
+	return file.UnknownAction
 }
 
 // DidCreateFiles implements protocol.Server.
@@ -326,7 +337,7 @@ func (s *Server) DidCreateFiles(ctx context.Context, params *protocol.CreateFile
 			return err
 		}
 		modifications[c] = append(modifications[c], file.Modification{
-			URI:     protocol.URIFromURI(uri),
+			URI:     protocol.DocumentURI(uri),
 			Action:  file.Create,
 			OnDisk:  true,
 			Version: -1,
@@ -349,7 +360,7 @@ func (s *Server) DidDeleteFiles(ctx context.Context, params *protocol.DeleteFile
 			return err
 		}
 		modifications[c] = append(modifications[c], file.Modification{
-			URI:     protocol.URIFromURI(uri),
+			URI:     protocol.DocumentURI(uri),
 			Action:  file.Delete,
 			Version: -1,
 		})
@@ -374,13 +385,13 @@ func (s *Server) DidRenameFiles(ctx context.Context, params *protocol.RenameFile
 			return err
 		}
 		modifications[oldC] = append(modifications[oldC], file.Modification{
-			URI:     protocol.URIFromURI(f.OldURI),
+			URI:     protocol.DocumentURI(f.OldURI),
 			Action:  file.Delete,
 			OnDisk:  true,
 			Version: -1,
 		})
 		modifications[newC] = append(modifications[newC], file.Modification{
-			URI:     protocol.URIFromURI(f.NewURI),
+			URI:     protocol.DocumentURI(f.NewURI),
 			Action:  file.Create,
 			OnDisk:  true,
 			Version: -1,
@@ -638,14 +649,14 @@ func (s *Server) NonstandardRequest(ctx context.Context, method string, params i
 			return nil, err
 		}
 
-		return c.GetSyntheticFileContents(ctx, u)
+		return c.GetSyntheticFileContents(ctx, protocol.DocumentURI(u))
 	case "protols/ast":
 		u := params.([]any)[0].(string)
 		c, err := s.CacheForURI(protocol.DocumentURI(u))
 		if err != nil {
 			return nil, err
 		}
-		parseRes, err := c.FindParseResultByURI(protocol.URIFromURI(u))
+		parseRes, err := c.FindParseResultByURI(protocol.DocumentURI(u))
 		if err != nil {
 			return nil, err
 		}
@@ -660,7 +671,7 @@ func (s *Server) NonstandardRequest(ctx context.Context, method string, params i
 		clear(s.caches)
 		runtime.GC()
 		for _, folder := range allWorkspaces {
-			path := protocol.URIFromURI(folder.URI).Path()
+			path := protocol.DocumentURI(folder.URI).Path()
 			c := NewCache(folder)
 			c.LoadFiles(sources.SearchDirs(path))
 			s.caches[path] = c
@@ -692,14 +703,14 @@ func (s *Server) DidChangeWorkspaceFolders(ctx context.Context, params *protocol
 	removed := params.Event.Removed
 	s.cachesMu.Lock()
 	for _, folder := range added {
-		path := protocol.URIFromURI(folder.URI).Path()
+		path := protocol.DocumentURI(folder.URI).Path()
 		slog.Info("adding workspace folder", "path", path)
 		c := NewCache(folder)
 		c.LoadFiles(sources.SearchDirs(path))
 		s.caches[path] = c
 	}
 	for _, folder := range removed {
-		path := protocol.URIFromURI(folder.URI).Path()
+		path := protocol.DocumentURI(folder.URI).Path()
 		slog.Info("removing workspace folder", "path", path)
 		delete(s.caches, path)
 	}
@@ -886,7 +897,7 @@ func (*Server) PrepareCallHierarchy(context.Context, *protocol.CallHierarchyPrep
 }
 
 // PrepareRename implements protocol.Server.
-func (*Server) PrepareRename(context.Context, *protocol.PrepareRenameParams) (*protocol.Msg_PrepareRename2Gn, error) {
+func (*Server) PrepareRename(context.Context, *protocol.PrepareRenameParams) (*protocol.PrepareRenameResult, error) {
 	return nil, notImplemented("PrepareRename")
 }
 

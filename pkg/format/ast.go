@@ -137,6 +137,15 @@ func (v *dumpVisitor) VisitIdentNode(node *ast.IdentNode) error {
 	return nil
 }
 
+func (v *dumpVisitor) VisitIncompleteIdentNode(node *ast.IncompleteIdentNode) error {
+	if node.IncompleteVal == nil {
+		v.buf.WriteString("(val=)\n")
+	} else {
+		v.buf.WriteString(fmt.Sprintf("(val=%s)\n", node.IncompleteVal.AsIdentifier()))
+	}
+	return nil
+}
+
 func (v *dumpVisitor) VisitImportNode(node *ast.ImportNode) error {
 	v.buf.WriteString(fmt.Sprintf("(name=%s)\n", node.Name.AsString()))
 	return nil

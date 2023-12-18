@@ -45,6 +45,17 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		return nil, err
 	}
 	textPrecedingCursor := string(mapper.Content[start:end])
+	start, end, err = mapper.RangeOffsets(protocol.Range{
+		Start: params.Position,
+		End: protocol.Position{
+			Line:      params.Position.Line + 1,
+			Character: 0,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	textFollowingCursor := string(mapper.Content[start:end])
 
 	latestAstValid, err := c.LatestDocumentContentsWellFormed(doc.URI)
 	if err != nil {
@@ -61,12 +72,22 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		searchTarget = currentParseRes
 	}
 	columnAdjust := 0
-	if len(textPrecedingCursor) > 0 && textPrecedingCursor[len(textPrecedingCursor)-1] == '.' {
+	if len(strings.TrimSpace(textFollowingCursor)) == 0 {
+		// adjust by the number of spaces at the end of the text to the left of the cursor
+		for i := len(textPrecedingCursor) - 1; i >= 0; i-- {
+			if textPrecedingCursor[i] == ' ' {
+				columnAdjust--
+			} else {
+				break
+			}
+		}
+	} else if len(textPrecedingCursor) > 0 && textPrecedingCursor[len(textPrecedingCursor)-1] == '.' {
 		// position the cursor to be on top of the token before the dot
 		columnAdjust -= 2
 	}
 	tokenAtOffset := searchTarget.AST().TokenAtOffset(posOffset + columnAdjust)
-
+	// tokenInfo := searchTarget.AST().TokenInfo(tokenAtOffset).RawText()
+	// _ = tokenInfo
 	// complete within options
 	indexOfOptionKeyword := strings.LastIndex(textPrecedingCursor, "option ") // note the space; don't match 'optional'
 	if indexOfOptionKeyword != -1 {
@@ -188,6 +209,56 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				return nil, err
 			}
 			completions = append(completions, items...)
+		case *ast.FieldNode:
+			// check if we are completing a type name
+			var shouldCompleteType bool
+			var completeType string
+
+			switch {
+			case tokenAtOffset == node.Semicolon.Token():
+				// figure out what the previous token is
+				switch tokenAtOffset - 1 {
+				case node.FldType.End():
+					// complete the field name
+					switch fldType := node.FldType.(type) {
+					case *ast.IncompleteIdentNode:
+						if fldType.IncompleteVal != nil {
+							completeType = string(fldType.IncompleteVal.AsIdentifier())
+						} else {
+							completeType = ""
+						}
+					case *ast.CompoundIdentNode:
+						completeType = string(fldType.AsIdentifier())
+					case *ast.IdentNode:
+						completeType = string(fldType.AsIdentifier())
+					}
+					shouldCompleteType = true
+				case node.Name.Token():
+				case node.Equals.Token():
+				case node.Tag.Token():
+				case node.Options.End():
+				}
+			case tokenAtOffset >= node.FldType.Start() && tokenAtOffset <= node.FldType.End():
+				// complete within the field type
+				pos := searchTarget.AST().NodeInfo(node.FldType).Start()
+				startOffset, err := mapper.PositionOffset(protocol.Position{
+					Line:      uint32(pos.Line - 1),
+					Character: uint32(pos.Col - 1),
+				})
+				if err != nil {
+					return nil, err
+				}
+				cursorIndexIntoType := posOffset - startOffset
+				completeType = string(node.FldType.AsIdentifier())
+				if len(completeType) > cursorIndexIntoType {
+					completeType = completeType[:cursorIndexIntoType]
+					shouldCompleteType = true
+				}
+			}
+			if shouldCompleteType {
+				fmt.Println("completing type", completeType)
+				completions = append(completions, completeTypeNames(c, completeType, maybeCurrentLinkRes)...)
+			}
 		}
 
 		return &protocol.CompletionList{
@@ -684,6 +755,38 @@ func completeKeywords(keywords ...string) []protocol.CompletionItem {
 			Kind:       protocol.KeywordCompletion,
 			InsertText: fmt.Sprintf("%s ", keyword),
 		})
+	}
+	return items
+}
+
+func completeTypeNames(cache *Cache, partialName string, linkRes linker.Result) []protocol.CompletionItem {
+	localPackage := linkRes.Package()
+	qualifiedPartialName := localPackage.Append(protoreflect.Name(partialName))
+	candidates, _ := linkRes.FindDescriptorsByPrefix(context.TODO(), string(qualifiedPartialName), func(d protoreflect.Descriptor) bool {
+		switch d.(type) {
+		case protoreflect.MessageDescriptor:
+			return true
+		case protoreflect.EnumDescriptor:
+			return true
+		}
+		return false
+	})
+	items := []protocol.CompletionItem{}
+	for _, candidate := range candidates {
+		switch candidate.(type) {
+		case protoreflect.MessageDescriptor:
+			items = append(items, protocol.CompletionItem{
+				Label:  strings.TrimPrefix(string(candidate.FullName()), string(localPackage)+"."),
+				Kind:   protocol.ClassCompletion,
+				Detail: string(candidate.FullName()),
+			})
+		case protoreflect.EnumDescriptor:
+			items = append(items, protocol.CompletionItem{
+				Label:  strings.TrimPrefix(string(candidate.FullName()), string(localPackage)+"."),
+				Kind:   protocol.EnumCompletion,
+				Detail: string(candidate.FullName()),
+			})
+		}
 	}
 	return items
 }

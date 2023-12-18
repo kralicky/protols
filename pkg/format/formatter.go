@@ -638,11 +638,17 @@ func columnFormatElements[T ast.Node, C elementsContainer[T]](f *formatter, ctr 
 			// consecutive lines
 			switch fieldNode := ast.Node(e).(type) {
 			case *ast.FieldNode:
+				if fieldNode.IsIncomplete() {
+					// don't group incomplete fields
+					startNewGroup()
+					currentGroup = append(currentGroup, e)
+					continue
+				}
 				// check if we are about to expand a compact options group
 				if fieldNode.Options != nil && f.compactOptionsShouldBeExpanded(fieldNode.Options) {
 					startNewGroup()
 					currentGroup = append(currentGroup, e)
-					startNewGroup()
+					startNewGroup() // group this field by itself
 					continue
 				}
 			case *ast.MessageFieldNode:
@@ -681,7 +687,39 @@ func columnFormatElements[T ast.Node, C elementsContainer[T]](f *formatter, ctr 
 				currentGroup = append(currentGroup, e)
 				continue
 			} else {
-				startNewGroup()
+				// the field is not directly adjacent to the previous field, but that
+				// doesn't necessarily mean we should start a new group. There are a few
+				// edge cases to consider:
+
+				// 1. The previous field was formatted multiline, but we compacted it:
+				//    int32 foo = 1 [
+				//      first =
+				//        foo,
+				//      second = bar
+				//    ];
+				shouldStartNewGroup := true
+				if line == prevFieldInfo.End().Line+1 {
+					switch prevNode := ast.Node(currentGroup[len(currentGroup)-1]).(type) {
+					case *ast.OptionNode:
+						switch prevVal := prevNode.Val.(type) {
+						case *ast.ArrayLiteralNode:
+							if !f.compactArrayLiteralShouldBeExpanded(prevVal) {
+								shouldStartNewGroup = false
+							}
+						case *ast.MessageLiteralNode:
+							if !f.compactMessageLiteralShouldBeExpanded(prevVal) {
+								shouldStartNewGroup = false
+							}
+						case *ast.CompoundStringLiteralNode:
+						default:
+							shouldStartNewGroup = false
+						}
+					}
+				}
+
+				if shouldStartNewGroup {
+					startNewGroup()
+				}
 				currentGroup = append(currentGroup, e)
 			}
 		} else {
@@ -723,6 +761,10 @@ GROUPS:
 			}
 			switch elem := ast.Node(elem).(type) {
 			case *ast.FieldNode:
+				if elem.IsIncomplete() {
+					fclone.writeField(elem)
+					continue
+				}
 				if elem.Label.KeywordNode != nil {
 					fclone.writeStart(elem.Label, nodeWriter)
 					fclone.Space()
@@ -1274,12 +1316,18 @@ func (f *formatter) writeField(fieldNode *ast.FieldNode) {
 			f.writeStart(fieldNode.FldType)
 		}
 	}
-	f.Space()
-	f.writeInline(fieldNode.Name)
-	f.Space()
-	f.writeInline(fieldNode.Equals)
-	f.Space()
-	f.writeInline(fieldNode.Tag)
+	if fieldNode.Name != nil {
+		f.Space()
+		f.writeInline(fieldNode.Name)
+	}
+	if fieldNode.Equals != nil {
+		f.Space()
+		f.writeInline(fieldNode.Equals)
+	}
+	if fieldNode.Tag != nil {
+		f.Space()
+		f.writeInline(fieldNode.Tag)
+	}
 	if fieldNode.Options != nil {
 		f.Space()
 		f.writeNode(fieldNode.Options)
@@ -2539,10 +2587,14 @@ func (f *formatter) writeMultilineCommentsMaybeCompact(comments ast.Comments, fo
 //	}
 func (f *formatter) writeInlineComments(comments ast.Comments) {
 	for i := 0; i < comments.Len(); i++ {
-		if i > 0 || comments.Index(i).LeadingWhitespace() != "" || f.lastWritten == ';' || f.lastWritten == '}' {
+		comment := comments.Index(i)
+		if comment.IsVirtual() {
+			continue
+		}
+		if i > 0 || comment.LeadingWhitespace() != "" || f.lastWritten == ';' || f.lastWritten == '}' {
 			f.Space()
 		}
-		text := comments.Index(i).RawText()
+		text := comment.RawText()
 		if strings.HasPrefix(text, "//") {
 			text = strings.TrimSpace(strings.TrimPrefix(text, "//"))
 			text = "/* " + text + " */"

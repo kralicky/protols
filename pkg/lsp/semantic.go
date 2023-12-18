@@ -416,7 +416,7 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 				modifier = semanticModifierDefaultLibrary
 			}
 			s.mktokens(node.FldType, append(tracker.Path(), node.FldType), semanticTypeType, modifier)
-			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeVariable, semanticModifierDefinition)
+			s.mktokens(node.FieldName(), append(tracker.Path(), node.FieldName()), semanticTypeVariable, semanticModifierDefinition)
 			return nil
 		},
 		DoVisitFieldReferenceNode: func(node *ast.FieldReferenceNode) error {

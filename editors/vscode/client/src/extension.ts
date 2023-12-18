@@ -13,7 +13,14 @@ export async function activate(context: vscode.ExtensionContext) {
   client.start()
 
   const astViewer = new ASTViewer((uri) => {
-    return client.sendRequest("protols/ast", fromProtoAstUri(uri).toString())
+    return client
+      .sendRequest("workspace/executeCommand", {
+        command: "protols/ast",
+        arguments: [{ uri: fromProtoAstUri(uri).toString() }],
+      })
+      .then((result: string) => {
+        return result
+      })
   })
   context.subscriptions.push(
     astViewer,
@@ -39,7 +46,10 @@ export async function activate(context: vscode.ExtensionContext) {
       if (!client.isRunning()) {
         return
       }
-      await client.sendRequest("protols/reindex-workspaces", {})
+      await client.sendRequest("workspace/executeCommand", {
+        command: "protols/reindex-workspaces",
+        arguments: [],
+      })
     }),
     vscode.commands.registerCommand("protols.stop", async () => {
       if (!client.isRunning()) {

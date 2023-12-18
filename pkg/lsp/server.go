@@ -639,24 +639,29 @@ func (s *Server) InlayHint(ctx context.Context, params *protocol.InlayHintParams
 	return c.ComputeInlayHints(params.TextDocument, params.Range)
 }
 
-// NonstandardRequest implements protocol.Server.
-func (s *Server) NonstandardRequest(ctx context.Context, method string, params interface{}) (interface{}, error) {
-	switch method {
+// ExecuteCommand implements protocol.Server.
+func (s *Server) ExecuteCommand(ctx context.Context, params *protocol.ExecuteCommandParams) (interface{}, error) {
+	switch params.Command {
 	case "protols/synthetic-file-contents":
-		u := params.([]any)[0].(string)
-		c, err := s.CacheForURI(protocol.DocumentURI(u))
+		var req SyntheticFileContentsRequest
+		if err := json.Unmarshal(params.Arguments[0], &req); err != nil {
+			return nil, err
+		}
+		c, err := s.CacheForURI(protocol.DocumentURI(req.URI))
 		if err != nil {
 			return nil, err
 		}
-
-		return c.GetSyntheticFileContents(ctx, protocol.DocumentURI(u))
+		return c.GetSyntheticFileContents(ctx, protocol.DocumentURI(req.URI))
 	case "protols/ast":
-		u := params.([]any)[0].(string)
-		c, err := s.CacheForURI(protocol.DocumentURI(u))
+		var req SyntheticFileContentsRequest
+		if err := json.Unmarshal(params.Arguments[0], &req); err != nil {
+			return nil, err
+		}
+		c, err := s.CacheForURI(protocol.DocumentURI(req.URI))
 		if err != nil {
 			return nil, err
 		}
-		parseRes, err := c.FindParseResultByURI(protocol.DocumentURI(u))
+		parseRes, err := c.FindParseResultByURI(protocol.DocumentURI(req.URI))
 		if err != nil {
 			return nil, err
 		}
@@ -679,7 +684,7 @@ func (s *Server) NonstandardRequest(ctx context.Context, method string, params i
 		s.cachesMu.Unlock()
 		return nil, nil
 	default:
-		return nil, fmt.Errorf("%w: unknown nonstandard request %q", jsonrpc2.ErrMethodNotFound, method)
+		return nil, fmt.Errorf("%w: unknown command %q", jsonrpc2.ErrMethodNotFound, params.Command)
 	}
 }
 
@@ -974,11 +979,6 @@ func (*Server) DidOpenNotebookDocument(context.Context, *protocol.DidOpenNoteboo
 // DidSaveNotebookDocument implements protocol.Server.
 func (*Server) DidSaveNotebookDocument(context.Context, *protocol.DidSaveNotebookDocumentParams) error {
 	return notImplemented("DidSaveNotebookDocument")
-}
-
-// ExecuteCommand implements protocol.Server.
-func (*Server) ExecuteCommand(context.Context, *protocol.ExecuteCommandParams) (interface{}, error) {
-	return nil, notImplemented("ExecuteCommand")
 }
 
 // Exit implements protocol.Server.

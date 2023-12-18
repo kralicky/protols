@@ -26,3 +26,15 @@ func NewSelectRangeCommand(params SelectRangeParams) *protocol.Command {
 		},
 	}
 }
+
+type SyntheticFileContentsRequest struct {
+	// The URI of the file to update.
+	URI string `json:"uri"`
+}
+
+type DocumentASTRequest struct {
+	// The URI of the file to retrieve the AST for.
+	URI string `json:"uri"`
+}
+
+type ReindexWorkspacesRequest struct{}

@@ -15,12 +15,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bufbuild/protocompile"
-	"github.com/bufbuild/protocompile/linker"
+	"github.com/kralicky/protocompile"
+	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protols/pkg/format"
-	"golang.org/x/tools/gopls/pkg/file"
-	"golang.org/x/tools/gopls/pkg/lsp/cache"
-	"golang.org/x/tools/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/file"
+	"github.com/kralicky/tools-lite/gopls/pkg/lsp/cache"
+	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoregistry"
 )

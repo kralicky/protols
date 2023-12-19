@@ -5,8 +5,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/bufbuild/protocompile/parser"
-	"github.com/bufbuild/protocompile/reporter"
+	"github.com/kralicky/protocompile/parser"
+	"github.com/kralicky/protocompile/reporter"
 	"github.com/kralicky/protols/pkg/format/protoprint"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )

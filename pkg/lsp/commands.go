@@ -3,7 +3,7 @@ package lsp
 import (
 	"encoding/json"
 
-	"golang.org/x/tools/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 )
 
 type SelectRangeParams struct {

@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bufbuild/protocompile/ast"
-	"github.com/bufbuild/protocompile/linker"
-	"github.com/bufbuild/protocompile/reporter"
-	"golang.org/x/tools/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/protocompile/ast"
+	"github.com/kralicky/protocompile/linker"
+	"github.com/kralicky/protocompile/reporter"
+	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 )
 
 type ProtoDiagnostic struct {

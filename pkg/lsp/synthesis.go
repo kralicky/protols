@@ -15,10 +15,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kralicky/tools-lite/pkg/diff"
+	"github.com/kralicky/tools-lite/pkg/gocommand"
+	"github.com/kralicky/tools-lite/pkg/imports"
 	"golang.org/x/mod/module"
-	"golang.org/x/tools/pkg/diff"
-	"golang.org/x/tools/pkg/gocommand"
-	"golang.org/x/tools/pkg/imports"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 )

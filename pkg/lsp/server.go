@@ -14,12 +14,11 @@ import (
 
 	"github.com/kralicky/protols/pkg/format"
 	"github.com/kralicky/protols/pkg/sources"
-	"github.com/samber/lo"
+	"github.com/kralicky/tools-lite/gopls/pkg/file"
+	"github.com/kralicky/tools-lite/gopls/pkg/lsp/progress"
+	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/pkg/jsonrpc2"
 	"golang.org/x/sync/errgroup"
-	"golang.org/x/tools/gopls/pkg/file"
-	"golang.org/x/tools/gopls/pkg/lsp/progress"
-	"golang.org/x/tools/gopls/pkg/lsp/protocol"
-	"golang.org/x/tools/pkg/jsonrpc2"
 )
 
 type Server struct {
@@ -469,7 +468,10 @@ func (s *Server) DocumentSymbol(ctx context.Context, params *protocol.DocumentSy
 	if err != nil {
 		return nil, err
 	}
-	return lo.ToAnySlice(symbols), nil
+	for _, symbol := range symbols {
+		result = append(result, symbol)
+	}
+	return result, nil
 }
 
 var _ protocol.Server = &Server{}

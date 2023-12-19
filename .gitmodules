@@ -1,6 +1,0 @@
-[submodule "protocompile"]
-	path = protocompile
-	url = https://github.com/kralicky/protocompile
-[submodule "tools"]
-	path = tools
-	url = https://github.com/kralicky/tools

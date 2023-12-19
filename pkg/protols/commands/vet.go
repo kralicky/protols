@@ -4,8 +4,8 @@ import (
 	"errors"
 	"os"
 
-	"github.com/kralicky/protols/codegen"
 	"github.com/kralicky/protols/pkg/sources"
+	"github.com/kralicky/protols/sdk/driver"
 	"github.com/spf13/cobra"
 )
 
@@ -19,7 +19,7 @@ func BuildVetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			driver := codegen.NewDriver(wd)
+			driver := driver.NewDriver(wd)
 			results, err := driver.Compile(sources.SearchDirs(wd))
 			if err != nil {
 				return err

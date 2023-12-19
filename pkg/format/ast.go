@@ -6,8 +6,8 @@ import (
 	"math"
 	"strings"
 
-	"github.com/bufbuild/protocompile/ast"
-	"github.com/bufbuild/protocompile/parser"
+	"github.com/kralicky/protocompile/ast"
+	"github.com/kralicky/protocompile/parser"
 )
 
 func DumpAST(node ast.Node, parseRes parser.Result) string {

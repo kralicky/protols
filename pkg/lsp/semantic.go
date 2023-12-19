@@ -10,16 +10,16 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/bufbuild/protocompile"
-	"github.com/bufbuild/protocompile/ast"
-	"github.com/bufbuild/protocompile/linker"
-	"github.com/bufbuild/protocompile/parser"
 	"github.com/bufbuild/protovalidate-go/celext"
 	"github.com/google/cel-go/cel"
 	celcommon "github.com/google/cel-go/common"
 	celast "github.com/google/cel-go/common/ast"
 	"github.com/google/cel-go/common/operators"
-	"golang.org/x/tools/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/protocompile"
+	"github.com/kralicky/protocompile/ast"
+	"github.com/kralicky/protocompile/linker"
+	"github.com/kralicky/protocompile/parser"
+	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 

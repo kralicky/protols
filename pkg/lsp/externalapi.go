@@ -3,8 +3,8 @@ package lsp
 import (
 	"maps"
 
-	"github.com/bufbuild/protocompile/linker"
-	"golang.org/x/tools/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/protocompile/linker"
+	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 )
 
 // Intended for use with external tools only, not part of LSP implementation.

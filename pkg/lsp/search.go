@@ -9,11 +9,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bufbuild/protocompile/ast"
-	"github.com/bufbuild/protocompile/linker"
-	"github.com/bufbuild/protocompile/parser"
-	"github.com/bufbuild/protocompile/protoutil"
-	"golang.org/x/tools/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/protocompile/ast"
+	"github.com/kralicky/protocompile/linker"
+	"github.com/kralicky/protocompile/parser"
+	"github.com/kralicky/protocompile/protoutil"
+	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 )

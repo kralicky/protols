@@ -25,8 +25,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/bufbuild/protocompile/ast"
-	"go.uber.org/multierr"
+	"github.com/kralicky/protocompile/ast"
 )
 
 // formatter writes an *ast.FileNode as a .proto file.
@@ -148,8 +147,7 @@ func (f *formatter) In() {
 func (f *formatter) Out() {
 	if f.indent <= 0 {
 		// Unreachable.
-		f.err = multierr.Append(
-			f.err,
+		f.err = errors.Join(f.err,
 			errors.New("internal error: attempted to decrement indentation at zero"),
 		)
 		return
@@ -201,7 +199,7 @@ func (f *formatter) WriteString(elem string) {
 		if !strings.ContainsRune(prevBlockList, f.lastWritten) &&
 			!strings.ContainsRune(nextBlockList, first) {
 			if _, err := f.writer.Write([]byte{' '}); err != nil {
-				f.err = multierr.Append(f.err, err)
+				f.err = errors.Join(f.err, err)
 				return
 			}
 		}
@@ -211,7 +209,7 @@ func (f *formatter) WriteString(elem string) {
 	}
 	f.lastWritten, _ = utf8.DecodeLastRuneInString(elem)
 	if _, err := f.writer.Write([]byte(elem)); err != nil {
-		f.err = multierr.Append(f.err, err)
+		f.err = errors.Join(f.err, err)
 	}
 }
 
@@ -1848,7 +1846,7 @@ func (f *formatter) writeCompositeValueForArrayLiteral(
 	case *ast.MessageLiteralNode:
 		f.writeMessageLiteralForArray(node, lastElement)
 	default:
-		f.err = multierr.Append(f.err, fmt.Errorf("unexpected array value node %T", node))
+		f.err = errors.Join(f.err, fmt.Errorf("unexpected array value node %T", node))
 	}
 }
 
@@ -2263,7 +2261,7 @@ func (f *formatter) writeNode(node ast.Node) {
 	case *ast.EmptyDeclNode:
 		// Nothing to do here.
 	default:
-		f.err = multierr.Append(f.err, fmt.Errorf("unexpected node: %T", node))
+		f.err = errors.Join(f.err, fmt.Errorf("unexpected node: %T", node))
 	}
 }
 

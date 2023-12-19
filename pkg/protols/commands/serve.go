@@ -8,10 +8,10 @@ import (
 	"os"
 
 	"github.com/kralicky/protols/pkg/lsp"
-	"golang.org/x/tools/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 
-	"golang.org/x/tools/pkg/event"
-	"golang.org/x/tools/pkg/jsonrpc2"
+	"github.com/kralicky/tools-lite/pkg/event"
+	"github.com/kralicky/tools-lite/pkg/jsonrpc2"
 
 	"github.com/spf13/cobra"
 )
@@ -31,25 +31,14 @@ func BuildServeCmd() *cobra.Command {
 			stream = protocol.LoggingStream(stream, os.Stdout)
 			conn := jsonrpc2.NewConn(stream)
 			client := protocol.ClientDispatcher(conn)
-			// r, w := io.Pipe()
-			// go func() {
-			// 	scan := bufio.NewScanner(r)
-			// 	for scan.Scan() {
-			// 		log := scan.Bytes()
-			// 		client.LogMessage(context.Background(), &protocol.LogMessageParams{
-			// 			Type:    protocol.Log,
-			// 			Message: string(log),
-			// 		})
-			// 	}
-			// }()
+
 			slog.SetDefault(slog.New(slog.NewTextHandler(cmd.OutOrStderr(), &slog.HandlerOptions{
 				AddSource: true,
 				Level:     slog.LevelDebug,
 			})))
 
-			ctx := protocol.WithClient(cmd.Context(), client)
 			server := lsp.NewServer(client)
-			conn.Go(ctx, protocol.CancelHandler(
+			conn.Go(cmd.Context(), protocol.CancelHandler(
 				AsyncHandler(
 					jsonrpc2.MustReplyHandler(
 						protocol.ServerHandler(server, jsonrpc2.MethodNotFound)))))

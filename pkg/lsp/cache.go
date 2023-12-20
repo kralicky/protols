@@ -182,6 +182,7 @@ func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
 	diagHandler := NewDiagnosticHandler()
 	reporter := reporter.NewReporter(diagHandler.HandleError, diagHandler.HandleWarning)
 	resolver := NewResolver(workspace)
+	resolver.PreloadWellKnownPaths()
 
 	compiler := &Compiler{
 		fs: resolver.OverlayFS,

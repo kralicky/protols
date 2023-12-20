@@ -3,12 +3,13 @@ module github.com/kralicky/protols
 go 1.21.4
 
 require (
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.31.0-20230914171853-63dfe56cc2c4.1
 	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/bufbuild/protovalidate-go v0.3.4
 	github.com/google/cel-go v0.18.2
 	github.com/kralicky/gpkg v0.0.0-20231114180450-2f4bff8c5588
 	github.com/kralicky/protocompile v0.0.0-20231218212224-15ecf10ac6ce
-	github.com/kralicky/tools-lite v0.0.0-20231218233754-44653bb3241f
+	github.com/kralicky/tools-lite v0.0.0-20231220215214-1ddd048bf76d
 	github.com/mattn/go-tty v0.0.5
 	github.com/spf13/cobra v1.8.0
 	golang.org/x/mod v0.14.0

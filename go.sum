@@ -1,3 +1,5 @@
+buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.31.0-20230914171853-63dfe56cc2c4.1 h1:2gmp+PRca1fqQHf/WMKOgu9inVb0R0N07TucgY3QZCQ=
+buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.31.0-20230914171853-63dfe56cc2c4.1/go.mod h1:xafc+XIsTxTy76GJQ1TKgvJWsSugFBqMaN27WhUblew=
 cloud.google.com/go/dlp v1.11.1 h1:OFlXedmPP/5//X1hBEeq3D9kUVm9fb6ywYANlpv/EsQ=
 cloud.google.com/go/dlp v1.11.1/go.mod h1:/PA2EnioBeXTL/0hInwgj0rfsQb3lpE3R8XUJxqUNKI=
 github.com/AlecAivazis/survey/v2 v2.3.7 h1:6I/u8FvytdGsgonrYsVn2t8t4QiRnh6QSTqkkhIiSjQ=
@@ -32,8 +34,8 @@ github.com/kralicky/gpkg v0.0.0-20231114180450-2f4bff8c5588 h1:chw4znRXk7AA+AlKc
 github.com/kralicky/gpkg v0.0.0-20231114180450-2f4bff8c5588/go.mod h1:vOkwMjs49XmP/7Xfo9ZL6eg2ei51lmtD/4U/Az5GTq8=
 github.com/kralicky/protocompile v0.0.0-20231218212224-15ecf10ac6ce h1:xJSnZJyKMaxlpjblD1kt/9aIhMzXa7HAwEwoy64lyGA=
 github.com/kralicky/protocompile v0.0.0-20231218212224-15ecf10ac6ce/go.mod h1:XUljTWXZp9dmJImzFCehcuRGBB5AESV2lkdIHD3BRng=
-github.com/kralicky/tools-lite v0.0.0-20231218233754-44653bb3241f h1:CGDUHe+tVRnnN0I9Hu0gEzvwjpR3ZzKd+sTOYiPzkf8=
-github.com/kralicky/tools-lite v0.0.0-20231218233754-44653bb3241f/go.mod h1:NKsdxFI6awifvNvxDwtCU1YCaKRoSSPpbHXkKOMuq24=
+github.com/kralicky/tools-lite v0.0.0-20231220215214-1ddd048bf76d h1:L0KTWRkEO7U+yp0MUwnK2BUV4/N9tOOXOjiVdGenHsg=
+github.com/kralicky/tools-lite v0.0.0-20231220215214-1ddd048bf76d/go.mod h1:NKsdxFI6awifvNvxDwtCU1YCaKRoSSPpbHXkKOMuq24=
 github.com/mattn/go-colorable v0.1.2/go.mod h1:U0ppj6V5qS13XJ6of8GYAs25YV2eR4EVcfRqFIhoBtE=
 github.com/mattn/go-colorable v0.1.4 h1:snbPLB8fVfU9iwbbo30TPtbLRzwWu6aJS6Xh4eaaviA=
 github.com/mattn/go-colorable v0.1.4/go.mod h1:U0ppj6V5qS13XJ6of8GYAs25YV2eR4EVcfRqFIhoBtE=
@@ -117,6 +119,7 @@ google.golang.org/grpc v1.60.1 h1:26+wFr+cNqSGFcOXcabYC0lUVJVRa2Sb2ortSK7VrEU=
 google.golang.org/grpc v1.60.1/go.mod h1:OlCHIeLYqSSsLi6i49B5QGdzaMZK9+M7LXN2FKz4eGM=
 google.golang.org/protobuf v1.26.0-rc.1/go.mod h1:jlhhOSvTdKEhbULTjvd4ARK9grFBp09yW+WbY/TyQbw=
 google.golang.org/protobuf v1.26.0/go.mod h1:9q0QmTI4eRPtz6boOQmLYwt+qCgq0jsYwAQnmE0givc=
+google.golang.org/protobuf v1.31.0/go.mod h1:HV8QOd/L58Z+nl8r43ehVNZIU/HEI6OcFqwMG9pJV4I=
 google.golang.org/protobuf v1.31.1-0.20231027082548-f4a6c1f6e5c1 h1:fk72uXZyuZiTtW5tgd63jyVK6582lF61nRC/kGv6vCA=
 google.golang.org/protobuf v1.31.1-0.20231027082548-f4a6c1f6e5c1/go.mod h1:HV8QOd/L58Z+nl8r43ehVNZIU/HEI6OcFqwMG9pJV4I=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=

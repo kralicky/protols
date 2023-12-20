@@ -148,7 +148,7 @@ func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng 
 	return ret, err
 }
 
-const debugCheckOverlappingTokens = true
+const debugCheckOverlappingTokens = false
 
 func computeSemanticTokens(cache *Cache, e *semanticItems, walkOptions ...ast.WalkOption) {
 	e.inspect(cache, e.parseRes.AST(), walkOptions...)
@@ -233,7 +233,6 @@ func computeSemanticTokens(cache *Cache, e *semanticItems, walkOptions ...ast.Wa
 			i += skip - 1
 		}
 	}
-
 }
 
 func (s *semanticItems) mktokens(node ast.Node, path []ast.Node, tt tokenType, mods tokenModifier) {

@@ -66,6 +66,7 @@ type GoModuleImportResults struct {
 	DirInModule  string
 	SourceExists bool
 	SourcePath   string
+	KnownAltPath string
 }
 
 func (s *ProtoSourceSynthesizer) ImportFromGoModule(importName string) (GoModuleImportResults, error) {
@@ -87,6 +88,7 @@ func (s *ProtoSourceSynthesizer) ImportFromGoModule(importName string) (GoModule
 		return GoModuleImportResults{}, fmt.Errorf("%w: %s", os.ErrNotExist, err)
 	}
 
+	var knownAltPath string
 	pkgData, dir := s.moduleResolver.FindPackage(importPath)
 	if pkgData == nil || dir == "" {
 		for _, edits := range s.knownAlternativePackages {
@@ -96,6 +98,7 @@ func (s *ProtoSourceSynthesizer) ImportFromGoModule(importName string) (GoModule
 				pkgData, dir = s.moduleResolver.FindPackage(edited)
 				if pkgData != nil && dir != "" {
 					// fmt.Println("tryGoImport > successfully found", edited)
+					knownAltPath = path.Join(edited, filename)
 					goto edit_success
 				}
 			}
@@ -116,11 +119,16 @@ edit_success:
 			SourcePath:   filepath.Join(dir, filename),
 		}, nil
 	}
-	return GoModuleImportResults{
+	res := GoModuleImportResults{
 		Module:       pkgData,
 		DirInModule:  dir,
 		SourceExists: false,
-	}, nil
+
+		// even if there is no source, this may have been edited from a known
+		// alternative pattern, in which case we'll know how to resolve it later.
+		KnownAltPath: knownAltPath,
+	}
+	return res, nil
 }
 
 func (s *ProtoSourceSynthesizer) ImplicitGoPackagePath(filename string) (string, error) {

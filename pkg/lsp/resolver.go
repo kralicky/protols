@@ -276,7 +276,7 @@ func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportC
 		lg.Debug("failed to check go module")
 		return protocompile.SearchResult{}, err
 	}
-	if strings.HasPrefix(path, "google/") {
+	if IsWellKnownPath(path) {
 		if result, err := r.checkGlobalCache(path); err == nil {
 			lg.Debug("resolved to type in global descriptor cache")
 			return result, nil
@@ -298,7 +298,7 @@ func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportC
 }
 
 func (r *Resolver) checkWellKnownImportPath(path string) (protocompile.SearchResult, error) {
-	if strings.HasPrefix(path, "google/") {
+	if IsWellKnownPath(path) {
 		return r.checkGlobalCache(path)
 	}
 	return protocompile.SearchResult{}, os.ErrNotExist
@@ -336,6 +336,7 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 	if err != nil {
 		return protocompile.SearchResult{}, err
 	}
+
 	if res.SourceExists {
 		src, err := os.Open(res.SourcePath)
 		if err != nil {
@@ -353,24 +354,36 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 			ResolvedPath: protocompile.ResolvedPath(path),
 			Source:       src, // this is closed by the compiler
 		}, nil
-	} else if src, ok := r.syntheticFiles[r.fileURIsByPath[path]]; ok {
+	}
+
+	if src, ok := r.syntheticFiles[r.fileURIsByPath[path]]; ok {
 		return protocompile.SearchResult{
 			ResolvedPath: protocompile.ResolvedPath(path),
 			Source:       strings.NewReader(src),
 		}, nil
-	} else if synthesized, err := r.synthesizer.SynthesizeFromGoSource(path, res); err == nil {
+	}
+
+	if synthesized, err := r.synthesizer.SynthesizeFromGoSource(path, res); err == nil {
+		var original, resolved string
+		if res.KnownAltPath == "" {
+			original = *synthesized.Name
+			resolved = path
+		} else {
+			original = path
+			resolved = res.KnownAltPath
+		}
 		syntheticURI := url.URL{
 			Scheme:   "proto",
-			Path:     path,
+			Path:     resolved,
 			Fragment: r.folder.Name,
 		}
 		uri := protocol.DocumentURI(syntheticURI.String())
-		r.filePathsByURI[uri] = path
-		r.fileURIsByPath[path] = uri
+		r.filePathsByURI[uri] = resolved
+		r.fileURIsByPath[resolved] = uri
 		r.importSourcesByURI[uri] = SourceSynthetic
-		r.syntheticFileOriginalNames[uri] = *synthesized.Name
+		r.syntheticFileOriginalNames[uri] = original
 		return protocompile.SearchResult{
-			ResolvedPath: protocompile.ResolvedPath(path),
+			ResolvedPath: protocompile.ResolvedPath(resolved),
 			Proto:        synthesized,
 		}, nil
 	}
@@ -439,6 +452,12 @@ func (r *Resolver) LookupGoModule(filename string, f io.ReadCloser) (string, err
 	}
 
 	return "", fmt.Errorf("could not determine go module for %s", filename)
+}
+
+func (r *Resolver) PreloadWellKnownPaths() {
+	for _, importName := range wellKnownModuleImports {
+		r.findFileByPathLocked(importName, nil)
+	}
 }
 
 func FastLookupGoModule(f io.ReadCloser) (string, error) {
@@ -567,7 +586,7 @@ func (r *Resolver) translatePathLocked(path string, whence protocompile.ImportCo
 		return canonicalName, nil
 	case SourceGoModuleCache:
 		originalDir := filepath.Dir(filename)
-		// determine the relative movemnt from the original package to the new package
+		// determine the relative movement from the original package to the new package
 		// and apply it to the original package
 		relative, err := filepath.Rel(originalDir, filepath.Dir(translatedPath))
 		if err != nil {

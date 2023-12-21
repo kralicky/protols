@@ -114,6 +114,18 @@ func tagsForError(errWithPos reporter.ErrorWithPos) []protocol.DiagnosticTag {
 	}
 }
 
+func severityForError(original protocol.DiagnosticSeverity, errWithPos reporter.ErrorWithPos) protocol.DiagnosticSeverity {
+	err := errWithPos.Unwrap()
+
+	switch err.(type) {
+	case linker.ErrorUnusedImport:
+		// doesn't show up as a "problem" in vscode, but still shows hover text and dims the line
+		return protocol.SeverityHint
+	default:
+		return original
+	}
+}
+
 func codeActionsForError(errWithPos reporter.ErrorWithPos) []CodeAction {
 	err := errWithPos.Unwrap()
 	pos := errWithPos.GetPosition()
@@ -282,7 +294,7 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 
 	newDiagnostic := &ProtoDiagnostic{
 		Pos:         pos,
-		Severity:    protocol.SeverityWarning,
+		Severity:    severityForError(protocol.SeverityWarning, err),
 		Error:       err.Unwrap(),
 		Tags:        tagsForError(err),
 		CodeActions: codeActionsForError(err),

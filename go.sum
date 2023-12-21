@@ -34,8 +34,8 @@ github.com/kralicky/gpkg v0.0.0-20231114180450-2f4bff8c5588 h1:chw4znRXk7AA+AlKc
 github.com/kralicky/gpkg v0.0.0-20231114180450-2f4bff8c5588/go.mod h1:vOkwMjs49XmP/7Xfo9ZL6eg2ei51lmtD/4U/Az5GTq8=
 github.com/kralicky/protocompile v0.0.0-20231218212224-15ecf10ac6ce h1:xJSnZJyKMaxlpjblD1kt/9aIhMzXa7HAwEwoy64lyGA=
 github.com/kralicky/protocompile v0.0.0-20231218212224-15ecf10ac6ce/go.mod h1:XUljTWXZp9dmJImzFCehcuRGBB5AESV2lkdIHD3BRng=
-github.com/kralicky/tools-lite v0.0.0-20231220215214-1ddd048bf76d h1:L0KTWRkEO7U+yp0MUwnK2BUV4/N9tOOXOjiVdGenHsg=
-github.com/kralicky/tools-lite v0.0.0-20231220215214-1ddd048bf76d/go.mod h1:NKsdxFI6awifvNvxDwtCU1YCaKRoSSPpbHXkKOMuq24=
+github.com/kralicky/protocompile v0.0.0-20231221002747-110118444709 h1:ssRgUOyPzyE96v9V9+cA4+gZRFLqyf/uQY1ww3fVGUI=
+github.com/kralicky/protocompile v0.0.0-20231221002747-110118444709/go.mod h1:XUljTWXZp9dmJImzFCehcuRGBB5AESV2lkdIHD3BRng=
 github.com/kralicky/tools-lite v0.0.0-20231220233131-d53203363d9e h1:zJjfzNtdWAt5XqnyZOpNDDvBIajtONHEfj0ToVn1seg=
 github.com/kralicky/tools-lite v0.0.0-20231220233131-d53203363d9e/go.mod h1:NKsdxFI6awifvNvxDwtCU1YCaKRoSSPpbHXkKOMuq24=
 github.com/mattn/go-colorable v0.1.2/go.mod h1:U0ppj6V5qS13XJ6of8GYAs25YV2eR4EVcfRqFIhoBtE=

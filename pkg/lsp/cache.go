@@ -332,7 +332,7 @@ func (c *Cache) Compile(protos ...string) {
 }
 
 func (c *Cache) compileLocked(protos ...string) {
-	slog.Info("compiling", "protos", len(protos))
+	slog.Debug("compiling", "protos", len(protos))
 
 	resolved := make([]protocompile.ResolvedPath, 0, len(protos))
 	for _, proto := range protos {
@@ -347,7 +347,7 @@ func (c *Cache) compileLocked(protos ...string) {
 	}
 	// important to lock resultsMu here so that it can be modified in compile hooks
 	// c.resultsMu.Lock()
-	slog.Info("done compiling", "protos", len(protos))
+	slog.Debug("done compiling", "protos", len(protos))
 	for _, r := range res.Files {
 		path := r.Path()
 		found := false
@@ -1219,7 +1219,7 @@ func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options prot
 	return protocol.EditsFromDiffEdits(mapper, edits)
 }
 
-func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, localPackage protoreflect.FullName) []protoreflect.Descriptor {
+func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, localPackage protoreflect.FullName, filter ...func(protoreflect.Descriptor) bool) []protoreflect.Descriptor {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
 	eg, ctx := errgroup.WithContext(ctx)
@@ -1231,7 +1231,7 @@ func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, l
 			if res.Package() == localPackage {
 				p = string(localPackage) + "." + p
 			}
-			resultsByPackage[i], err = res.(linker.Result).FindDescriptorsByPrefix(ctx, p)
+			resultsByPackage[i], err = res.(linker.Result).FindDescriptorsByPrefix(ctx, p, filter...)
 			return
 		})
 	}

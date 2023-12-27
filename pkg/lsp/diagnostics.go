@@ -12,6 +12,7 @@ import (
 
 	"github.com/kralicky/protocompile/ast"
 	"github.com/kralicky/protocompile/linker"
+	"github.com/kralicky/protocompile/parser"
 	"github.com/kralicky/protocompile/reporter"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 )
@@ -280,6 +281,12 @@ func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
 
 func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 	if err == nil {
+		return
+	}
+
+	var xse parser.ExtendedSyntaxError
+	if errors.As(err, &xse) {
+		dr.HandleError(err)
 		return
 	}
 

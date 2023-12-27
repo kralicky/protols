@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protols/pkg/lsp"
@@ -78,12 +79,17 @@ type Results struct {
 }
 
 var severityToColor = map[protocol.DiagnosticSeverity]string{
-	protocol.SeverityError:   "\x1b[31m",
-	protocol.SeverityWarning: "\x1b[33m",
+	protocol.SeverityHint:        "\x1b[34m", // blue
+	protocol.SeverityInformation: "\x1b[32m", // green
+	protocol.SeverityWarning:     "\x1b[33m", // yellow
+	protocol.SeverityError:       "\x1b[31m", // red
 }
+
 var severityMsg = map[protocol.DiagnosticSeverity]string{
-	protocol.SeverityError:   "\x1b[31merror\x1b[0m",
-	protocol.SeverityWarning: "\x1b[33mwarning\x1b[0m",
+	protocol.SeverityHint:        "\x1b[34mhint\x1b[0m",
+	protocol.SeverityInformation: "\x1b[32minfo\x1b[0m",
+	protocol.SeverityWarning:     "\x1b[33mwarning\x1b[0m",
+	protocol.SeverityError:       "\x1b[31merror\x1b[0m",
 }
 
 func (d *Driver) Compile(protos []string) (*Results, error) {
@@ -121,7 +127,7 @@ func (d *Driver) Compile(protos []string) (*Results, error) {
 				if err != nil {
 					return nil, err
 				}
-				showSourceContext := true
+				showSourceContext := diag.Severity <= protocol.SeverityWarning
 				for _, tag := range diag.Tags {
 					if tag == protocol.Unnecessary {
 						showSourceContext = false
@@ -130,19 +136,26 @@ func (d *Driver) Compile(protos []string) (*Results, error) {
 				}
 				// show the source line with dimmed text before and after the error range,
 				// and highlight the error range
-				var uriFilename string
+				var uriFilename, relativePath string
 				if uri.IsFile() {
 					uriFilename = uri.Path()
 				} else {
-					uriFilename = string(uri)
+					uriFilename = strings.TrimPrefix(string(uri), "proto://")
 				}
-				relativePath, _ := filepath.Rel(protocol.DocumentURI(d.workspace.URI).Path(), uriFilename)
+				if p, err := filepath.Rel(protocol.DocumentURI(d.workspace.URI).Path(), uriFilename); err == nil {
+					relativePath = p
+				} else {
+					relativePath = uriFilename
+				}
+				// dim path and line number
+				source := fmt.Sprintf("\x1b[2m%s:%d\x1b[0m", relativePath, diag.Range.Start.Line+1)
+
 				color := severityToColor[diag.Severity]
 				if !showSourceContext {
 					results.Messages = append(results.Messages,
-						fmt.Sprintf("%s: %s:%d: %s",
+						fmt.Sprintf("%s: %s %s",
 							severityMsg[diag.Severity],
-							relativePath, diag.Range.Start.Line+1,
+							source,
 							diag.Message,
 						),
 					)
@@ -163,8 +176,8 @@ func (d *Driver) Compile(protos []string) (*Results, error) {
 				)
 
 				results.Messages = append(results.Messages,
-					fmt.Sprintf("%s: %s:%d: %s\n\t%s", severityMsg[diag.Severity],
-						relativePath, diag.Range.Start.Line+1,
+					fmt.Sprintf("%s: %s %s\n\t%s", severityMsg[diag.Severity],
+						source,
 						diag.Message,
 						highlightedLine,
 					),

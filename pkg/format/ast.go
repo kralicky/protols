@@ -83,7 +83,6 @@ func (v *dumpVisitor) VisitCompoundStringLiteralNode(node *ast.CompoundStringLit
 }
 
 func (v *dumpVisitor) VisitEmptyDeclNode(node *ast.EmptyDeclNode) error {
-
 	return nil
 }
 
@@ -98,12 +97,10 @@ func (v *dumpVisitor) VisitEnumValueNode(node *ast.EnumValueNode) error {
 }
 
 func (v *dumpVisitor) VisitExtendNode(node *ast.ExtendNode) error {
-
 	return nil
 }
 
 func (v *dumpVisitor) VisitExtensionRangeNode(node *ast.ExtensionRangeNode) error {
-
 	return nil
 }
 
@@ -128,7 +125,6 @@ func (v *dumpVisitor) VisitFloatLiteralNode(node *ast.FloatLiteralNode) error {
 }
 
 func (v *dumpVisitor) VisitGroupNode(node *ast.GroupNode) error {
-
 	return nil
 }
 
@@ -139,9 +135,9 @@ func (v *dumpVisitor) VisitIdentNode(node *ast.IdentNode) error {
 
 func (v *dumpVisitor) VisitIncompleteIdentNode(node *ast.IncompleteIdentNode) error {
 	if node.IncompleteVal == nil {
-		v.buf.WriteString("(val=)\n")
+		v.buf.WriteString("!(val=)\n")
 	} else {
-		v.buf.WriteString(fmt.Sprintf("(val=%s)\n", node.IncompleteVal.AsIdentifier()))
+		v.buf.WriteString(fmt.Sprintf("!(val=%s)\n", node.IncompleteVal.AsIdentifier()))
 	}
 	return nil
 }
@@ -197,6 +193,9 @@ func (v *dumpVisitor) VisitOptionNameNode(node *ast.OptionNameNode) error {
 }
 
 func (v *dumpVisitor) VisitOptionNode(node *ast.OptionNode) error {
+	if node.IsIncomplete() {
+		v.buf.WriteString("(!) ")
+	}
 	v.buf.WriteString(fmt.Sprintf("(name=%s) (val=%T)\n", StringForOptionName(node.Name), maybeValue(node.Val)))
 	return nil
 }
@@ -226,7 +225,6 @@ func (v *dumpVisitor) VisitRangeNode(node *ast.RangeNode) error {
 }
 
 func (v *dumpVisitor) VisitReservedNode(node *ast.ReservedNode) error {
-
 	return nil
 }
 

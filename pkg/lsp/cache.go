@@ -373,7 +373,6 @@ func (c *Cache) compileLocked(protos ...string) {
 		c.unlinkedResults[path] = partial
 	}
 	c.unlinkedResultsMu.Unlock()
-	// c.resultsMu.Unlock()
 
 	syntheticFiles := c.resolver.CheckIncompleteDescriptors(c.results)
 	if len(syntheticFiles) == 0 {
@@ -417,15 +416,6 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modific
 	}
 	return nil
 }
-
-// func (s *Cache) OnFileSaved(f *protocol.DidSaveTextDocumentParams) error {
-// 	slog.With(
-// 		"file", string(f.TextDocument.URI),
-// 	).Debug("file modified")
-// 	s.compiler.overlay.ReloadFromDisk(f.TextDocument.URI)
-// 	s.Compile(s.filePathsByURI[f.TextDocument.URI])
-// 	return nil
-// }
 
 func (c *Cache) ComputeSemanticTokens(doc protocol.TextDocumentIdentifier) ([]uint32, error) {
 	c.resultsMu.RLock()
@@ -1207,6 +1197,13 @@ func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options prot
 	res, err := c.FindParseResultByURI(doc.URI)
 	if err != nil {
 		return nil, err
+	}
+	resAst := res.AST()
+	if resAst == nil {
+		return nil, nil
+	}
+	if _, ok := resAst.Pragma(PragmaNoFormat); ok {
+		return nil, nil
 	}
 	// format whole file
 	buf := bytes.NewBuffer(make([]byte, 0, len(mapper.Content)))

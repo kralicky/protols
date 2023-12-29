@@ -288,6 +288,45 @@ func (s *semanticItems) mkcomments(node ast.Node) {
 			s.multilineComment(comment, cstart, cend)
 			continue
 		}
+		text := comment.RawText()
+		if text, ok := strings.CutPrefix(text, "//protols:"); ok {
+			key := strings.SplitN(text, " ", 2)[0]
+			if len(key) > 0 {
+				switch node := node.(type) {
+				case *ast.KeywordNode:
+					if node.Val == "syntax" || node.Val == "edition" {
+						// pragmas are 3 semantic tokens:
+						// 1. '//' (comment)
+						// 2. 'protols:key' (macro)
+						// 3. ' value' (comment)
+						keyLen := len("protols:") + len(key)
+						s.items = append(s.items,
+							semanticItem{
+								line:  uint32(cstart.Line - 1),
+								start: uint32(cstart.Col - 1),
+								len:   uint32(2),
+								typ:   semanticTypeComment,
+							},
+							semanticItem{
+								line:  uint32(cstart.Line - 1),
+								start: uint32(cstart.Col - 1 + 2),
+								len:   uint32(keyLen),
+								typ:   semanticTypeMacro,
+							},
+						)
+						if len(text) > keyLen+2 {
+							s.items = append(s.items, semanticItem{
+								line:  uint32(cstart.Line - 1),
+								start: uint32(cstart.Col - 1 + 2 + keyLen),
+								len:   uint32(cend.Col - (cstart.Col - 1) - 2 - keyLen),
+								typ:   semanticTypeComment,
+							})
+						}
+						continue
+					}
+				}
+			}
+		}
 		s.items = append(s.items, semanticItem{
 			line:  uint32(cstart.Line - 1),
 			start: uint32(cstart.Col - 1),

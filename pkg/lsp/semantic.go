@@ -236,6 +236,10 @@ func computeSemanticTokens(cache *Cache, e *semanticItems, walkOptions ...ast.Wa
 }
 
 func (s *semanticItems) mktokens(node ast.Node, path []ast.Node, tt tokenType, mods tokenModifier) {
+	if node == (ast.NoSourceNode{}) {
+		return
+	}
+
 	info := s.parseRes.AST().NodeInfo(node)
 	if !info.IsValid() {
 		return
@@ -399,6 +403,7 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 	}
 	walkOptions = append(walkOptions, tracker.AsWalkOptions()...)
 	embeddedStringLiterals := make(map[*ast.StringLiteralNode]struct{})
+
 	// NB: when calling mktokens in composite node visitors:
 	// - ensure node paths are manually adjusted if creating tokens for a child node
 	// - ensure tokens for child nodes are created in the correct order
@@ -453,7 +458,11 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			if id := string(node.FldType.AsIdentifier()); protocompile.IsScalarType(id) || protocompile.IsWellKnownType(protoreflect.FullName(id)) {
 				modifier = semanticModifierDefaultLibrary
 			}
-			s.mktokens(node.FldType, append(tracker.Path(), node.FldType), semanticTypeType, modifier)
+			if !node.Label.IsPresent() || node.Label.Start() != node.FldType.Start() {
+				// for incomplete nodes, the field type might be the same as the label
+				// if the type is missing
+				s.mktokens(node.FldType, append(tracker.Path(), node.FldType), semanticTypeType, modifier)
+			}
 			s.mktokens(node.FieldName(), append(tracker.Path(), node.FieldName()), semanticTypeVariable, semanticModifierDefinition)
 			return nil
 		},
@@ -558,10 +567,6 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 		},
 		DoVisitEnumValueNode: func(node *ast.EnumValueNode) error {
 			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeEnumMember, 0)
-			return nil
-		},
-		DoVisitTerminalNode: func(node ast.TerminalNode) error {
-			s.mkcomments(node)
 			return nil
 		},
 	}, walkOptions...)

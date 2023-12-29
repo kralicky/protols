@@ -2251,7 +2251,7 @@ func (f *formatter) writeNode(node ast.Node) {
 	case *ast.CompoundIdentNode:
 		f.writeCompoundIdent(element)
 	case *ast.CompoundStringLiteralNode:
-		f.writeCompoundStringLiteralIndent(element)
+		f.writeCompoundStringLiteralIndentEndInline(element)
 	case *ast.EnumNode:
 		f.writeEnum(element)
 	case *ast.EnumValueNode:

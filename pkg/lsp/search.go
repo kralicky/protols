@@ -566,6 +566,10 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 		info := fileNode.NodeInfo(node)
 		return protocol.Intersect(toRange(info), protocol.Range{Start: location, End: location})
 	}
+	opts := tracker.AsWalkOptions()
+	if tokenAtOffset != ast.TokenError {
+		opts = append(opts, ast.WithIntersection(tokenAtOffset))
+	}
 	ast.Walk(parseRes.AST(), &ast.SimpleVisitor{
 		DoVisitMessageNode: func(node *ast.MessageNode) error {
 			if intersectsLocation(node) {
@@ -615,7 +619,7 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 			}
 			return nil
 		},
-	}, append(tracker.AsWalkOptions(), ast.WithIntersection(tokenAtOffset))...)
+	}, opts...)
 	if len(paths) == 0 {
 		return nil, false
 	}

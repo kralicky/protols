@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -695,8 +696,8 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 	}
 	a := res.AST()
 	startOff, endOff, _ := mapper.RangeOffsets(rng)
-	startToken := a.TokenAtOffset(startOff)
-	endToken := a.TokenAtOffset(endOff)
+	startToken := a.ItemAtOffset(startOff)
+	endToken := a.ItemAtOffset(endOff)
 	res.RangeFieldReferenceNodesWithDescriptors(func(node ast.Node, desc protoreflect.FieldDescriptor) bool {
 		switch node := node.(type) {
 		case *ast.FieldReferenceNode:
@@ -997,7 +998,7 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 	}
 	root := parseRes.AST()
 
-	token := root.TokenAtOffset(offset)
+	token := root.ItemAtOffset(offset)
 	computeSemanticTokens(c, &enc, ast.WithIntersection(token))
 
 	item, found := findNarrowestSemanticToken(parseRes, enc.items, params.Position)
@@ -1229,6 +1230,32 @@ func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, l
 				p = string(localPackage) + "." + p
 			}
 			resultsByPackage[i], err = res.(linker.Result).FindDescriptorsByPrefix(ctx, p, filter...)
+			return
+		})
+	}
+	eg.Wait()
+	combined := make([]protoreflect.Descriptor, 0, len(c.results))
+	for _, results := range resultsByPackage {
+		combined = append(combined, results...)
+	}
+	return combined
+}
+
+// Like FindAllDescriptorsByPrefix, but assumes a fully qualified prefix with
+// package name.
+func (c *Cache) FindAllDescriptorsByFullyQualifiedPrefix(ctx context.Context, prefix string, filter ...func(protoreflect.Descriptor) bool) []protoreflect.Descriptor {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	eg, ctx := errgroup.WithContext(ctx)
+	resultsByPackage := make([][]protoreflect.Descriptor, len(c.results))
+	for i, res := range c.results {
+		i, res := i, res
+		if !strings.HasPrefix(string(res.Package()), prefix) {
+			// optimization: skip results whose package names don't match the prefix
+			continue
+		}
+		eg.Go(func() (err error) {
+			resultsByPackage[i], err = res.(linker.Result).FindDescriptorsByPrefix(ctx, prefix, filter...)
 			return
 		})
 	}

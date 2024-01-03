@@ -134,8 +134,8 @@ func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng 
 	}
 	a := parseRes.AST()
 	startOff, endOff, _ := mapper.RangeOffsets(rng)
-	startToken := a.TokenAtOffset(startOff)
-	endToken := a.TokenAtOffset(endOff)
+	startToken := a.ItemAtOffset(startOff)
+	endToken := a.ItemAtOffset(endOff)
 
 	enc := semanticItems{
 		parseRes: parseRes,
@@ -205,7 +205,7 @@ func computeSemanticTokens(cache *Cache, e *semanticItems, walkOptions ...ast.Wa
 			if err != nil {
 				panic(err)
 			}
-			lineText := mapper.Content[lineStart:lineEnd]
+			lineText := strings.ReplaceAll(string(mapper.Content[lineStart:lineEnd]), "\t", " ")
 			// example output:
 			// ==== overlapping tokens ====
 			// /path/to/file.proto:line
@@ -342,6 +342,9 @@ func (s *semanticItems) mkcomments(node ast.Node) {
 	trailingComments := info.TrailingComments()
 	for i := 0; i < trailingComments.Len(); i++ {
 		comment := trailingComments.Index(i)
+		if comment.IsVirtual() {
+			continue // prevent overlapping tokens
+		}
 		cstart, cend := comment.Start(), comment.End()
 		if cend.Line > cstart.Line {
 			s.multilineComment(comment, cstart, cend)

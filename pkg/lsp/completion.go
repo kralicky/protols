@@ -72,7 +72,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		searchTarget = currentParseRes
 	}
 	columnAdjust := 0
-	if len(strings.TrimSpace(textFollowingCursor)) == 0 {
+	if following := len(strings.TrimSpace(textFollowingCursor)); following == 0 {
 		// adjust by the number of spaces at the end of the text to the left of the cursor
 		for i := len(textPrecedingCursor) - 1; i >= 0; i-- {
 			if textPrecedingCursor[i] == ' ' {
@@ -81,9 +81,6 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				break
 			}
 		}
-	} else if len(textPrecedingCursor) > 0 && textPrecedingCursor[len(textPrecedingCursor)-1] == '.' {
-		// position the cursor to be on top of the token before the dot
-		columnAdjust -= 2
 	}
 	tokenAtOffset := searchTarget.AST().TokenAtOffset(posOffset + columnAdjust)
 	// tokenInfo := searchTarget.AST().TokenInfo(tokenAtOffset).RawText()
@@ -250,8 +247,12 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				}
 				cursorIndexIntoType := posOffset - startOffset
 				completeType = string(node.FldType.AsIdentifier())
-				if len(completeType) > cursorIndexIntoType {
+				if len(completeType) >= cursorIndexIntoType {
 					completeType = completeType[:cursorIndexIntoType]
+					shouldCompleteType = true
+				} else if node.Label.IsPresent() && node.Label.Start() == node.FldType.Start() {
+					// handle empty *ast.IncompleteIdentNodes, such as in 'optional <cursor>'
+					completeType = ""
 					shouldCompleteType = true
 				}
 			}
@@ -796,9 +797,8 @@ func completeKeywords(keywords ...string) []protocol.CompletionItem {
 }
 
 func completeTypeNames(cache *Cache, partialName string, linkRes linker.Result) []protocol.CompletionItem {
-	localPackage := linkRes.Package()
-	qualifiedPartialName := localPackage.Append(protoreflect.Name(partialName))
-	candidates, _ := linkRes.FindDescriptorsByPrefix(context.TODO(), string(qualifiedPartialName), func(d protoreflect.Descriptor) bool {
+	var candidates []protoreflect.Descriptor
+	filter := func(d protoreflect.Descriptor) bool {
 		switch d.(type) {
 		case protoreflect.MessageDescriptor:
 			return true
@@ -806,19 +806,31 @@ func completeTypeNames(cache *Cache, partialName string, linkRes linker.Result) 
 			return true
 		}
 		return false
-	})
+	}
+	var trimPrefix string
+	if strings.HasPrefix(partialName, ".") {
+		candidates = cache.FindAllDescriptorsByFullyQualifiedPrefix(context.TODO(), partialName[1:], filter)
+	} else {
+		localPackage := linkRes.Package()
+		trimPrefix = string(localPackage + ".")
+		candidates = cache.FindAllDescriptorsByPrefix(context.TODO(), partialName, localPackage, filter)
+	}
 	items := []protocol.CompletionItem{}
+	labelPrefix := ""
+	if strings.HasPrefix(partialName, ".") {
+		labelPrefix = "."
+	}
 	for _, candidate := range candidates {
 		switch candidate.(type) {
 		case protoreflect.MessageDescriptor:
 			items = append(items, protocol.CompletionItem{
-				Label:  strings.TrimPrefix(string(candidate.FullName()), string(localPackage)+"."),
+				Label:  strings.TrimPrefix(labelPrefix+string(candidate.FullName()), trimPrefix),
 				Kind:   protocol.ClassCompletion,
 				Detail: string(candidate.FullName()),
 			})
 		case protoreflect.EnumDescriptor:
 			items = append(items, protocol.CompletionItem{
-				Label:  strings.TrimPrefix(string(candidate.FullName()), string(localPackage)+"."),
+				Label:  strings.TrimPrefix(labelPrefix+string(candidate.FullName()), trimPrefix),
 				Kind:   protocol.EnumCompletion,
 				Detail: string(candidate.FullName()),
 			})

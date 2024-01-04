@@ -352,7 +352,12 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 				case *ast.ReservedNode:
 				}
 			case ast.IdentValueNode:
-				want.desc = haveDesc.Values().ByName(protoreflect.Name(wantNode.AsIdentifier()))
+				// this could be either the enum name itself or a value name
+				if haveNode, ok := have.node.(*ast.EnumNode); ok && haveNode.Name == wantNode {
+					want.desc = haveDesc
+				} else {
+					want.desc = haveDesc.Values().ByName(protoreflect.Name(wantNode.AsIdentifier()))
+				}
 			}
 		case protoreflect.EnumValueDescriptor:
 			switch wantNode := want.node.(type) {

@@ -460,6 +460,18 @@ func (r *Resolver) PreloadWellKnownPaths() {
 	}
 }
 
+func (r *Resolver) findImportPathsByPrefix(prefix string) map[protocol.DocumentURI]string {
+	r.pathsMu.RLock()
+	defer r.pathsMu.RUnlock()
+	paths := map[protocol.DocumentURI]string{}
+	for uri, path := range r.filePathsByURI {
+		if strings.HasPrefix(path, prefix) {
+			paths[uri] = path
+		}
+	}
+	return paths
+}
+
 func FastLookupGoModule(f io.ReadCloser) (string, error) {
 	// Search the .proto file for `option go_package = "...";`
 	// We know this will be somewhere at the top of the file.

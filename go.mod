@@ -9,7 +9,7 @@ require (
 	github.com/google/cel-go v0.18.2
 	github.com/kralicky/gpkg v0.0.0-20231114180450-2f4bff8c5588
 	github.com/kralicky/protocompile v0.0.0-20240103002913-5d61ee5b6d9c
-	github.com/kralicky/tools-lite v0.0.0-20231220233131-d53203363d9e
+	github.com/kralicky/tools-lite v0.0.0-20240104191314-c259ddd5a342
 	github.com/mattn/go-tty v0.0.5
 	github.com/spf13/cobra v1.8.0
 	golang.org/x/mod v0.14.0

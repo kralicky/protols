@@ -576,6 +576,18 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 		opts = append(opts, ast.WithIntersection(tokenAtOffset))
 	}
 	ast.Walk(parseRes.AST(), &ast.SimpleVisitor{
+		DoVisitImportNode: func(node *ast.ImportNode) error {
+			if intersectsLocation(node) {
+				paths = append(paths, slices.Clone(tracker.Path()))
+			}
+			return nil
+		},
+		DoVisitSyntaxNode: func(node *ast.SyntaxNode) error {
+			if intersectsLocation(node) {
+				paths = append(paths, slices.Clone(tracker.Path()))
+			}
+			return nil
+		},
 		DoVisitMessageNode: func(node *ast.MessageNode) error {
 			if intersectsLocation(node) {
 				paths = append(paths, slices.Clone(tracker.Path()))

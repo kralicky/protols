@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"fmt"
+	"path"
 	"reflect"
 	"slices"
 	"sort"
@@ -19,10 +20,11 @@ import (
 
 func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *protocol.CompletionList, err error) {
 	defer func() {
-		if result != nil {
+		if result != nil && len(result.Items) > 0 {
 			for i := range result.Items {
 				result.Items[i].SortText = fmt.Sprintf("%05d", i)
 			}
+			result.Items[0].Preselect = true
 		}
 	}()
 	doc := params.TextDocument
@@ -91,8 +93,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		}
 	}
 	tokenAtOffset := searchTarget.AST().TokenAtOffset(posOffset + columnAdjust)
-	// tokenInfo := searchTarget.AST().TokenInfo(tokenAtOffset).RawText()
-	// _ = tokenInfo
+
 	// complete within options
 	indexOfOptionKeyword := strings.LastIndex(textPrecedingCursor, "option ") // note the space; don't match 'optional'
 	if indexOfOptionKeyword != -1 {
@@ -150,6 +151,10 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 					}
 				}
 			case protoreflect.ExtensionTypeDescriptor:
+				if _, ok := path[len(path)-2].(*ast.ExtendNode); ok {
+					// this is a field of an extend node, not a message literal
+					break
+				}
 				switch desc.Kind() {
 				case protoreflect.MessageKind:
 					msg := desc.Message()
@@ -170,7 +175,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			partialName := strings.TrimSpace(textPrecedingCursor)
 			if !isProto2(searchTarget.AST()) {
 				// complete message types
-				completions = append(completions, completeTypeNames(c, partialName, maybeCurrentLinkRes, desc.FullName())...)
+				completions = append(completions, completeTypeNames(c, partialName, "", maybeCurrentLinkRes, desc.FullName(), params.Position)...)
 			}
 			completions = append(completions, messageKeywordCompletions(searchTarget, partialName)...)
 		case *ast.CompactOptionsNode:
@@ -224,6 +229,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			var shouldCompleteType bool
 			var shouldCompleteKeywords bool
 			var completeType string
+			var completeTypeSuffix string
 
 			switch {
 			case tokenAtOffset == node.End():
@@ -262,6 +268,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				cursorIndexIntoType := posOffset - startOffset
 				completeType = string(node.FldType.AsIdentifier())
 				if len(completeType) >= cursorIndexIntoType {
+					completeTypeSuffix = completeType[cursorIndexIntoType:]
 					completeType = completeType[:cursorIndexIntoType]
 					shouldCompleteType = true
 				}
@@ -283,10 +290,52 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 						scope = desc.FullName()
 					}
 				}
-				completions = append(completions, completeTypeNames(c, completeType, maybeCurrentLinkRes, scope)...)
+				completions = append(completions, completeTypeNames(c, completeType, completeTypeSuffix, maybeCurrentLinkRes, scope, params.Position)...)
 			}
 			if shouldCompleteKeywords {
 				completions = append(completions, messageKeywordCompletions(searchTarget, completeType)...)
+			}
+		case *ast.ImportNode:
+			// complete import paths
+			quoteIdx := strings.IndexRune(textPrecedingCursor, '"')
+			if quoteIdx != -1 {
+				partialPath := strings.TrimSpace(textPrecedingCursor[quoteIdx+1:])
+				endQuoteIdx := strings.IndexRune(textFollowingCursor, '"')
+				var partialPathSuffix string
+				if endQuoteIdx != -1 {
+					partialPathSuffix = strings.TrimSpace(textFollowingCursor[:endQuoteIdx])
+				}
+
+				existingImportPaths := []string{}
+				imports := maybeCurrentLinkRes.Imports()
+				for i, l := 0, imports.Len(); i < l; i++ {
+					// don't include the current import in the existing imports list
+					imp := imports.Get(i)
+					if imp == desc {
+						continue
+					}
+					existingImportPaths = append(existingImportPaths, imp.Path())
+				}
+				completions = append(completions, completeImports(c, partialPath, partialPathSuffix, existingImportPaths, params.Position)...)
+			} else {
+				if strings.TrimSpace(textPrecedingCursor) == "import" && node.Public == nil {
+					completions = append(completions, protocol.CompletionItem{
+						Label: "public",
+						Kind:  protocol.KeywordCompletion,
+					})
+				}
+			}
+		case *ast.SyntaxNode:
+			// complete syntax versions
+			quoteIdx := strings.IndexRune(textPrecedingCursor, '"')
+			if quoteIdx != -1 {
+				partialVersion := strings.TrimSpace(textPrecedingCursor[quoteIdx+1:])
+				endQuoteIdx := strings.IndexRune(textFollowingCursor, '"')
+				var partialVersionSuffix string
+				if endQuoteIdx != -1 {
+					partialVersionSuffix = strings.TrimSpace(textFollowingCursor[:endQuoteIdx])
+				}
+				completions = append(completions, completeSyntaxVersions(partialVersion, partialVersionSuffix, params.Position)...)
 			}
 		}
 
@@ -374,9 +423,11 @@ func fieldCompletion(fld protoreflect.FieldDescriptor, rng protocol.Range, style
 	switch fld.Cardinality() {
 	case protoreflect.Repeated:
 		compl.Detail = fmt.Sprintf("repeated %s", compl.Detail)
-		compl.TextEdit = &protocol.TextEdit{
-			Range:   rng,
-			NewText: fmt.Sprintf("%s%s[${0}]", name, operator),
+		compl.TextEdit = &protocol.Or_CompletionItem_textEdit{
+			Value: protocol.TextEdit{
+				Range:   rng,
+				NewText: fmt.Sprintf("%s%s[${0}]", name, operator),
+			},
 		}
 		textFmt := protocol.SnippetTextFormat
 		compl.InsertTextFormat = &textFmt
@@ -387,9 +438,11 @@ func fieldCompletion(fld protoreflect.FieldDescriptor, rng protocol.Range, style
 		case protoreflect.MessageKind:
 			msg := fld.Message()
 			if !msg.IsMapEntry() {
-				compl.TextEdit = &protocol.TextEdit{
-					Range:   rng,
-					NewText: fmt.Sprintf("%s%s{\n  ${0}\n}", name, operator),
+				compl.TextEdit = &protocol.Or_CompletionItem_textEdit{
+					Value: protocol.TextEdit{
+						Range:   rng,
+						NewText: fmt.Sprintf("%s%s{\n  ${0}\n}", name, operator),
+					},
 				}
 				textFmt := protocol.SnippetTextFormat
 				compl.InsertTextFormat = &textFmt
@@ -397,9 +450,11 @@ func fieldCompletion(fld protoreflect.FieldDescriptor, rng protocol.Range, style
 				compl.InsertTextMode = &insMode
 			}
 		default:
-			compl.TextEdit = &protocol.TextEdit{
-				Range:   rng,
-				NewText: name + operator,
+			compl.TextEdit = &protocol.Or_CompletionItem_textEdit{
+				Value: protocol.TextEdit{
+					Range:   rng,
+					NewText: name + operator,
+				},
 			}
 		}
 	}
@@ -685,7 +740,7 @@ func completeKeywords(keywords ...string) []protocol.CompletionItem {
 	return items
 }
 
-func completeTypeNames(cache *Cache, partialName string, linkRes linker.Result, scope protoreflect.FullName) []protocol.CompletionItem {
+func completeTypeNames(cache *Cache, partialName, partialNameSuffix string, linkRes linker.Result, scope protoreflect.FullName, pos protocol.Position) []protocol.CompletionItem {
 	var candidates []protoreflect.Descriptor
 	filter := func(d protoreflect.Descriptor) bool {
 		switch d := d.(type) {
@@ -711,9 +766,10 @@ func completeTypeNames(cache *Cache, partialName string, linkRes linker.Result, 
 	}
 	distanceSort(candidates, linkRes.Package(), scope)
 	for _, candidate := range candidates {
+		var item protocol.CompletionItem
 		switch candidate.(type) {
 		case protoreflect.MessageDescriptor:
-			item := protocol.CompletionItem{
+			item = protocol.CompletionItem{
 				Label:  strings.TrimPrefix(labelPrefix+string(candidate.FullName()), trimPrefix),
 				Kind:   protocol.ClassCompletion,
 				Detail: string(candidate.FullName()),
@@ -728,9 +784,8 @@ func completeTypeNames(cache *Cache, partialName string, linkRes linker.Result, 
 					item.Detail = fmt.Sprintf("%s (from %q)", item.Detail, importPath)
 				}
 			}
-			items = append(items, item)
 		case protoreflect.EnumDescriptor:
-			item := protocol.CompletionItem{
+			item = protocol.CompletionItem{
 				Label:  strings.TrimPrefix(labelPrefix+string(candidate.FullName()), trimPrefix),
 				Kind:   protocol.EnumCompletion,
 				Detail: string(candidate.FullName()),
@@ -744,7 +799,88 @@ func completeTypeNames(cache *Cache, partialName string, linkRes linker.Result, 
 					item.Detail = fmt.Sprintf("%s (from %q)", item.Detail, importPath)
 				}
 			}
-			items = append(items, item)
+		default:
+			continue
+		}
+		insertText := strings.TrimPrefix(item.Label, partialName)
+		replaceRange := protocol.Range{
+			Start: pos,
+			End:   adjustColumn(pos, len(partialNameSuffix)),
+		}
+		item.TextEdit = &protocol.Or_CompletionItem_textEdit{
+			Value: protocol.InsertReplaceEdit{
+				NewText: insertText,
+				Insert:  replaceRange,
+				Replace: replaceRange,
+			},
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func completeImports(cache *Cache, partialPath, partialPathSuffix string, existingImportPaths []string, pos protocol.Position) []protocol.CompletionItem {
+	paths := cache.FindImportPathsByPrefix(context.TODO(), partialPath)
+	items := []protocol.CompletionItem{}
+	existing := map[protocol.DocumentURI]struct{}{}
+	for _, path := range existingImportPaths {
+		uri, err := cache.resolver.PathToURI(path)
+		if err != nil {
+			continue
+		}
+		existing[uri] = struct{}{}
+	}
+	for uri, importPath := range paths {
+		if _, ok := existing[uri]; ok {
+			continue
+		}
+		label := strings.TrimPrefix(importPath, path.Dir(partialPath)+"/")
+		if base := path.Base(importPath); len(label) < len(base) {
+			label = base
+		}
+		insertText := strings.TrimPrefix(importPath, partialPath)
+		replaceRange := protocol.Range{
+			Start: pos,
+			End:   adjustColumn(pos, len(partialPathSuffix)),
+		}
+		items = append(items, protocol.CompletionItem{
+			Label: label,
+			Kind:  protocol.ModuleCompletion,
+			TextEdit: &protocol.Or_CompletionItem_textEdit{
+				Value: protocol.InsertReplaceEdit{
+					NewText: insertText,
+					Insert:  replaceRange,
+					Replace: replaceRange,
+				},
+			},
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Label < items[j].Label
+	})
+	return items
+}
+
+func completeSyntaxVersions(partialVersion, partialVersionSuffix string, pos protocol.Position) []protocol.CompletionItem {
+	items := []protocol.CompletionItem{}
+	for _, version := range []string{"proto2", "proto3"} {
+		replaceRange := protocol.Range{
+			Start: pos,
+			End:   adjustColumn(pos, len(partialVersionSuffix)),
+		}
+		if strings.HasPrefix(version, partialVersion) {
+			insertText := strings.TrimPrefix(version, partialVersion)
+			items = append(items, protocol.CompletionItem{
+				Label: version,
+				Kind:  protocol.KeywordCompletion,
+				TextEdit: &protocol.Or_CompletionItem_textEdit{
+					Value: protocol.InsertReplaceEdit{
+						NewText: insertText,
+						Insert:  replaceRange,
+						Replace: replaceRange,
+					},
+				},
+			})
 		}
 	}
 	return items

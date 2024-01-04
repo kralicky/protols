@@ -1281,6 +1281,12 @@ func (c *Cache) FindAllDescriptorsByQualifiedPrefix(ctx context.Context, prefix 
 	return combined
 }
 
+func (c *Cache) FindImportPathsByPrefix(ctx context.Context, prefix string) map[protocol.DocumentURI]string {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	return c.resolver.findImportPathsByPrefix(prefix)
+}
+
 func (c *Cache) AllMessages() []protoreflect.MessageDescriptor {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()

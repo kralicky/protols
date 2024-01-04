@@ -1,16 +1,22 @@
 package commands
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
+	"sync"
 
 	"github.com/kralicky/protols/pkg/lsp"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 
 	"github.com/kralicky/tools-lite/pkg/event"
+	"github.com/kralicky/tools-lite/pkg/event/core"
+	"github.com/kralicky/tools-lite/pkg/event/keys"
+	"github.com/kralicky/tools-lite/pkg/event/label"
 	"github.com/kralicky/tools-lite/pkg/jsonrpc2"
 
 	"github.com/spf13/cobra"
@@ -36,6 +42,30 @@ func BuildServeCmd() *cobra.Command {
 				AddSource: true,
 				Level:     slog.LevelDebug,
 			})))
+
+			var eventMu sync.Mutex
+			event.SetExporter(func(ctx context.Context, e core.Event, lm label.Map) context.Context {
+				eventMu.Lock()
+				defer eventMu.Unlock()
+				if event.IsError(e) {
+					if err := keys.Err.Get(e); errors.Is(err, context.Canceled) {
+						return ctx
+					}
+					var args []any
+					for i := 0; e.Valid(i); i++ {
+						l := e.Label(i)
+						if !l.Valid() || l.Key() == keys.Msg {
+							continue
+						}
+						key := l.Key()
+						var val bytes.Buffer
+						key.Format(&val, nil, l)
+						args = append(args, l.Key().Name(), val.String())
+					}
+					slog.Error(keys.Msg.Get(e), args...)
+				}
+				return ctx
+			})
 
 			server := lsp.NewServer(client)
 			conn.Go(cmd.Context(), protocol.CancelHandler(

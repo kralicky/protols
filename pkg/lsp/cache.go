@@ -1224,9 +1224,14 @@ func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, l
 	resultsByPackage := make([][]protoreflect.Descriptor, len(c.results))
 	for i, res := range c.results {
 		i, res := i, res
+		pkg := res.Package()
+		if pkg == "" {
+			// skip searching in files that do not have a package name
+			continue
+		}
 		eg.Go(func() (err error) {
 			p := prefix
-			if res.Package() == localPackage {
+			if pkg == localPackage {
 				p = string(localPackage) + "." + p
 			}
 			resultsByPackage[i], err = res.(linker.Result).FindDescriptorsByPrefix(ctx, p, filter...)
@@ -1243,14 +1248,23 @@ func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, l
 
 // Like FindAllDescriptorsByPrefix, but assumes a fully qualified prefix with
 // package name.
-func (c *Cache) FindAllDescriptorsByFullyQualifiedPrefix(ctx context.Context, prefix string, filter ...func(protoreflect.Descriptor) bool) []protoreflect.Descriptor {
+func (c *Cache) FindAllDescriptorsByQualifiedPrefix(ctx context.Context, prefix string, filter ...func(protoreflect.Descriptor) bool) []protoreflect.Descriptor {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
 	eg, ctx := errgroup.WithContext(ctx)
 	resultsByPackage := make([][]protoreflect.Descriptor, len(c.results))
+	isFullyQualified := strings.HasPrefix(prefix, ".")
+	if isFullyQualified {
+		prefix = prefix[1:]
+	}
 	for i, res := range c.results {
 		i, res := i, res
-		if !strings.HasPrefix(string(res.Package()), prefix) {
+		pkg := res.Package()
+		if pkg == "" {
+			// skip searching in files that do not have a package name
+			continue
+		}
+		if isFullyQualified && !strings.HasPrefix(string(pkg), prefix) {
 			// optimization: skip results whose package names don't match the prefix
 			continue
 		}

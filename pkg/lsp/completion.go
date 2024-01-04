@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -17,6 +18,13 @@ import (
 )
 
 func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *protocol.CompletionList, err error) {
+	defer func() {
+		if result != nil {
+			for i := range result.Items {
+				result.Items[i].SortText = fmt.Sprintf("%05d", i)
+			}
+		}
+	}()
 	doc := params.TextDocument
 	currentParseRes, err := c.FindParseResultByURI(doc.URI)
 	if err != nil {
@@ -159,7 +167,12 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		}
 		switch node := path[len(path)-1].(type) {
 		case *ast.MessageNode:
-			completions = append(completions, messageKeywordCompletions(searchTarget)...)
+			partialName := strings.TrimSpace(textPrecedingCursor)
+			if !isProto2(searchTarget.AST()) {
+				// complete message types
+				completions = append(completions, completeTypeNames(c, partialName, maybeCurrentLinkRes, desc.FullName())...)
+			}
+			completions = append(completions, messageKeywordCompletions(searchTarget, partialName)...)
 		case *ast.CompactOptionsNode:
 			// ex: 'int32 foo = 1 [(<cursor>'
 			var partialName string
@@ -209,6 +222,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		case *ast.FieldNode:
 			// check if we are completing a type name
 			var shouldCompleteType bool
+			var shouldCompleteKeywords bool
 			var completeType string
 
 			switch {
@@ -250,15 +264,29 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				if len(completeType) >= cursorIndexIntoType {
 					completeType = completeType[:cursorIndexIntoType]
 					shouldCompleteType = true
-				} else if node.Label.IsPresent() && node.Label.Start() == node.FldType.Start() {
+				}
+				if node.Label.IsPresent() && node.Label.Start() == node.FldType.Start() {
 					// handle empty *ast.IncompleteIdentNodes, such as in 'optional <cursor>'
 					completeType = ""
 					shouldCompleteType = true
+				} else {
+					// complete keywords
+					shouldCompleteKeywords = true
 				}
+
 			}
 			if shouldCompleteType {
 				fmt.Println("completing type", completeType)
-				completions = append(completions, completeTypeNames(c, completeType, maybeCurrentLinkRes)...)
+				var scope protoreflect.FullName
+				if len(path) > 1 {
+					if desc, _, err := deepPathSearch(path[:len(path)-1], searchTarget, maybeCurrentLinkRes); err == nil {
+						scope = desc.FullName()
+					}
+				}
+				completions = append(completions, completeTypeNames(c, completeType, maybeCurrentLinkRes, scope)...)
+			}
+			if shouldCompleteKeywords {
+				completions = append(completions, messageKeywordCompletions(searchTarget, completeType)...)
 			}
 		}
 
@@ -645,6 +673,83 @@ func (c *Cache) completeOptionNamesByScope(scope completionScope, path []ast.Nod
 	return nil, nil
 }
 
+func completeKeywords(keywords ...string) []protocol.CompletionItem {
+	items := []protocol.CompletionItem{}
+	for _, keyword := range keywords {
+		items = append(items, protocol.CompletionItem{
+			Label:      keyword,
+			Kind:       protocol.KeywordCompletion,
+			InsertText: fmt.Sprintf("%s ", keyword),
+		})
+	}
+	return items
+}
+
+func completeTypeNames(cache *Cache, partialName string, linkRes linker.Result, scope protoreflect.FullName) []protocol.CompletionItem {
+	var candidates []protoreflect.Descriptor
+	filter := func(d protoreflect.Descriptor) bool {
+		switch d := d.(type) {
+		case protoreflect.MessageDescriptor:
+			return !d.IsMapEntry()
+		case protoreflect.EnumDescriptor:
+			return true
+		}
+		return false
+	}
+	var trimPrefix string
+	if strings.Contains(partialName, ".") {
+		candidates = cache.FindAllDescriptorsByQualifiedPrefix(context.TODO(), partialName, filter)
+	} else {
+		localPackage := linkRes.Package()
+		trimPrefix = string(localPackage + ".")
+		candidates = cache.FindAllDescriptorsByPrefix(context.TODO(), partialName, localPackage, filter)
+	}
+	items := []protocol.CompletionItem{}
+	labelPrefix := ""
+	if strings.HasPrefix(partialName, ".") {
+		labelPrefix = "."
+	}
+	distanceSort(candidates, linkRes.Package(), scope)
+	for _, candidate := range candidates {
+		switch candidate.(type) {
+		case protoreflect.MessageDescriptor:
+			item := protocol.CompletionItem{
+				Label:  strings.TrimPrefix(labelPrefix+string(candidate.FullName()), trimPrefix),
+				Kind:   protocol.ClassCompletion,
+				Detail: string(candidate.FullName()),
+			}
+			if _, err := linker.ResolverFromFile(linkRes).FindDescriptorByName(candidate.FullName()); err != nil {
+				// add an import for this type
+				importPath := candidate.ParentFile().Path()
+				item.AdditionalTextEdits = append(item.AdditionalTextEdits, editAddImport(linkRes, importPath))
+				if item.Label == item.Detail {
+					item.Detail = fmt.Sprintf("from %q", importPath)
+				} else {
+					item.Detail = fmt.Sprintf("%s (from %q)", item.Detail, importPath)
+				}
+			}
+			items = append(items, item)
+		case protoreflect.EnumDescriptor:
+			item := protocol.CompletionItem{
+				Label:  strings.TrimPrefix(labelPrefix+string(candidate.FullName()), trimPrefix),
+				Kind:   protocol.EnumCompletion,
+				Detail: string(candidate.FullName()),
+			}
+			if _, err := linker.ResolverFromFile(linkRes).FindDescriptorByName(candidate.FullName()); err != nil {
+				importPath := candidate.ParentFile().Path()
+				item.AdditionalTextEdits = append(item.AdditionalTextEdits, editAddImport(linkRes, importPath))
+				if item.Label == item.Detail {
+					item.Detail = fmt.Sprintf("from %q", importPath)
+				} else {
+					item.Detail = fmt.Sprintf("%s (from %q)", item.Detail, importPath)
+				}
+			}
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
 func newMapFieldCompletionItem(fld protoreflect.FieldDescriptor) protocol.CompletionItem {
 	return protocol.CompletionItem{
 		Label:            string(fld.Name()),
@@ -771,72 +876,114 @@ func newExtensionNonMessageFieldCompletionItem(fld protoreflect.FieldDescriptor,
 	}
 }
 
-func messageKeywordCompletions(searchTarget parser.Result) []protocol.CompletionItem {
-	// add keyword completions for messages
-	keywords := completeKeywords("option", "optional", "repeated", "enum", "message", "reserved")
-	if searchTarget.AST().Syntax.Syntax.AsString() == "proto2" {
-		keywords = append(keywords, completeKeywords("required", "extend", "group")...)
+func isProto2(f *ast.FileNode) bool {
+	if f.Syntax == nil {
+		return true
 	}
-	// score in order
-	for i := range keywords {
-		keywords[i].SortText = fmt.Sprint(-(i + 1))
-	}
-	return keywords
+	return f.Syntax.Syntax.AsString() == "proto2"
 }
 
-func completeKeywords(keywords ...string) []protocol.CompletionItem {
-	items := []protocol.CompletionItem{}
-	for _, keyword := range keywords {
-		items = append(items, protocol.CompletionItem{
-			Label:      keyword,
-			Kind:       protocol.KeywordCompletion,
-			InsertText: fmt.Sprintf("%s ", keyword),
+func messageKeywordCompletions(searchTarget parser.Result, partialName string) []protocol.CompletionItem {
+	// add keyword completions for messages
+	possibleKeywords := []string{"option", "optional", "repeated", "enum", "message", "reserved"}
+	if isProto2(searchTarget.AST()) {
+		possibleKeywords = append(possibleKeywords, "required", "extend", "group")
+	}
+	if len(partialName) > 0 {
+		possibleKeywords = slices.DeleteFunc(possibleKeywords, func(s string) bool {
+			return !strings.HasPrefix(s, partialName)
 		})
 	}
-	return items
+	return completeKeywords(possibleKeywords...)
 }
 
-func completeTypeNames(cache *Cache, partialName string, linkRes linker.Result) []protocol.CompletionItem {
-	var candidates []protoreflect.Descriptor
-	filter := func(d protoreflect.Descriptor) bool {
-		switch d.(type) {
-		case protoreflect.MessageDescriptor:
-			return true
-		case protoreflect.EnumDescriptor:
-			return true
+// sort by distance from local package
+type entry struct {
+	candidate     protoreflect.Descriptor
+	pkgDistance   int
+	scopeDistance int
+}
+
+// Sorts descriptors by distance from the given local package.
+// An optional scope may be set to the fully qualified name of a message or enum
+// type within the package named by pkgScope. If so, descriptors closer to the
+// scope will be sorted earlier in the list.
+func distanceSort(candidates []protoreflect.Descriptor, pkgScope, scope protoreflect.FullName) {
+	entries := make([]entry, len(candidates))
+	for i, candidate := range candidates {
+		pkg := candidate.ParentFile().Package()
+		pkgDistance := nameDistance(pkgScope, pkg)
+		scopeDistance := 0
+		if pkgDistance == 0 && scope != "" {
+			scopeDistance = nameDistance(scope, candidate.FullName())
 		}
-		return false
-	}
-	var trimPrefix string
-	if strings.HasPrefix(partialName, ".") {
-		candidates = cache.FindAllDescriptorsByFullyQualifiedPrefix(context.TODO(), partialName[1:], filter)
-	} else {
-		localPackage := linkRes.Package()
-		trimPrefix = string(localPackage + ".")
-		candidates = cache.FindAllDescriptorsByPrefix(context.TODO(), partialName, localPackage, filter)
-	}
-	items := []protocol.CompletionItem{}
-	labelPrefix := ""
-	if strings.HasPrefix(partialName, ".") {
-		labelPrefix = "."
-	}
-	for _, candidate := range candidates {
-		switch candidate.(type) {
-		case protoreflect.MessageDescriptor:
-			items = append(items, protocol.CompletionItem{
-				Label:  strings.TrimPrefix(labelPrefix+string(candidate.FullName()), trimPrefix),
-				Kind:   protocol.ClassCompletion,
-				Detail: string(candidate.FullName()),
-			})
-		case protoreflect.EnumDescriptor:
-			items = append(items, protocol.CompletionItem{
-				Label:  strings.TrimPrefix(labelPrefix+string(candidate.FullName()), trimPrefix),
-				Kind:   protocol.EnumCompletion,
-				Detail: string(candidate.FullName()),
-			})
+		entries[i] = entry{
+			candidate:     candidate,
+			pkgDistance:   pkgDistance,
+			scopeDistance: scopeDistance,
 		}
 	}
-	return items
+	affineEntrySort(entries)
+	for i, entry := range entries {
+		candidates[i] = entry.candidate
+	}
+}
+
+// Sorts entries by pkgDistance, then by scopeDistance, then by fullName.
+// Distance values are compared according to the following rules:
+//  0. Zero sorts first, regardless of sign.
+//  1. If two nonzero values have opposite signs, the negative one sorts first.
+//  2. If two nonzero values have the same sign, the one with the smaller
+//     absolute value sorts first.
+func affineEntrySort(entries []entry) {
+	sort.Slice(entries, func(ai, bi int) bool {
+		a, b := entries[ai], entries[bi]
+		if a.pkgDistance == b.pkgDistance {
+			if a.scopeDistance == b.scopeDistance {
+				return a.candidate.FullName() < b.candidate.FullName()
+			}
+			if a.scopeDistance == 0 || b.scopeDistance == 0 {
+				return a.scopeDistance == 0
+			}
+			if (a.scopeDistance < 0) == (b.scopeDistance < 0) {
+				return max(a.scopeDistance, -a.scopeDistance) <
+					max(b.scopeDistance, -b.scopeDistance)
+			}
+			return a.scopeDistance < 0
+		}
+		if a.pkgDistance == 0 || b.pkgDistance == 0 {
+			return a.pkgDistance == 0
+		}
+		if (a.pkgDistance < 0) == (b.pkgDistance < 0) {
+			return max(a.pkgDistance, -a.pkgDistance) <
+				max(b.pkgDistance, -b.pkgDistance)
+		}
+		return a.pkgDistance < 0
+	})
+}
+
+// Returns the distance between two names by counting the number of
+// steps required to traverse from 'from' to 'to'. Does not consider proto
+// scope semantics. If to is a child of from, the distance is negative.
+func nameDistance(from, to protoreflect.FullName) int {
+	if from == to {
+		return 0
+	}
+	partsFrom := strings.Split(string(from), ".")
+	partsTo := strings.Split(string(to), ".")
+	if len(partsFrom) == 0 {
+		return len(partsTo)
+	} else if len(partsTo) == 0 {
+		return len(partsFrom)
+	}
+	minLen := min(len(partsFrom), len(partsTo))
+	for i := 0; i < minLen; i++ {
+		if partsFrom[i] != partsTo[i] {
+			return len(partsFrom) - i + len(partsTo) - i
+		}
+	}
+	// this will either be (n>0)-(0) or (0)-(n>0)
+	return (len(partsFrom) - minLen) - (len(partsTo) - minLen)
 }
 
 // Returns the least qualified name that would be required to refer to 'target'

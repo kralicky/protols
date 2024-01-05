@@ -24,6 +24,10 @@ type ProtoDiagnostic struct {
 	Tags               []protocol.DiagnosticTag
 	RelatedInformation []protocol.DiagnosticRelatedInformation
 	CodeActions        []CodeAction
+
+	// If this is a warning being treated as an error, WerrorCategory will be set to
+	// a category that can be named in a debug pragma to disable it.
+	WerrorCategory string
 }
 
 type CodeActions struct {
@@ -221,6 +225,14 @@ func codeActionsForError(errWithPos reporter.ErrorWithPos) []CodeAction {
 	return []CodeAction{}
 }
 
+func werrorCategoryForError(err error) string {
+	var xse parser.ExtendedSyntaxError
+	if errors.As(err, &xse) {
+		return xse.Category()
+	}
+	return ""
+}
+
 func relatedInformationForError(err error) []protocol.DiagnosticRelatedInformation {
 	var alreadyDefined reporter.AlreadyDefinedError
 	if ok := errors.As(err, &alreadyDefined); ok {
@@ -268,6 +280,7 @@ func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
 		RelatedInformation: relatedInformationForError(err),
 		CodeActions:        codeActionsForError(err),
 	}
+
 	dl.Add(newDiagnostic)
 
 	dr.listenerMu.RLock()
@@ -284,12 +297,6 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 		return
 	}
 
-	var xse parser.ExtendedSyntaxError
-	if errors.As(err, &xse) {
-		dr.HandleError(err)
-		return
-	}
-
 	slog.Debug(fmt.Sprintf("[diagnostic] warning: %s\n", err.Error()))
 
 	pos := err.GetPosition()
@@ -300,11 +307,12 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 	dr.diagnosticsMu.Unlock()
 
 	newDiagnostic := &ProtoDiagnostic{
-		Pos:         pos,
-		Severity:    severityForError(protocol.SeverityWarning, err),
-		Error:       err.Unwrap(),
-		Tags:        tagsForError(err),
-		CodeActions: codeActionsForError(err),
+		Pos:            pos,
+		Severity:       severityForError(protocol.SeverityWarning, err),
+		Error:          err.Unwrap(),
+		Tags:           tagsForError(err),
+		CodeActions:    codeActionsForError(err),
+		WerrorCategory: werrorCategoryForError(err),
 	}
 	dl.Add(newDiagnostic)
 
@@ -358,6 +366,7 @@ func (dr *DiagnosticHandler) FullDiagnosticSnapshot() map[string][]*ProtoDiagnos
 				Tags:               d.Tags,
 				RelatedInformation: d.RelatedInformation,
 				CodeActions:        d.CodeActions,
+				WerrorCategory:     d.WerrorCategory,
 			})
 		}
 		res[path] = list

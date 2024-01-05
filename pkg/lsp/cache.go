@@ -49,6 +49,7 @@ type Cache struct {
 
 	inflightTasksInvalidate gsync.Map[protocompile.ResolvedPath, time.Time]
 	inflightTasksCompile    gsync.Map[protocompile.ResolvedPath, time.Time]
+	pragmas                 gsync.Map[protocompile.ResolvedPath, *pragmaMap]
 }
 
 // FindDescriptorByName implements linker.Resolver.
@@ -294,17 +295,17 @@ func (c *Cache) preInvalidateHook(path protocompile.ResolvedPath, reason string)
 func (c *Cache) postInvalidateHook(path protocompile.ResolvedPath, prevResult linker.File, willRecompile bool) {
 	startTime, _ := c.inflightTasksInvalidate.LoadAndDelete(path)
 	slog.Debug("file invalidated", "path", path, "took", time.Since(startTime))
-	// if !willRecompile {
-	// 	c.resultsMu.Lock()
-	// 	defer c.resultsMu.Unlock()
-	// 	slog.Debug("file deleted, clearing linker result", "path", path)
-	// 	for i, f := range c.results {
-	// 		if f.Path() == path {
-	// 			c.results = append(c.results[:i], c.results[i+1:]...)
-	// 			break
-	// 		}
-	// 	}
-	// }
+	if !willRecompile {
+		c.resultsMu.Lock()
+		defer c.resultsMu.Unlock()
+		slog.Debug("file deleted, clearing linker result", "path", path)
+		for i, f := range c.results {
+			if protocompile.ResolvedPath(f.Path()) == path {
+				c.results = append(c.results[:i], c.results[i+1:]...)
+				break
+			}
+		}
+	}
 }
 
 func (c *Cache) preCompile(path protocompile.ResolvedPath) {
@@ -325,8 +326,6 @@ func (c *Cache) postCompile(path protocompile.ResolvedPath) {
 }
 
 func (c *Cache) Compile(protos ...string) {
-	// c.compileLock.Lock()
-	// defer c.compileLock.Unlock()
 	c.resultsMu.Lock()
 	defer c.resultsMu.Unlock()
 	c.compileLocked(protos...)
@@ -346,25 +345,28 @@ func (c *Cache) compileLocked(protos ...string) {
 			return
 		}
 	}
-	// important to lock resultsMu here so that it can be modified in compile hooks
-	// c.resultsMu.Lock()
 	slog.Debug("done compiling", "protos", len(protos))
 	for _, r := range res.Files {
 		path := r.Path()
 		found := false
-		// delete(c.partialResults, path)
+		pragmas := r.(linker.Result).AST().Pragmas
+
 		for i, f := range c.results {
 			// todo: this is big slow
 			if f.Path() == path {
 				found = true
 				slog.With("path", path).Debug("updating existing linker result")
 				c.results[i] = r
+				if p, ok := c.pragmas.Load(protocompile.ResolvedPath(path)); ok {
+					p.update(pragmas)
+				}
 				break
 			}
 		}
 		if !found {
 			slog.With("path", path).Debug("adding new linker result")
 			c.results = append(c.results, r)
+			c.pragmas.Store(protocompile.ResolvedPath(path), &pragmaMap{m: pragmas})
 		}
 	}
 	c.unlinkedResultsMu.Lock()
@@ -486,6 +488,25 @@ func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.
 				rawReport.RelatedInformation[i].Location.URI = u
 			}
 		}
+		if rawReport.Severity == protocol.SeverityWarning && rawReport.WerrorCategory != "" {
+			// look up Werror debug pragma for this file
+			shouldElevate := true
+			if p, ok := c.FindPragmasByPath(protocompile.ResolvedPath(rawReport.Pos.Start().Filename)); ok {
+				if dbg, ok := p.Lookup(PragmaDebug); ok {
+					for _, v := range strings.Fields(dbg) {
+						if k, v, ok := strings.Cut(v, "="); ok {
+							if k == PragmaDebugWnoerror && (v == rawReport.WerrorCategory || v == WnoerrorAll) {
+								shouldElevate = false
+								break
+							}
+						}
+					}
+				}
+			}
+			if shouldElevate {
+				rawReport.Severity = protocol.SeverityError
+			}
+		}
 		report := protocol.Diagnostic{
 			Range:              toRange(rawReport.Pos),
 			Severity:           rawReport.Severity,
@@ -493,6 +514,9 @@ func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.
 			Tags:               rawReport.Tags,
 			RelatedInformation: rawReport.RelatedInformation,
 			Source:             "protols",
+		}
+		if rawReport.WerrorCategory != "" {
+			report.Code = rawReport.WerrorCategory
 		}
 		if len(rawReport.CodeActions) > 0 {
 			jsonData, err := json.Marshal(CodeActions{Items: rawReport.CodeActions})
@@ -1299,4 +1323,9 @@ func (c *Cache) AllMessages() []protoreflect.MessageDescriptor {
 		}
 	}
 	return all
+}
+
+func (c *Cache) FindPragmasByPath(path protocompile.ResolvedPath) (Pragmas, bool) {
+	p, ok := c.pragmas.Load(path)
+	return p, ok
 }

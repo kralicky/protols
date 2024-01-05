@@ -50,6 +50,7 @@ const (
 	semanticTypeNumber
 	semanticTypeRegexp
 	semanticTypeOperator
+	semanticTypeDecorator
 )
 
 type tokenModifier uint32

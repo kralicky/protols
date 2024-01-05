@@ -77,7 +77,6 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 				Change:    protocol.Incremental,
 				Save:      &protocol.SaveOptions{IncludeText: false},
 			},
-
 			HoverProvider: &protocol.Or_ServerCapabilities_hoverProvider{Value: true},
 			DiagnosticProvider: &protocol.Or_ServerCapabilities_diagnosticProvider{
 				Value: protocol.DiagnosticOptions{
@@ -122,7 +121,6 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			// TypeDefinitionProvider: true,
 			ReferencesProvider: &protocol.Or_ServerCapabilities_referencesProvider{Value: true},
 			// WorkspaceSymbolProvider: &protocol.Or_ServerCapabilities_workspaceSymbolProvider{Value: true},
-
 			DefinitionProvider: &protocol.Or_ServerCapabilities_definitionProvider{Value: true},
 			SemanticTokensProvider: &protocol.SemanticTokensOptions{
 				Legend: protocol.SemanticTokensLegend{
@@ -132,7 +130,7 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 				Full:  &protocol.Or_SemanticTokensOptions_full{Value: true},
 				Range: &protocol.Or_SemanticTokensOptions_range{Value: true},
 			},
-			// DocumentSymbolProvider: &protocol.Or_ServerCapabilities_documentSymbolProvider{Value: true},
+			DocumentSymbolProvider: &protocol.Or_ServerCapabilities_documentSymbolProvider{Value: true},
 		},
 
 		ServerInfo: &protocol.ServerInfo{

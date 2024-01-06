@@ -506,6 +506,9 @@ func (f *formatter) writeOptionPrefix(optionNode *ast.OptionNode) {
 //	(custom.thing)
 //	(custom.thing).bridge.(another.thing)
 func (f *formatter) writeOptionName(optionNameNode *ast.OptionNameNode) {
+	if optionNameNode == nil {
+		return
+	}
 	for i := 0; i < len(optionNameNode.Parts); i++ {
 		if f.inCompactOptions && i == 0 {
 			// The leading comments of the first token (either open rune or the
@@ -2922,6 +2925,9 @@ func importSortOrder(node *ast.ImportNode) int {
 // StringForOptionName returns the string representation of the given option name node.
 // This is used for sorting file-level options.
 func StringForOptionName(optionNameNode *ast.OptionNameNode) string {
+	if optionNameNode == nil {
+		return ""
+	}
 	var result string
 	for j, part := range optionNameNode.Parts {
 		if j > 0 {

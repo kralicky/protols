@@ -435,7 +435,7 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modific
 func (c *Cache) ComputeSemanticTokens(doc protocol.TextDocumentIdentifier) ([]uint32, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
-	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI); err != nil {
+	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI, false); err != nil {
 		return nil, err
 	} else if !ok {
 		return nil, fmt.Errorf("document contents not well formed")
@@ -451,7 +451,7 @@ func (c *Cache) ComputeSemanticTokens(doc protocol.TextDocumentIdentifier) ([]ui
 func (c *Cache) ComputeSemanticTokensRange(doc protocol.TextDocumentIdentifier, rng protocol.Range) ([]uint32, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
-	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI); err != nil {
+	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI, false); err != nil {
 		return nil, err
 	} else if !ok {
 		return nil, fmt.Errorf("document contents not well formed")
@@ -691,7 +691,7 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 func (c *Cache) ComputeInlayHints(doc protocol.TextDocumentIdentifier, rng protocol.Range) ([]protocol.InlayHint, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
-	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI); err != nil {
+	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI, true); err != nil {
 		return nil, err
 	} else if !ok {
 		return nil, fmt.Errorf("document contents not well formed")
@@ -1049,13 +1049,13 @@ func makeTooltip(d protoreflect.Descriptor) *protocol.OrPTooltipPLabel {
 
 // Checks if the most recently parsed version of the given document has any
 // syntax errors, as reported by the diagnostic handler.
-func (c *Cache) LatestDocumentContentsWellFormed(uri protocol.DocumentURI) (bool, error) {
+func (c *Cache) LatestDocumentContentsWellFormed(uri protocol.DocumentURI, strict bool) (bool, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
-	return c.latestDocumentContentsWellFormedLocked(uri)
+	return c.latestDocumentContentsWellFormedLocked(uri, strict)
 }
 
-func (c *Cache) latestDocumentContentsWellFormedLocked(uri protocol.DocumentURI) (bool, error) {
+func (c *Cache) latestDocumentContentsWellFormedLocked(uri protocol.DocumentURI, strict bool) (bool, error) {
 	path, err := c.resolver.URIToPath(uri)
 	if err != nil {
 		return false, err
@@ -1066,6 +1066,12 @@ func (c *Cache) latestDocumentContentsWellFormedLocked(uri protocol.DocumentURI)
 		if errors.As(diag.Error, &parseErr) {
 			return false, nil
 		}
+		if strict {
+			var ext parser.ExtendedSyntaxError
+			if errors.As(diag.Error, &ext) {
+				return false, nil
+			}
+		}
 	}
 	return true, nil
 }
@@ -1074,7 +1080,7 @@ func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options prot
 	// check if the file has any parse errors; if it does, don't try to format
 	// the document as we will end up erasing anything the user has typed
 	// since the last time the document was successfully parsed.
-	if ok, err := c.LatestDocumentContentsWellFormed(doc.URI); err != nil {
+	if ok, err := c.LatestDocumentContentsWellFormed(doc.URI, true); err != nil {
 		return nil, err
 	} else if !ok {
 		return nil, nil

@@ -62,7 +62,7 @@ func (c *Cache) canRename(desc protoreflect.Descriptor) error {
 	if !c.resolver.IsRealWorkspaceLocalFile(uri) {
 		return fmt.Errorf("symbol %q is defined externally to this workspace", desc.FullName())
 	}
-	if ok, _ := c.LatestDocumentContentsWellFormed(uri); !ok {
+	if ok, _ := c.LatestDocumentContentsWellFormed(uri, false); !ok {
 		return fmt.Errorf("source file containing definition for %q has errors", uri)
 	}
 

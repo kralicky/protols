@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"fmt"
 	"log/slog"
-	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -511,8 +510,6 @@ func (s *stack) push(node ast.Node, desc protoreflect.Descriptor) {
 //	  }
 //	}
 func findNarrowestSemanticToken(parseRes parser.Result, tokens []semanticItem, pos protocol.Position) (narrowest semanticItem, found bool) {
-	narrowestLen := uint32(math.MaxUint32)
-
 	for _, token := range tokens {
 		if token.lang != tokenLanguageProto {
 			// ignore non-proto tokens
@@ -525,18 +522,23 @@ func findNarrowestSemanticToken(parseRes parser.Result, tokens []semanticItem, p
 			}
 			continue // Skip tokens not on the same line
 		}
-		if pos.Character < token.start || pos.Character > token.start+token.len {
-			continue // Skip tokens that don't contain the position
+		if token.len == 0 {
+			// Skip tokens with no length
+			continue
 		}
-		if token.len < narrowestLen {
-			// Found a narrower token
-			narrowest, narrowestLen = token, token.len
-			found = true
-
-			if _, isTerminal := token.node.(ast.TerminalNode); isTerminal {
-				break
-			}
+		if token.start+token.len-1 < pos.Character {
+			// Skip tokens that end before the position
+			continue
 		}
+		if token.start > pos.Character {
+			// Stop searching once we've passed the position
+			break
+		}
+		if token.node == nil {
+			// Skip tokens without a node
+			continue
+		}
+		return token, true
 	}
 
 	return

@@ -445,8 +445,19 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			}
 			return nil
 		},
-		DoVisitExtendNode: func(en *ast.ExtendNode) error {
-			s.mktokens(en.Extendee, append(tracker.Path(), en.Extendee), semanticTypeType, semanticModifierDefaultLibrary)
+		DoVisitExtendNode: func(node *ast.ExtendNode) error {
+			switch extendee := node.Extendee.(type) {
+			case *ast.IdentNode:
+				s.mktokens(extendee, append(tracker.Path(), extendee), semanticTypeType, 0)
+			case *ast.CompoundIdentNode:
+				modifier := tokenModifier(0)
+				if strings.Contains(extendee.Val, "google.protobuf.") {
+					modifier = semanticModifierDefaultLibrary
+				}
+				for _, node := range extendee.Children() {
+					s.mktokens(node, append(tracker.Path(), node), semanticTypeType, modifier)
+				}
+			}
 			return nil
 		},
 		DoVisitOneofNode: func(node *ast.OneofNode) error {
@@ -465,7 +476,14 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			if !node.Label.IsPresent() || node.Label.Start() != node.FldType.Start() {
 				// for incomplete nodes, the field type might be the same as the label
 				// if the type is missing
-				s.mktokens(node.FldType, append(tracker.Path(), node.FldType), semanticTypeType, modifier)
+				switch fldType := node.FldType.(type) {
+				case *ast.IdentNode:
+					s.mktokens(node.FldType, append(tracker.Path(), node.FldType), semanticTypeType, modifier)
+				case *ast.CompoundIdentNode:
+					for _, node := range fldType.Children() {
+						s.mktokens(node, append(tracker.Path(), node), semanticTypeType, modifier)
+					}
+				}
 			}
 			s.mktokens(node.FieldName(), append(tracker.Path(), node.FieldName()), semanticTypeVariable, semanticModifierDefinition)
 			return nil

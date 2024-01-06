@@ -128,7 +128,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 					case protoreflect.EnumKind:
 						desc = field.Enum()
 					default:
-						return nil, protocol.Range{}, fmt.Errorf("unexpected option field kind %v", field.Kind())
+						return nil, protocol.Range{}, fmt.Errorf("option value is a scalar type (%s)", field.Kind())
 					}
 				}
 			default:
@@ -137,6 +137,13 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 				continue
 			}
 			if desc == nil {
+				switch nodeDescriptor := nodeDescriptor.(type) {
+				case *descriptorpb.UninterpretedOption_NamePart:
+					switch nodeDescriptor.GetNamePart() {
+					case "default", "json_name":
+						return nil, protocol.Range{}, fmt.Errorf("option %q is a language builtin", nodeDescriptor.GetNamePart())
+					}
+				}
 				return nil, protocol.Range{}, fmt.Errorf("could not find descriptor for %T", nodeDescriptor)
 			}
 			stack.push(currentNode, desc)
@@ -188,7 +195,15 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 				case *ast.ExtendNode:
 					// looking for the extendee in the "extend <extendee> {" statement
 					if wantNode.AsIdentifier() == prevNode.Extendee.AsIdentifier() {
-						want.desc = linkRes.FindExtendeeDescriptorByName(protoreflect.FullName(wantNode.AsIdentifier()))
+						want.desc = linkRes.FindExtendeeDescriptorByName(protoreflect.FullName(strings.TrimPrefix(string(wantNode.AsIdentifier()), ".")))
+					}
+				}
+			case *ast.IdentNode:
+				switch prevNode := want.prev.node.(type) {
+				case *ast.ExtendNode:
+					// looking for one segment of a compound ident in the extendee in "extend <extendee> {"
+					if wantNode.Token() >= prevNode.Extendee.Start() && wantNode.Token() <= prevNode.Extendee.End() {
+						want.desc = linkRes.FindExtendeeDescriptorByName(protoreflect.FullName(strings.TrimPrefix(string(prevNode.Extendee.AsIdentifier()), ".")))
 					}
 				}
 			case *ast.StringLiteralNode:
@@ -319,8 +334,8 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 						}
 					}
 				case ast.FieldDeclNode:
-					switch want.node {
-					case haveNode.FieldType():
+					switch {
+					case wantNode.Start() >= haveNode.FieldType().Start() && wantNode.End() <= haveNode.FieldType().End():
 						switch {
 						case haveDesc.IsExtension():
 							// keep the field descriptor
@@ -331,7 +346,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 						case haveDesc.Kind() == protoreflect.EnumKind:
 							want.desc = haveDesc.Enum()
 						}
-					case haveNode.FieldName():
+					case wantNode == haveNode.FieldName():
 						// keep the field descriptor
 						// this may be nil if we're in a regular message field, but set if
 						// we are in a message literal
@@ -648,7 +663,16 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 	return paths[0], true
 }
 
-func findDefinition(desc protoreflect.Descriptor, linkRes linker.Result) (ast.Node, error) {
+func findDefinition(desc protoreflect.Descriptor, files linker.Files) (ast.NodeReference, error) {
+	parentFile := desc.ParentFile()
+	if parentFile == nil {
+		return ast.NodeReference{}, fmt.Errorf("no parent file found for descriptor")
+	}
+	linkRes, ok := files.FindFileByPath(parentFile.Path()).(linker.Result)
+	if !ok {
+		return ast.NodeReference{}, fmt.Errorf("failed to find containing file for %q", parentFile.Path())
+	}
+
 	var node ast.Node
 	switch desc := desc.(type) {
 	case protoreflect.MessageDescriptor:
@@ -692,34 +716,36 @@ func findDefinition(desc protoreflect.Descriptor, linkRes linker.Result) (ast.No
 		node = linkRes.FileNode()
 		slog.Debug("definition is an import: ", "import", linkRes.Path())
 	default:
-		return nil, fmt.Errorf("unexpected descriptor type %T", desc)
+		return ast.NodeReference{}, fmt.Errorf("unexpected descriptor type %T", desc)
 	}
 	if node == nil {
-		return nil, fmt.Errorf("failed to find node for %q", desc.FullName())
+		return ast.NodeReference{}, fmt.Errorf("failed to find node for %q", desc.FullName())
 	}
 	if _, ok := node.(ast.NoSourceNode); ok {
-		return nil, fmt.Errorf("no source available")
+		return ast.NodeReference{}, fmt.Errorf("no source available")
 	}
-	return node, nil
+	return ast.NewNodeReference(linkRes.AST(), node), nil
 }
 
-func findReferences(desc protoreflect.Descriptor, files linker.Files) <-chan ast.SourceSpan {
+func findNodeReferences(desc protoreflect.Descriptor, files linker.Files) <-chan ast.NodeReference {
 	var wg sync.WaitGroup
-	referencePositions := make(chan ast.SourceSpan, len(files))
+	refs := make(chan ast.NodeReference, len(files))
+	seen := sync.Map{}
 	wg.Add(len(files))
 	for _, res := range files {
-		res := res
+		res := res.(linker.Result)
 		go func() {
 			defer wg.Done()
-			for _, ref := range res.(linker.Result).FindReferences(desc) {
-				ref := ref
-				referencePositions <- ref
+			for _, ref := range res.FindReferences(desc) {
+				if _, seen := seen.LoadOrStore(ref.String(), struct{}{}); !seen {
+					refs <- ref
+				}
 			}
 		}()
 	}
 	go func() {
 		wg.Wait()
-		close(referencePositions)
+		close(refs)
 	}()
-	return referencePositions
+	return refs
 }

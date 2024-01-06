@@ -454,6 +454,48 @@ func (r *Resolver) LookupGoModule(filename string, f io.ReadCloser) (string, err
 	return "", fmt.Errorf("could not determine go module for %s", filename)
 }
 
+func (r *Resolver) IsRealWorkspaceLocalFile(uri protocol.DocumentURI) bool {
+	if !uri.IsFile() {
+		return false
+	}
+
+	r.pathsMu.RLock()
+	defer r.pathsMu.RUnlock()
+
+	// check if the file is synthetic
+	if _, ok := r.syntheticFiles[uri]; ok {
+		return false
+	}
+
+	// check if the file has a known import source indicating it is not a real file
+	// or is outside the workspace root
+	if src, ok := r.importSourcesByURI[uri]; ok {
+		if src == SourceSynthetic || src == SourceGoModuleCache || src == SourceWellKnown {
+			return false
+		}
+	}
+
+	// check if the file is known to the fs
+	_, err := r.ReadFile(context.Background(), uri)
+	if err != nil {
+		return false
+	}
+	filename := uri.Path()
+
+	// check if the file is a symlink or otherwise not a regular file
+	info, err := os.Lstat(filename)
+	if err != nil {
+		return false
+	}
+	if !info.Mode().IsRegular() {
+		return false
+	}
+
+	// lastly, check if the file is within the workspace root
+	workspaceRoot := protocol.DocumentURI(r.folder.URI).Path()
+	return strings.HasPrefix(filename, workspaceRoot)
+}
+
 func (r *Resolver) PreloadWellKnownPaths() {
 	for _, importName := range wellKnownModuleImports {
 		r.findFileByPathLocked(importName, nil)

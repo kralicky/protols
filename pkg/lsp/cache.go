@@ -119,6 +119,18 @@ func (c *Cache) FindParseResultByURI(uri protocol.DocumentURI) (parser.Result, e
 	return c.FindResultByURI(uri)
 }
 
+func (c *Cache) FindParseResultByPath(path string) (parser.Result, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	if c.results == nil && len(c.unlinkedResults) == 0 {
+		return nil, fmt.Errorf("no results or partial results exist")
+	}
+	if pr, ok := c.unlinkedResults[protocompile.ResolvedPath(path)]; ok {
+		return pr, nil
+	}
+	return c.FindResultByPath(path)
+}
+
 // // FindFileByPath implements linker.Resolver.
 // func (c *Cache) FindFileByPath(path protocompile.UnresolvedPath) (protoreflect.FileDescriptor, error) {
 // 	c.resultsMu.RLock()
@@ -748,8 +760,8 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 					Character: uint32(info.Start().Col) - 1,
 				}
 				var location *protocol.Location
-				if locations, err := c.FindDefinitionForTypeDescriptor(desc.Message()); err == nil && len(locations) > 0 {
-					location = &locations[0]
+				if l, err := c.FindDefinitionForTypeDescriptor(desc.Message()); err == nil {
+					location = &l
 				}
 
 				fieldHint.Label = append(fieldHint.Label, protocol.InlayHintLabelPart{
@@ -884,49 +896,49 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 	return deepPathSearch(item.path, parseRes, linkRes)
 }
 
-func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) ([]protocol.Location, error) {
-	parentFile := desc.ParentFile()
-	if parentFile == nil {
-		return nil, errors.New("no parent file found for descriptor")
-	}
-	containingFileResolver, err := c.FindResultByPath(parentFile.Path())
+func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) (protocol.Location, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	ref, err := findDefinition(desc, c.results)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find containing file for %q: %w", parentFile.Path(), err)
+		return protocol.Location{}, err
 	}
-	node, err := findDefinition(desc, containingFileResolver)
+	uri, err := c.resolver.PathToURI(ref.NodeInfo.Start().Filename)
 	if err != nil {
-		return nil, err
+		return protocol.Location{}, err
 	}
-	info := containingFileResolver.AST().NodeInfo(node)
-	uri, err := c.resolver.PathToURI(containingFileResolver.Path())
-	if err != nil {
-		return nil, err
-	}
-	return []protocol.Location{
-		{
-			URI:   uri,
-			Range: toRange(info),
-		},
+	return protocol.Location{
+		URI:   uri,
+		Range: toRange(ref.NodeInfo),
 	}, nil
 }
 
-func (c *Cache) FindReferencesForTypeDescriptor(desc protoreflect.Descriptor) ([]protocol.Location, error) {
+func (c *Cache) FindReferenceLocationsForTypeDescriptor(desc protoreflect.Descriptor) ([]protocol.Location, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
-	referencePositions := findReferences(desc, c.results)
 	var locations []protocol.Location
-	for posInfo := range referencePositions {
-		filename := posInfo.Start().Filename
+	for span := range findNodeReferences(desc, c.results) {
+		filename := span.NodeInfo.Start().Filename
 		uri, err := c.resolver.PathToURI(filename)
 		if err != nil {
 			continue
 		}
 		locations = append(locations, protocol.Location{
 			URI:   uri,
-			Range: toRange(posInfo),
+			Range: toRange(span.NodeInfo),
 		})
 	}
 	return locations, nil
+}
+
+func (c *Cache) FindReferencesForTypeDescriptor(desc protoreflect.Descriptor) ([]ast.NodeReference, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	var refs []ast.NodeReference
+	for node := range findNodeReferences(desc, c.results) {
+		refs = append(refs, node)
+	}
+	return refs, nil
 }
 
 func (c *Cache) ComputeHover(params protocol.TextDocumentPositionParams) (*protocol.Hover, error) {
@@ -959,13 +971,14 @@ func (c *Cache) FindReferences(ctx context.Context, params protocol.TextDocument
 	var locations []protocol.Location
 
 	if refCtx.IncludeDeclaration {
-		locations, err = c.FindDefinitionForTypeDescriptor(desc)
-		if err != nil {
+		if l, err := c.FindDefinitionForTypeDescriptor(desc); err == nil {
+			locations = append(locations, l)
+		} else {
 			return nil, err
 		}
 	}
 
-	refs, err := c.FindReferencesForTypeDescriptor(desc)
+	refs, err := c.FindReferenceLocationsForTypeDescriptor(desc)
 	if err != nil {
 		return nil, err
 	}

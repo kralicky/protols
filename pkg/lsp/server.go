@@ -116,6 +116,9 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 					protocol.RefactorExtract,
 				},
 			},
+			RenameProvider: &protocol.RenameOptions{
+				PrepareProvider: true,
+			},
 
 			// DeclarationProvider: &protocol.Or_ServerCapabilities_declarationProvider{Value: true},
 			// TypeDefinitionProvider: true,
@@ -206,7 +209,7 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 	if err != nil {
 		return nil, err
 	}
-	return loc, nil
+	return []protocol.Location{loc}, nil
 }
 
 // Hover implements protocol.Server.
@@ -748,6 +751,24 @@ func (s *Server) CodeAction(ctx context.Context, params *protocol.CodeActionPara
 	return result, nil
 }
 
+// PrepareRename implements protocol.Server.
+func (s *Server) PrepareRename(ctx context.Context, params *protocol.PrepareRenameParams) (*protocol.PrepareRenameResult, error) {
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+	return c.PrepareRename(params.TextDocumentPositionParams)
+}
+
+// Rename implements protocol.Server.
+func (s *Server) Rename(ctx context.Context, params *protocol.RenameParams) (*protocol.WorkspaceEdit, error) {
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+	return c.Rename(params)
+}
+
 // =====================
 // Unimplemented Methods
 // =====================
@@ -841,11 +862,6 @@ func (s *Server) CompletionResolve(ctx context.Context, params *protocol.Complet
 	return nil, notImplemented("CompletionResolve")
 }
 
-// Rename implements protocol.Server.
-func (*Server) Rename(context.Context, *protocol.RenameParams) (*protocol.WorkspaceEdit, error) {
-	return nil, notImplemented("Rename")
-}
-
 // Resolve implements protocol.Server.
 func (*Server) Resolve(context.Context, *protocol.InlayHint) (*protocol.InlayHint, error) {
 	return nil, notImplemented("Resolve")
@@ -899,11 +915,6 @@ func (*Server) OutgoingCalls(context.Context, *protocol.CallHierarchyOutgoingCal
 // PrepareCallHierarchy implements protocol.Server.
 func (*Server) PrepareCallHierarchy(context.Context, *protocol.CallHierarchyPrepareParams) ([]protocol.CallHierarchyItem, error) {
 	return nil, notImplemented("PrepareCallHierarchy")
-}
-
-// PrepareRename implements protocol.Server.
-func (*Server) PrepareRename(context.Context, *protocol.PrepareRenameParams) (*protocol.PrepareRenameResult, error) {
-	return nil, notImplemented("PrepareRename")
 }
 
 // PrepareTypeHierarchy implements protocol.Server.

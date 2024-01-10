@@ -633,6 +633,11 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 			if intersectsLocation(node) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
+			if node.Sep != nil && node.Name != nil && tokenAtOffset == node.Sep.Token() {
+				// this won't be visited by the walker, but we want the path to
+				// end with the field reference node
+				paths = append(paths, append(slices.Clone(tracker.Path()), node.Name))
+			}
 			return nil
 		},
 		DoVisitCompactOptionsNode: func(node *ast.CompactOptionsNode) error {

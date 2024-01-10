@@ -161,15 +161,38 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			completions = append(completions,
 				c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
 		case *ast.FieldReferenceNode:
-			var nodeIdx int
-			if prev, ok := path[len(path)-2].(*ast.OptionNameNode); ok {
-				// find where the cursor is within the option name
+			nodeIdx := -1
+			scope := scope
+			switch prev := path[len(path)-2].(type) {
+			case *ast.OptionNameNode:
 				nodeIdx = slices.Index(prev.Parts, node)
-			} else {
+			case *ast.MessageFieldNode:
+				if desc == nil {
+					if desc, _, _ := deepPathSearch(path[:len(path)-2], searchTarget, maybeCurrentLinkRes); desc != nil {
+						nodeIdx = 0
+						scope = desc
+					}
+				} else {
+					nodeIdx = 0
+					if fd, ok := desc.(protoreflect.FieldDescriptor); ok {
+						scope = fd.ContainingMessage()
+					}
+				}
+			}
+			if nodeIdx == -1 {
 				break
 			}
+			existingFields := map[string]struct{}{}
+			if messageLitNode, ok := path[len(path)-3].(*ast.MessageLiteralNode); ok {
+				for _, elem := range messageLitNode.Elements {
+					if elem.IsIncomplete() {
+						continue
+					}
+					existingFields[string(scope.FullName().Append(protoreflect.Name(elem.Name.Name.AsIdentifier())))] = struct{}{}
+				}
+			}
 			completions = append(completions,
-				c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), node, nodeIdx, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
+				c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), node, nodeIdx, maybeCurrentLinkRes, existingFields, mapper, posOffset, params.Position)...)
 		case *ast.OptionNameNode:
 			// this can be the closest node in a few cases, such as after a trailing dot
 			nodeChildren := node.Children()
@@ -192,7 +215,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			if prevFd == nil {
 				break
 			}
-			items, err := c.deepCompleteOptionNames(prevFd, "", "", maybeCurrentLinkRes, params.Position)
+			items, err := c.deepCompleteOptionNames(prevFd, "", "", maybeCurrentLinkRes, nil, lastPart, params.Position)
 			if err != nil {
 				return nil, err
 			}
@@ -327,7 +350,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 }
 
 func (c *Cache) completeOptionOrExtensionName(
-	scope completionScope,
+	scope protoreflect.Descriptor,
 	path []ast.Node,
 	fileNode *ast.FileNode,
 	node *ast.FieldReferenceNode,
@@ -350,16 +373,7 @@ func (c *Cache) completeOptionOrExtensionName(
 				return nil
 			}
 		}
-		var prev protoreflect.Descriptor
-		switch scope {
-		case messageScope:
-			prev = (*descriptorpb.MessageOptions)(nil).ProtoReflect().Descriptor()
-		case fieldScope:
-			prev = (*descriptorpb.FieldOptions)(nil).ProtoReflect().Descriptor()
-		case fileScope:
-			prev = (*descriptorpb.FileOptions)(nil).ProtoReflect().Descriptor()
-		}
-		items, err := c.deepCompleteOptionNames(prev, partialName, partialNameSuffix, linkRes, pos)
+		items, err := c.deepCompleteOptionNames(scope, partialName, partialNameSuffix, linkRes, existingOpts, node, pos)
 		if err != nil {
 			return nil
 		}
@@ -380,7 +394,7 @@ func (c *Cache) completeOptionOrExtensionName(
 		if prevFd == nil {
 			break
 		}
-		items, err := c.deepCompleteOptionNames(prevFd, partialName, partialNameSuffix, linkRes, pos)
+		items, err := c.deepCompleteOptionNames(prevFd, partialName, partialNameSuffix, linkRes, existingOpts, node, pos)
 		if err != nil {
 			return nil
 		}
@@ -506,34 +520,33 @@ var (
 	snippetMode           = protocol.SnippetTextFormat
 )
 
-func findCompletionScopeAndExistingOptions(path []ast.Node, linkRes linker.Result) (completionScope, map[string]struct{}) {
-	var scope completionScope
+func findCompletionScopeAndExistingOptions(path []ast.Node, linkRes linker.Result) (protoreflect.Descriptor, map[string]struct{}) {
+	var scope protoreflect.Descriptor
 	existing := map[string]struct{}{}
 LOOP:
 	for i := len(path) - 1; i >= 0; i-- {
 		switch node := path[i].(type) {
 		case ast.MessageDeclNode:
-			scope = messageScope
+			scope = (*descriptorpb.MessageOptions)(nil).ProtoReflect().Descriptor()
 			if desc := linkRes.MessageDescriptor(node); desc != nil && desc.Options != nil {
 				existing = existingOptions(desc.GetOptions().ProtoReflect())
 			}
 			break LOOP
 		case *ast.FieldNode:
-			scope = fieldScope
+			scope = (*descriptorpb.FieldOptions)(nil).ProtoReflect().Descriptor()
 			if desc := linkRes.FieldDescriptor(node); desc != nil && desc.Options != nil {
 				existing = existingOptions(desc.GetOptions().ProtoReflect())
 			}
 			break LOOP
 		case *ast.FileNode:
-			scope = fileScope
+			scope = (*descriptorpb.FileOptions)(nil).ProtoReflect().Descriptor()
 			if linkRes.Options() != nil {
 				existing = existingOptions(linkRes.Options().ProtoReflect())
 			}
 			break LOOP
+		case *ast.MessageFieldNode:
+			linkRes.Descriptor(node)
 		}
-	}
-	if scope == 0 {
-		return 0, nil
 	}
 	return scope, existing
 }
@@ -559,6 +572,8 @@ func (c *Cache) deepCompleteOptionNames(
 	prev protoreflect.Descriptor,
 	partialName, partialNameSuffix string,
 	linkRes linker.Result,
+	existingOpts map[string]struct{},
+	existingFieldRef *ast.FieldReferenceNode,
 	pos protocol.Position,
 ) ([]protocol.CompletionItem, error) {
 	var items []protocol.CompletionItem
@@ -587,6 +602,15 @@ func (c *Cache) deepCompleteOptionNames(
 	fields := prevMsg.Fields()
 	for i, l := 0, fields.Len(); i < l; i++ {
 		fld := fields.Get(i)
+		if !strings.HasPrefix(string(fld.Name()), partialName) {
+			continue
+		}
+		if (partialNameSuffix == "" && fld.Name() != protoreflect.Name(partialName)) ||
+			(fld.Name() != protoreflect.Name(partialName+partialNameSuffix)) {
+			if _, ok := existingOpts[string(fld.FullName())]; ok && fld.Cardinality() != protoreflect.Repeated {
+				continue
+			}
+		}
 		item := protocol.CompletionItem{
 			Label:  string(fld.Name()),
 			Detail: fieldTypeDetail(fld),
@@ -609,11 +633,20 @@ func (c *Cache) deepCompleteOptionNames(
 		// find any messages extending prevMsg
 		for _, x := range c.FindExtensionsByMessage(prevMsg.FullName()) {
 			item := newExtensionFieldCompletionItem(x, linkRes, partialName, partialNameSuffix, pos)
+			open, close := "(", ")"
+			if existingFieldRef != nil {
+				if existingFieldRef.Open != nil {
+					open = ""
+				}
+				if existingFieldRef.Close != nil {
+					close = ""
+				}
+			}
 			item.Label = fmt.Sprintf("(%s)", item.Label)
 			prevEdit := item.TextEdit.Value.(protocol.InsertReplaceEdit)
 			item.TextEdit = &protocol.Or_CompletionItem_textEdit{
 				Value: protocol.InsertReplaceEdit{
-					NewText: fmt.Sprintf("(%s)", prevEdit.NewText),
+					NewText: fmt.Sprintf("%s%s%s", open, prevEdit.NewText, close),
 					Insert:  prevEdit.Insert,
 					Replace: prevEdit.Replace,
 				},
@@ -804,7 +837,6 @@ func newExtensionFieldCompletionItem(fld protoreflect.ExtensionDescriptor, linkR
 			},
 		},
 	}
-	maybeResolveImport(&item, fld, linkRes)
 	return item
 }
 

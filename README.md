@@ -67,11 +67,10 @@ Features in progress:
 # Installing
 
 1. Clone this repo
-2. Clone submodules: `git submodule update --init`
-3. Build and install the protols binary: `go install ./cmd/protols`
-4. Install `vsce` if you don't have it: `npm install --global @vscode/vsce`
-5. cd to editors/vscode, then run `vsce package`
-6. Install the vsix plugin: `code --install-extension ./protols-vscode-<version>.vsix`
+2. Build and install the protols binary: `go install ./cmd/protols`
+3. Install `vsce` if you don't have it: `npm install --global @vscode/vsce`
+4. cd to editors/vscode, then run `vsce package`
+5. Install the vsix plugin: `code --install-extension ./protols-vscode-<version>.vsix`
 
 # Special Thanks
 

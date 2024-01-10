@@ -17,7 +17,7 @@
 				"type": "npm",
 				"script": "watch",
 				"path": "editors/vscode"
-			}
+			},
 		},
 		{
 			"name": "Attach to Process",
@@ -38,5 +38,5 @@
 				"useFirstResult": true,
 			}
 		}
-	]
+	],
 }

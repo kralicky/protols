@@ -73,6 +73,17 @@ func (c *Cache) FindExtensionByNumber(message protoreflect.FullName, field proto
 	return c.results.AsResolver().FindExtensionByNumber(message, field)
 }
 
+// FindExtensionByNumber implements linker.Resolver.
+func (c *Cache) FindExtensionsByMessage(message protoreflect.FullName) []protoreflect.ExtensionDescriptor {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	var extensions []protoreflect.ExtensionDescriptor
+	for _, res := range c.results {
+		extensions = append(extensions, res.(linker.Result).FindExtensionsByMessage(message)...)
+	}
+	return extensions
+}
+
 func (c *Cache) FindResultByPath(path string) (linker.Result, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
@@ -1111,7 +1122,7 @@ func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options prot
 	return protocol.EditsFromDiffEdits(mapper, edits)
 }
 
-func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, localPackage protoreflect.FullName, filter ...func(protoreflect.Descriptor) bool) []protoreflect.Descriptor {
+func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, filter ...func(protoreflect.Descriptor) bool) []protoreflect.Descriptor {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
 	eg, ctx := errgroup.WithContext(ctx)
@@ -1124,11 +1135,7 @@ func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, l
 			continue
 		}
 		eg.Go(func() (err error) {
-			p := prefix
-			if pkg == localPackage {
-				p = string(localPackage) + "." + p
-			}
-			resultsByPackage[i], err = res.(linker.Result).FindDescriptorsByPrefix(ctx, p, filter...)
+			resultsByPackage[i], err = res.(linker.Result).FindDescriptorsByPrefix(ctx, string(pkg.Append(protoreflect.Name(prefix))), filter...)
 			return
 		})
 	}

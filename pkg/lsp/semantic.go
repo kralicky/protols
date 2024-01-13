@@ -468,6 +468,10 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeType, semanticModifierDefinition)
 			return nil
 		},
+		DoVisitGroupNode: func(node *ast.GroupNode) error {
+			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeType, semanticModifierDefinition)
+			return nil
+		},
 		DoVisitFieldNode: func(node *ast.FieldNode) error {
 			var modifier tokenModifier
 			if id := string(node.FldType.AsIdentifier()); protocompile.IsScalarType(id) || protocompile.IsWellKnownType(protoreflect.FullName(id)) {
@@ -580,6 +584,9 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			return nil
 		},
 		DoVisitPackageNode: func(node *ast.PackageNode) error {
+			if node.IsIncomplete() {
+				return nil
+			}
 			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeNamespace, 0)
 			return nil
 		},

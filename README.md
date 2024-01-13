@@ -46,7 +46,7 @@ Features in progress:
   - [x] Automatic imports
   - [x] Import paths
   - [x] Message and field literals
-  - [ ] Package names
+  - [x] Package names
 - [x] Inlay hints for message and field literal types
 - [ ] Code generator tools
   - [x] Built-in compiler with workspace context

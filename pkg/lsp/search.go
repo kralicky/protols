@@ -232,7 +232,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 				case *ast.OneofNode:
 					want.desc = haveDesc.Oneofs().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
 				case *ast.GroupNode:
-					want.desc = haveDesc.Fields().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+					want.desc = haveDesc.Messages().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
 				case *ast.MessageNode:
 					want.desc = haveDesc.Messages().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
 				case *ast.EnumNode:
@@ -658,6 +658,12 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 			}
 			return nil
 		},
+		DoVisitPackageNode: func(node *ast.PackageNode) error {
+			if intersectsLocation(node) {
+				paths = append(paths, slices.Clone(tracker.Path()))
+			}
+			return nil
+		},
 	}, opts...)
 	if len(paths) == 0 {
 		return nil, false
@@ -692,26 +698,19 @@ func findDefinition(desc protoreflect.Descriptor, files linker.Files) (ast.NodeR
 		node = linkRes.MethodNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.MethodDescriptorProto)).GetName()
 	case protoreflect.FieldDescriptor:
 		if !desc.IsExtension() {
-			switch desc.(type) {
+			switch desc := desc.(type) {
 			case protoutil.DescriptorProtoWrapper:
-				node = linkRes.FieldNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.FieldDescriptorProto))
+				node = linkRes.FieldNode(desc.AsProto().(*descriptorpb.FieldDescriptorProto))
 			default:
-				// these can be internal filedesc.Field descriptors for e.g. builtin file options
-				linkRes.RangeFieldReferenceNodesWithDescriptors(func(n ast.Node, fd protoreflect.FieldDescriptor) bool {
-					// TODO: this is a workaround, figure out why the linker wrapper types aren't being used here
-					if desc.FullName() == fd.FullName() {
-						node = n
-						return false
-					}
-					return true
-				})
+				// these can be internal filedesc.Field descriptors for e.g. builtin options
+				node = linkRes.FieldNode(linkRes.FindDescriptorByName(desc.FullName()).(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.FieldDescriptorProto))
 			}
 		} else {
 			switch desc := desc.(type) {
-			case protoreflect.ExtensionTypeDescriptor:
-				node = linkRes.FieldNode(desc.Descriptor().(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.FieldDescriptorProto))
 			case protoutil.DescriptorProtoWrapper:
 				node = linkRes.FieldNode(desc.AsProto().(*descriptorpb.FieldDescriptorProto))
+			case protoreflect.ExtensionTypeDescriptor:
+				node = linkRes.FieldNode(desc.Descriptor().(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.FieldDescriptorProto))
 			}
 		}
 	case protoreflect.EnumValueDescriptor:

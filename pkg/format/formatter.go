@@ -377,7 +377,9 @@ func (f *formatter) writeSyntax(syntaxNode *ast.SyntaxNode) {
 func (f *formatter) writePackage(packageNode *ast.PackageNode) {
 	f.writeStart(packageNode.Keyword)
 	f.Space()
-	f.writeInline(packageNode.Name)
+	if packageNode.Name != nil {
+		f.writeInline(packageNode.Name)
+	}
 	f.writeLineEnd(packageNode.Semicolon)
 }
 

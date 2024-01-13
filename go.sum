@@ -32,8 +32,8 @@ github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 h1:Z9n2FFNU
 github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51/go.mod h1:CzGEWj7cYgsdH8dAjBGEr58BoE7ScuLd+fwFZ44+/x8=
 github.com/kralicky/gpkg v0.0.0-20231114180450-2f4bff8c5588 h1:chw4znRXk7AA+AlKcrUZzH1Vupl54KcS4W6wkXCX3lU=
 github.com/kralicky/gpkg v0.0.0-20231114180450-2f4bff8c5588/go.mod h1:vOkwMjs49XmP/7Xfo9ZL6eg2ei51lmtD/4U/Az5GTq8=
-github.com/kralicky/protocompile v0.0.0-20240110195505-9e89056c92b0 h1:kp99R1s33F62lurBYhXhheqsE+e7jmDyz611wDA7J6M=
-github.com/kralicky/protocompile v0.0.0-20240110195505-9e89056c92b0/go.mod h1:QKlDXp/yojhlpqgJfUHWhqzvD9gCD/baEPFvq89cpgE=
+github.com/kralicky/protocompile v0.0.0-20240113031314-24e69108897d h1:DdKNJNMQRs2MBIikDaqWm75w2Yud4xtjRCmmhs/d1qw=
+github.com/kralicky/protocompile v0.0.0-20240113031314-24e69108897d/go.mod h1:QKlDXp/yojhlpqgJfUHWhqzvD9gCD/baEPFvq89cpgE=
 github.com/kralicky/tools-lite v0.0.0-20240104191314-c259ddd5a342 h1:lZLWHXKHmOhTrs3oSZoCRtb8Y9a0mqUwCsaKut+Y1eU=
 github.com/kralicky/tools-lite v0.0.0-20240104191314-c259ddd5a342/go.mod h1:NKsdxFI6awifvNvxDwtCU1YCaKRoSSPpbHXkKOMuq24=
 github.com/mattn/go-colorable v0.1.2/go.mod h1:U0ppj6V5qS13XJ6of8GYAs25YV2eR4EVcfRqFIhoBtE=

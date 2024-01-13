@@ -223,7 +223,11 @@ func (v *dumpVisitor) VisitOptionNode(node *ast.OptionNode) error {
 }
 
 func (v *dumpVisitor) VisitPackageNode(node *ast.PackageNode) error {
-	v.buf.WriteString(fmt.Sprintf("name=%q\n", node.Name.AsIdentifier()))
+	if node.IsIncomplete() {
+		v.buf.WriteString("!name")
+	} else {
+		v.buf.WriteString(fmt.Sprintf("name=%q\n", node.Name.AsIdentifier()))
+	}
 	return nil
 }
 

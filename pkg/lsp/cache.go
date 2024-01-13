@@ -142,14 +142,6 @@ func (c *Cache) FindParseResultByPath(path string) (parser.Result, error) {
 	return c.FindResultByPath(path)
 }
 
-// // FindFileByPath implements linker.Resolver.
-// func (c *Cache) FindFileByPath(path protocompile.UnresolvedPath) (protoreflect.FileDescriptor, error) {
-// 	c.resultsMu.RLock()
-// 	defer c.resultsMu.RUnlock()
-// 	c.resolver.f
-// 	return c.results.AsResolver().FindFileByPath(path)
-// }
-
 func (c *Cache) FindFileByURI(uri protocol.DocumentURI) (protoreflect.FileDescriptor, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()

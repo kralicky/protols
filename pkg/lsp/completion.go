@@ -339,6 +339,11 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				}
 				completions = append(completions, completeSyntaxVersions(partialVersion, partialVersionSuffix, params.Position)...)
 			}
+		case *ast.PackageNode:
+			// complete package names
+			completions = append(completions,
+				c.completePackageNames(node, path, searchTarget.AST(), maybeCurrentLinkRes, mapper, posOffset, params.Position)...)
+
 		}
 
 		return &protocol.CompletionList{
@@ -419,6 +424,72 @@ func editAddImport(parseRes parser.Result, path string) protocol.TextEdit {
 		},
 		NewText: text,
 	}
+}
+
+func (c *Cache) completePackageNames(
+	node *ast.PackageNode,
+	nodePath []ast.Node,
+	fileNode *ast.FileNode,
+	linkRes linker.Result,
+	mapper *protocol.Mapper,
+	posOffset int,
+	pos protocol.Position,
+) []protocol.CompletionItem {
+	var partialName, partialNameSuffix string
+	if !node.IsIncomplete() {
+		var err error
+		partialName, partialNameSuffix, err = findPartialNames(fileNode, node.Name, mapper, posOffset)
+		if err != nil {
+			return nil
+		}
+	}
+
+	dir := path.Dir(linkRes.Path())
+	var candidates []protoreflect.FullName
+	if base := protoreflect.FullName(path.Base(dir)); base.IsValid() {
+		candidates = append(candidates, base)
+	}
+
+	var items []protocol.CompletionItem
+	c.results.RangeFilesByPrefix(dir, func(f linker.File) bool {
+		if f == linkRes {
+			return true
+		}
+		if path.Dir(f.Path()) != dir {
+			return true
+		}
+		pkgName := f.Package()
+		candidates = append(candidates, pkgName)
+		return true
+	})
+	slices.Sort(candidates)
+	candidates = slices.Compact(candidates)
+
+	replaceRange := protocol.Range{
+		Start: adjustColumn(pos, -len(partialName)),
+		End:   adjustColumn(pos, len(partialNameSuffix)),
+	}
+	for _, pkgName := range candidates {
+		if strings.HasPrefix(string(pkgName), partialName) {
+			item := protocol.CompletionItem{
+				Label: string(pkgName),
+				Kind:  protocol.ModuleCompletion,
+				TextEdit: &protocol.Or_CompletionItem_textEdit{
+					Value: protocol.InsertReplaceEdit{
+						NewText: string(pkgName),
+						Insert:  replaceRange,
+						Replace: replaceRange,
+					},
+				},
+			}
+			if string(pkgName) == partialName+partialNameSuffix {
+				item.Preselect = true
+			}
+
+			items = append(items, item)
+		}
+	}
+	return items
 }
 
 type fieldCompletionStyle int
@@ -520,12 +591,12 @@ var (
 	snippetMode           = protocol.SnippetTextFormat
 )
 
-func findCompletionScopeAndExistingOptions(path []ast.Node, linkRes linker.Result) (protoreflect.Descriptor, map[string]struct{}) {
+func findCompletionScopeAndExistingOptions(nodePath []ast.Node, linkRes linker.Result) (protoreflect.Descriptor, map[string]struct{}) {
 	var scope protoreflect.Descriptor
 	existing := map[string]struct{}{}
 LOOP:
-	for i := len(path) - 1; i >= 0; i-- {
-		switch node := path[i].(type) {
+	for i := len(nodePath) - 1; i >= 0; i-- {
+		switch node := nodePath[i].(type) {
 		case ast.MessageDeclNode:
 			scope = (*descriptorpb.MessageOptions)(nil).ProtoReflect().Descriptor()
 			if desc := linkRes.MessageDescriptor(node); desc != nil && desc.Options != nil {

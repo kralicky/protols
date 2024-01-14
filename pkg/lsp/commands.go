@@ -34,7 +34,8 @@ type SyntheticFileContentsRequest struct {
 
 type DocumentASTRequest struct {
 	// The URI of the file to retrieve the AST for.
-	URI string `json:"uri"`
+	URI     string `json:"uri"`
+	Version int32  `json:"version"`
 }
 
 type ReindexWorkspacesRequest struct{}

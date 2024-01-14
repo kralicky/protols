@@ -588,37 +588,51 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 		info := fileNode.NodeInfo(node)
 		return protocol.Intersect(toRange(info), protocol.Range{Start: location, End: location})
 	}
+	intersectsLocationExclusive := func(node, end ast.Node) bool {
+		if end == nil {
+			return intersectsLocation(node)
+		}
+		if rn, ok := end.(*ast.RuneNode); ok && rn.Virtual {
+			return intersectsLocation(node)
+		}
+		nodeInfo := fileNode.NodeInfo(node)
+		endSourcePos := fileNode.NodeInfo(end).End()
+		if protocol.Intersect(positionsToRange(nodeInfo.Start(), endSourcePos), protocol.Range{Start: location, End: location}) {
+			return int(location.Line) < endSourcePos.Line-1 || int(location.Character) < endSourcePos.Col-1
+		}
+		return false
+	}
 	opts := tracker.AsWalkOptions()
 	if tokenAtOffset != ast.TokenError {
 		opts = append(opts, ast.WithIntersection(tokenAtOffset))
 	}
 	ast.Walk(parseRes.AST(), &ast.SimpleVisitor{
 		DoVisitImportNode: func(node *ast.ImportNode) error {
-			if intersectsLocation(node) {
+			if intersectsLocationExclusive(node, node.Semicolon) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
 			return nil
 		},
 		DoVisitSyntaxNode: func(node *ast.SyntaxNode) error {
-			if intersectsLocation(node) {
+			if intersectsLocationExclusive(node, node.Semicolon) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
 			return nil
 		},
 		DoVisitMessageNode: func(node *ast.MessageNode) error {
-			if intersectsLocation(node) {
+			if intersectsLocationExclusive(node, node.CloseBrace) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
 			return nil
 		},
 		DoVisitOptionNode: func(node *ast.OptionNode) error {
-			if intersectsLocation(node) {
+			if intersectsLocationExclusive(node, node.Semicolon) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
 			return nil
 		},
 		DoVisitMessageLiteralNode: func(node *ast.MessageLiteralNode) error {
-			if intersectsLocation(node) {
+			if intersectsLocationExclusive(node, node.Close) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
 			return nil
@@ -641,13 +655,13 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 			return nil
 		},
 		DoVisitCompactOptionsNode: func(node *ast.CompactOptionsNode) error {
-			if intersectsLocation(node) {
+			if intersectsLocationExclusive(node, node.CloseBracket) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
 			return nil
 		},
 		DoVisitFieldNode: func(node *ast.FieldNode) error {
-			if intersectsLocation(node) {
+			if intersectsLocationExclusive(node, node.Semicolon) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
 			return nil
@@ -659,7 +673,13 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 			return nil
 		},
 		DoVisitPackageNode: func(node *ast.PackageNode) error {
-			if intersectsLocation(node) {
+			if intersectsLocationExclusive(node, node.Semicolon) {
+				paths = append(paths, slices.Clone(tracker.Path()))
+			}
+			return nil
+		},
+		DoVisitErrorNode: func(en *ast.ErrorNode) error {
+			if intersectsLocation(en) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
 			return nil

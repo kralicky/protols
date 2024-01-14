@@ -94,6 +94,12 @@ func (v *dumpVisitor) VisitCompoundStringLiteralNode(node *ast.CompoundStringLit
 }
 
 func (v *dumpVisitor) VisitEmptyDeclNode(node *ast.EmptyDeclNode) error {
+	v.buf.WriteString("\n")
+	return nil
+}
+
+func (v *dumpVisitor) VisitErrorNode(*ast.ErrorNode) error {
+	v.buf.WriteString("\n")
 	return nil
 }
 
@@ -132,7 +138,11 @@ func (v *dumpVisitor) VisitFieldReferenceNode(node *ast.FieldReferenceNode) erro
 }
 
 func (v *dumpVisitor) VisitFileNode(node *ast.FileNode) error {
-	v.buf.WriteString(fmt.Sprintf("syntax=%q #decls=%d\n", maybe(node.Syntax).Syntax.AsString(), len(node.Decls)))
+	if node.Syntax == nil {
+		v.buf.WriteString(fmt.Sprintf("!syntax #decls=%d\n", len(node.Decls)))
+	} else {
+		v.buf.WriteString(fmt.Sprintf("syntax=%q #decls=%d\n", maybe(node.Syntax).Syntax.AsString(), len(node.Decls)))
+	}
 	return nil
 }
 

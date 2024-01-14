@@ -93,265 +93,298 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	tokenAtOffset := searchTarget.AST().TokenAtOffset(posOffset)
 
 	path, found := findNarrowestEnclosingScope(searchTarget, tokenAtOffset, params.Position)
-	if found && maybeCurrentLinkRes != nil {
-		completions := []protocol.CompletionItem{}
-		desc, _, _ := deepPathSearch(path, searchTarget, maybeCurrentLinkRes)
-
-		scope, existingOpts := findCompletionScopeAndExistingOptions(path, maybeCurrentLinkRes)
-
-		switch node := path[len(path)-1].(type) {
-		case *ast.MessageNode:
-			partialName := strings.TrimSpace(textPrecedingCursor)
-			if !isProto2(searchTarget.AST()) {
-				// complete message types
-				completions = append(completions, completeTypeNames(c, partialName, "", maybeCurrentLinkRes, desc.FullName(), params.Position)...)
-			}
-			completions = append(completions, messageKeywordCompletions(searchTarget, partialName)...)
-		case *ast.MessageLiteralNode:
-			if desc == nil {
-				break
-			}
-			switch desc := desc.(type) {
-			case protoreflect.MessageDescriptor:
-				// complete field names
-				// filter out fields that are already present
-				existingFieldNames := []string{}
-
-				for _, elem := range node.Elements {
-					name := string(elem.Name.Name.AsIdentifier())
-					if fd := desc.Fields().ByName(protoreflect.Name(name)); fd != nil {
-						existingFieldNames = append(existingFieldNames, name)
-					}
-				}
-				for i, l := 0, desc.Fields().Len(); i < l; i++ {
-					fld := desc.Fields().Get(i)
-					if slices.Contains(existingFieldNames, string(fld.Name())) {
-						continue
-					}
-					insertPos := protocol.Range{
-						Start: params.Position,
-						End:   params.Position,
-					}
-					completions = append(completions, fieldCompletion(fld, insertPos, messageLiteralStyle))
-				}
-
-			case protoreflect.ExtensionTypeDescriptor:
-				if _, ok := path[len(path)-2].(*ast.ExtendNode); ok {
-					// this is a field of an extend node, not a message literal
-					break
-				}
-				switch desc.Kind() {
-				case protoreflect.MessageKind:
-					msg := desc.Message()
-					// complete field names
-					for i, l := 0, msg.Fields().Len(); i < l; i++ {
-						fld := msg.Fields().Get(i)
-						insertPos := protocol.Range{
-							Start: params.Position,
-							End:   params.Position,
-						}
-						completions = append(completions, fieldCompletion(fld, insertPos, compactOptionsStyle))
-					}
-				}
-			}
-		case *ast.CompactOptionsNode:
-			completions = append(completions,
-				c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
-		case *ast.OptionNode:
-			completions = append(completions,
-				c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
-		case *ast.FieldReferenceNode:
-			nodeIdx := -1
-			scope := scope
-			switch prev := path[len(path)-2].(type) {
-			case *ast.OptionNameNode:
-				nodeIdx = slices.Index(prev.Parts, node)
-			case *ast.MessageFieldNode:
-				if desc == nil {
-					if desc, _, _ := deepPathSearch(path[:len(path)-2], searchTarget, maybeCurrentLinkRes); desc != nil {
-						nodeIdx = 0
-						scope = desc
-					}
-				} else {
-					nodeIdx = 0
-					if fd, ok := desc.(protoreflect.FieldDescriptor); ok {
-						scope = fd.ContainingMessage()
-					}
-				}
-			}
-			if nodeIdx == -1 {
-				break
-			}
-			existingFields := map[string]struct{}{}
-			if messageLitNode, ok := path[len(path)-3].(*ast.MessageLiteralNode); ok {
-				for _, elem := range messageLitNode.Elements {
-					if elem.IsIncomplete() {
-						continue
-					}
-					existingFields[string(scope.FullName().Append(protoreflect.Name(elem.Name.Name.AsIdentifier())))] = struct{}{}
-				}
-			}
-			completions = append(completions,
-				c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), node, nodeIdx, maybeCurrentLinkRes, existingFields, mapper, posOffset, params.Position)...)
-		case *ast.OptionNameNode:
-			// this can be the closest node in a few cases, such as after a trailing dot
-			nodeChildren := node.Children()
-			var lastPart *ast.FieldReferenceNode
-			for i := 0; i < len(nodeChildren); i++ {
-				if nodeChildren[i].Start() != tokenAtOffset {
-					continue
-				}
-				for j := i; j >= 0; j-- {
-					if frn, ok := nodeChildren[j].(*ast.FieldReferenceNode); ok {
-						lastPart = frn
-						break
-					}
-				}
-			}
-			if lastPart == nil {
-				break
-			}
-			prevFd := maybeCurrentLinkRes.FindFieldDescriptorByFieldReferenceNode(lastPart)
-			if prevFd == nil {
-				break
-			}
-			items, err := c.deepCompleteOptionNames(prevFd, "", "", maybeCurrentLinkRes, nil, lastPart, params.Position)
-			if err != nil {
-				return nil, err
-			}
-			completions = append(completions, items...)
-
-		case *ast.FieldNode:
-			// check if we are completing a type name
-			var shouldCompleteType bool
-			var shouldCompleteKeywords bool
-			var completeType string
-			var completeTypeSuffix string
-
-			switch {
-			case tokenAtOffset == node.End():
-				// figure out what the previous token is
-				switch tokenAtOffset - 1 {
-				case node.FldType.End():
-					// complete the field name
-					switch fldType := node.FldType.(type) {
-					case *ast.IncompleteIdentNode:
-						if fldType.IncompleteVal != nil {
-							completeType = string(fldType.IncompleteVal.AsIdentifier())
-						} else {
-							completeType = ""
-						}
-					case *ast.CompoundIdentNode:
-						completeType = string(fldType.AsIdentifier())
-					case *ast.IdentNode:
-						completeType = string(fldType.AsIdentifier())
-					}
-					shouldCompleteType = true
-				case node.Name.Token():
-				case node.Equals.Token():
-				case node.Tag.Token():
-				case node.Options.End():
-				}
-			case tokenAtOffset >= node.FldType.Start() && tokenAtOffset <= node.FldType.End():
-				if desc == nil {
-					break
-				}
-				// complete within the field type
-				pos := searchTarget.AST().NodeInfo(node.FldType).Start()
-				startOffset, err := mapper.PositionOffset(protocol.Position{
-					Line:      uint32(pos.Line - 1),
-					Character: uint32(pos.Col - 1),
-				})
-				if err != nil {
-					return nil, err
-				}
-				cursorIndexIntoType := posOffset - startOffset
-				completeType = string(node.FldType.AsIdentifier())
-				if len(completeType) >= cursorIndexIntoType {
-					completeTypeSuffix = completeType[cursorIndexIntoType:]
-					completeType = completeType[:cursorIndexIntoType]
-					shouldCompleteType = true
-				}
-				if node.Label.IsPresent() && node.Label.Start() == node.FldType.Start() {
-					// handle empty *ast.IncompleteIdentNodes, such as in 'optional <cursor>'
-					completeType = ""
-					shouldCompleteType = true
-				} else {
-					// complete keywords
-					shouldCompleteKeywords = true
-				}
-
-			}
-			if shouldCompleteType {
-				fmt.Println("completing type", completeType)
-				var scope protoreflect.FullName
-				if len(path) > 1 {
-					if desc, _, err := deepPathSearch(path[:len(path)-1], searchTarget, maybeCurrentLinkRes); err == nil {
-						scope = desc.FullName()
-					}
-				}
-				completions = append(completions, completeTypeNames(c, completeType, completeTypeSuffix, maybeCurrentLinkRes, scope, params.Position)...)
-			}
-			if shouldCompleteKeywords {
-				completions = append(completions, messageKeywordCompletions(searchTarget, completeType)...)
-			}
-		case *ast.ImportNode:
-			// complete import paths
-			quoteIdx := strings.IndexRune(textPrecedingCursor, '"')
-			if quoteIdx != -1 {
-				partialPath := strings.TrimSpace(textPrecedingCursor[quoteIdx+1:])
-				endQuoteIdx := strings.IndexRune(textFollowingCursor, '"')
-				var partialPathSuffix string
-				if endQuoteIdx != -1 {
-					partialPathSuffix = strings.TrimSpace(textFollowingCursor[:endQuoteIdx])
-				}
-
-				existingImportPaths := []string{}
-				if desc != nil {
-					imports := maybeCurrentLinkRes.Imports()
-					for i, l := 0, imports.Len(); i < l; i++ {
-						// don't include the current import in the existing imports list
-						imp := imports.Get(i)
-						if imp == desc {
-							continue
-						}
-						existingImportPaths = append(existingImportPaths, imp.Path())
-					}
-				}
-				completions = append(completions, completeImports(c, partialPath, partialPathSuffix, existingImportPaths, params.Position)...)
-			} else {
-				if strings.TrimSpace(textPrecedingCursor) == "import" && node.Public == nil {
-					completions = append(completions, protocol.CompletionItem{
-						Label: "public",
-						Kind:  protocol.KeywordCompletion,
-					})
-				}
-			}
-		case *ast.SyntaxNode:
-			// complete syntax versions
-			quoteIdx := strings.IndexRune(textPrecedingCursor, '"')
-			if quoteIdx != -1 {
-				partialVersion := strings.TrimSpace(textPrecedingCursor[quoteIdx+1:])
-				endQuoteIdx := strings.IndexRune(textFollowingCursor, '"')
-				var partialVersionSuffix string
-				if endQuoteIdx != -1 {
-					partialVersionSuffix = strings.TrimSpace(textFollowingCursor[:endQuoteIdx])
-				}
-				completions = append(completions, completeSyntaxVersions(partialVersion, partialVersionSuffix, params.Position)...)
-			}
-		case *ast.PackageNode:
-			// complete package names
-			completions = append(completions,
-				c.completePackageNames(node, path, searchTarget.AST(), maybeCurrentLinkRes, mapper, posOffset, params.Position)...)
-
+	if !found {
+		var completions []protocol.CompletionItem
+		if len(searchTarget.AST().Children()) == 1 { // only EOF
+			// empty file
+			completions = append(completions, syntaxSnippets()...)
+		} else {
+			// top-level keywords
+			completions = append(completions, fileKeywordCompletions(searchTarget.AST(), "", "", params.Position)...)
 		}
-
 		return &protocol.CompletionList{
 			Items: completions,
 		}, nil
 	}
+	if maybeCurrentLinkRes == nil {
+		return nil, nil
+	}
 
-	return nil, nil
+	completions := []protocol.CompletionItem{}
+	desc, _, _ := deepPathSearch(path, searchTarget, maybeCurrentLinkRes)
+
+	scope, existingOpts := findCompletionScopeAndExistingOptions(path, maybeCurrentLinkRes)
+
+	switch node := path[len(path)-1].(type) {
+	case *ast.MessageNode:
+		var partialName, partialNameSuffix string
+		fileNode := searchTarget.AST()
+		if node.Name != nil && tokenAtOffset >= node.Name.Start() && tokenAtOffset <= node.Name.End() {
+			// complete message names
+			var err error
+			partialName, partialNameSuffix, err = findPartialNames(fileNode, node.Name, mapper, posOffset)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if !isProto2(fileNode) {
+			// complete message types
+			completions = append(completions, completeTypeNames(c, partialName, partialNameSuffix, maybeCurrentLinkRes, desc.FullName(), params.Position)...)
+		}
+		completions = append(completions, messageKeywordCompletions(fileNode, partialName, partialNameSuffix, params.Position)...)
+	case *ast.MessageLiteralNode:
+		if desc == nil {
+			break
+		}
+		switch desc := desc.(type) {
+		case protoreflect.MessageDescriptor:
+			// complete field names
+			// filter out fields that are already present
+			existingFieldNames := []string{}
+
+			for _, elem := range node.Elements {
+				name := string(elem.Name.Name.AsIdentifier())
+				if fd := desc.Fields().ByName(protoreflect.Name(name)); fd != nil {
+					existingFieldNames = append(existingFieldNames, name)
+				}
+			}
+			for i, l := 0, desc.Fields().Len(); i < l; i++ {
+				fld := desc.Fields().Get(i)
+				if slices.Contains(existingFieldNames, string(fld.Name())) {
+					continue
+				}
+				insertPos := protocol.Range{
+					Start: params.Position,
+					End:   params.Position,
+				}
+				completions = append(completions, fieldCompletion(fld, insertPos, messageLiteralStyle))
+			}
+
+		case protoreflect.ExtensionTypeDescriptor:
+			if _, ok := path[len(path)-2].(*ast.ExtendNode); ok {
+				// this is a field of an extend node, not a message literal
+				break
+			}
+			switch desc.Kind() {
+			case protoreflect.MessageKind:
+				msg := desc.Message()
+				// complete field names
+				for i, l := 0, msg.Fields().Len(); i < l; i++ {
+					fld := msg.Fields().Get(i)
+					insertPos := protocol.Range{
+						Start: params.Position,
+						End:   params.Position,
+					}
+					completions = append(completions, fieldCompletion(fld, insertPos, compactOptionsStyle))
+				}
+			}
+		}
+	case *ast.CompactOptionsNode:
+		completions = append(completions,
+			c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
+	case *ast.OptionNode:
+		completions = append(completions,
+			c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
+	case *ast.FieldReferenceNode:
+		nodeIdx := -1
+		scope := scope
+		switch prev := path[len(path)-2].(type) {
+		case *ast.OptionNameNode:
+			nodeIdx = slices.Index(prev.Parts, node)
+		case *ast.MessageFieldNode:
+			if desc == nil {
+				if desc, _, _ := deepPathSearch(path[:len(path)-2], searchTarget, maybeCurrentLinkRes); desc != nil {
+					nodeIdx = 0
+					scope = desc
+				}
+			} else {
+				nodeIdx = 0
+				if fd, ok := desc.(protoreflect.FieldDescriptor); ok {
+					scope = fd.ContainingMessage()
+				}
+			}
+		}
+		if nodeIdx == -1 {
+			break
+		}
+		existingFields := map[string]struct{}{}
+		if messageLitNode, ok := path[len(path)-3].(*ast.MessageLiteralNode); ok {
+			for _, elem := range messageLitNode.Elements {
+				if elem.IsIncomplete() {
+					continue
+				}
+				existingFields[string(scope.FullName().Append(protoreflect.Name(elem.Name.Name.AsIdentifier())))] = struct{}{}
+			}
+		}
+		completions = append(completions,
+			c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), node, nodeIdx, maybeCurrentLinkRes, existingFields, mapper, posOffset, params.Position)...)
+	case *ast.OptionNameNode:
+		// this can be the closest node in a few cases, such as after a trailing dot
+		nodeChildren := node.Children()
+		var lastPart *ast.FieldReferenceNode
+		for i := 0; i < len(nodeChildren); i++ {
+			if nodeChildren[i].Start() != tokenAtOffset {
+				continue
+			}
+			for j := i; j >= 0; j-- {
+				if frn, ok := nodeChildren[j].(*ast.FieldReferenceNode); ok {
+					lastPart = frn
+					break
+				}
+			}
+		}
+		if lastPart == nil {
+			break
+		}
+		prevFd := maybeCurrentLinkRes.FindFieldDescriptorByFieldReferenceNode(lastPart)
+		if prevFd == nil {
+			break
+		}
+		items, err := c.deepCompleteOptionNames(prevFd, "", "", maybeCurrentLinkRes, nil, lastPart, params.Position)
+		if err != nil {
+			return nil, err
+		}
+		completions = append(completions, items...)
+
+	case *ast.FieldNode:
+		// check if we are completing a type name
+		var shouldCompleteType bool
+		var shouldCompleteKeywords bool
+		var completeType string
+		var completeTypeSuffix string
+
+		switch {
+		case tokenAtOffset == node.End():
+			// figure out what the previous token is
+			switch tokenAtOffset - 1 {
+			case node.FldType.End():
+				// complete the field name
+				switch fldType := node.FldType.(type) {
+				case *ast.IncompleteIdentNode:
+					if fldType.IncompleteVal != nil {
+						completeType = string(fldType.IncompleteVal.AsIdentifier())
+					} else {
+						completeType = ""
+					}
+				case *ast.CompoundIdentNode:
+					completeType = string(fldType.AsIdentifier())
+				case *ast.IdentNode:
+					completeType = string(fldType.AsIdentifier())
+				}
+				shouldCompleteType = true
+			case node.Name.Token():
+			case node.Equals.Token():
+			case node.Tag.Token():
+			case node.Options.End():
+			}
+		case tokenAtOffset >= node.FldType.Start() && tokenAtOffset <= node.FldType.End():
+			// complete within the field type
+			pos := searchTarget.AST().NodeInfo(node.FldType).Start()
+			startOffset, err := mapper.PositionOffset(protocol.Position{
+				Line:      uint32(pos.Line - 1),
+				Character: uint32(pos.Col - 1),
+			})
+			if err != nil {
+				return nil, err
+			}
+			cursorIndexIntoType := posOffset - startOffset
+			completeType = string(node.FldType.AsIdentifier())
+			if len(completeType) >= cursorIndexIntoType {
+				completeTypeSuffix = completeType[cursorIndexIntoType:]
+				completeType = completeType[:cursorIndexIntoType]
+				shouldCompleteType = true
+			}
+			if node.Label.IsPresent() && node.Label.Start() == node.FldType.Start() {
+				// handle empty *ast.IncompleteIdentNodes, such as in 'optional <cursor>'
+				completeType = ""
+				shouldCompleteType = true
+			} else {
+				// complete keywords
+				shouldCompleteKeywords = true
+			}
+		}
+		if shouldCompleteType {
+			fmt.Println("completing type", completeType)
+			var scope protoreflect.FullName
+			if len(path) > 1 {
+				if desc, _, err := deepPathSearch(path[:len(path)-1], searchTarget, maybeCurrentLinkRes); err == nil {
+					scope = desc.FullName()
+				}
+			}
+			completions = append(completions, completeTypeNames(c, completeType, completeTypeSuffix, maybeCurrentLinkRes, scope, params.Position)...)
+		}
+		if shouldCompleteKeywords {
+			completions = append(completions, messageKeywordCompletions(searchTarget.AST(), completeType, completeTypeSuffix, params.Position)...)
+		}
+	case *ast.ImportNode:
+		// complete import paths
+		quoteIdx := strings.IndexRune(textPrecedingCursor, '"')
+		if quoteIdx != -1 {
+			partialPath := strings.TrimSpace(textPrecedingCursor[quoteIdx+1:])
+			endQuoteIdx := strings.IndexRune(textFollowingCursor, '"')
+			var partialPathSuffix string
+			if endQuoteIdx != -1 {
+				partialPathSuffix = strings.TrimSpace(textFollowingCursor[:endQuoteIdx])
+			}
+
+			existingImportPaths := []string{}
+			if desc != nil {
+				imports := maybeCurrentLinkRes.Imports()
+				for i, l := 0, imports.Len(); i < l; i++ {
+					// don't include the current import in the existing imports list
+					imp := imports.Get(i)
+					if imp == desc {
+						continue
+					}
+					existingImportPaths = append(existingImportPaths, imp.Path())
+				}
+			}
+			completions = append(completions, completeImports(c, partialPath, partialPathSuffix, existingImportPaths, params.Position)...)
+		} else {
+			if strings.TrimSpace(textPrecedingCursor) == "import" && node.Public == nil {
+				completions = append(completions, protocol.CompletionItem{
+					Label: "public",
+					Kind:  protocol.KeywordCompletion,
+				})
+			}
+		}
+	case *ast.SyntaxNode:
+		// complete syntax versions
+		quoteIdx := strings.IndexRune(textPrecedingCursor, '"')
+		if quoteIdx != -1 {
+			partialVersion := strings.TrimSpace(textPrecedingCursor[quoteIdx+1:])
+			endQuoteIdx := strings.IndexRune(textFollowingCursor, '"')
+			var partialVersionSuffix string
+			if endQuoteIdx != -1 {
+				partialVersionSuffix = strings.TrimSpace(textFollowingCursor[:endQuoteIdx])
+			}
+			completions = append(completions, completeSyntaxVersions(partialVersion, partialVersionSuffix, params.Position)...)
+		}
+	case *ast.PackageNode:
+		// complete package names
+		completions = append(completions,
+			c.completePackageNames(node, path, searchTarget.AST(), maybeCurrentLinkRes, mapper, posOffset, params.Position)...)
+	case *ast.ErrorNode:
+		switch prev := path[len(path)-2].(type) {
+		case *ast.FileNode:
+			var partialName, partialNameSuffix string
+			if len(node.Children()) == 1 {
+				if ident, ok := node.Children()[0].(*ast.IdentNode); ok {
+					// complete partial top-level keywords
+					var err error
+					partialName, partialNameSuffix, err = findPartialNames(prev, ident, mapper, posOffset)
+					if err != nil {
+						return nil, err
+					}
+				}
+			}
+			completions = append(completions, fileKeywordCompletions(prev, partialName, partialNameSuffix, params.Position)...)
+		}
+	}
+
+	return &protocol.CompletionList{
+		Items: completions,
+	}, nil
 }
 
 func (c *Cache) completeOptionOrExtensionName(
@@ -729,13 +762,26 @@ func (c *Cache) deepCompleteOptionNames(
 	return items, nil
 }
 
-func completeKeywords(keywords ...string) []protocol.CompletionItem {
-	items := []protocol.CompletionItem{}
+func completeKeywords(keywords []string, partialName, partialNameSuffix string, pos protocol.Position) []protocol.CompletionItem {
+	var items []protocol.CompletionItem
+	replaceRange := protocol.Range{
+		Start: adjustColumn(pos, -len(partialName)),
+		End:   adjustColumn(pos, len(partialNameSuffix)),
+	}
 	for _, keyword := range keywords {
+		if !strings.HasPrefix(keyword, partialName) {
+			continue
+		}
 		items = append(items, protocol.CompletionItem{
-			Label:      keyword,
-			Kind:       protocol.KeywordCompletion,
-			InsertText: fmt.Sprintf("%s ", keyword),
+			Label: keyword,
+			Kind:  protocol.KeywordCompletion,
+			TextEdit: &protocol.Or_CompletionItem_textEdit{
+				Value: protocol.InsertReplaceEdit{
+					NewText: keyword,
+					Insert:  replaceRange,
+					Replace: replaceRange,
+				},
+			},
 		})
 	}
 	return items
@@ -990,18 +1036,56 @@ func isProto2(f *ast.FileNode) bool {
 	return f.Syntax.Syntax.AsString() == "proto2"
 }
 
-func messageKeywordCompletions(searchTarget parser.Result, partialName string) []protocol.CompletionItem {
+func messageKeywordCompletions(fileNode *ast.FileNode, partialName, partialNameSuffix string, pos protocol.Position) []protocol.CompletionItem {
 	// add keyword completions for messages
 	possibleKeywords := []string{"option", "optional", "repeated", "enum", "message", "reserved"}
-	if isProto2(searchTarget.AST()) {
+	if isProto2(fileNode) {
 		possibleKeywords = append(possibleKeywords, "required", "extend", "group")
 	}
-	if len(partialName) > 0 {
-		possibleKeywords = slices.DeleteFunc(possibleKeywords, func(s string) bool {
-			return !strings.HasPrefix(s, partialName)
-		})
+	return completeKeywords(possibleKeywords, partialName, partialNameSuffix, pos)
+}
+
+func fileKeywordCompletions(fileNode *ast.FileNode, partialName, partialNameSuffix string, pos protocol.Position) []protocol.CompletionItem {
+	possibleKeywords := make([]string, 0, 8)
+	// TODO(editions): add edition keyword
+	var completions []protocol.CompletionItem
+	if fileNode.Syntax == nil {
+		if strings.HasPrefix("syntax", partialName) {
+			completions = append(completions, syntaxSnippets()...)
+		}
+		possibleKeywords = append(possibleKeywords, "syntax")
 	}
-	return completeKeywords(possibleKeywords...)
+	hasPkgNode := false
+	for _, pkg := range fileNode.Decls {
+		if _, ok := pkg.(*ast.PackageNode); ok {
+			hasPkgNode = true
+		}
+	}
+	if !hasPkgNode {
+		possibleKeywords = append(possibleKeywords, "package")
+	}
+	possibleKeywords = append(possibleKeywords, "import", "option", "message", "enum", "service", "extend")
+
+	return append(completions, completeKeywords(possibleKeywords, partialName, partialNameSuffix, pos)...)
+}
+
+func syntaxSnippets() []protocol.CompletionItem {
+	return []protocol.CompletionItem{
+		{
+			Label:            "syntax: proto3",
+			Kind:             protocol.SnippetCompletion,
+			InsertTextFormat: &snippetMode,
+			InsertText:       "syntax = \"proto3\";\n",
+			Preselect:        true,
+		},
+		{
+			Label:            "syntax: proto2",
+			Kind:             protocol.SnippetCompletion,
+			InsertTextFormat: &snippetMode,
+			InsertText:       "syntax = \"proto2\";\n",
+		},
+		// TODO(editions): add edition keyword
+	}
 }
 
 // sort by distance from local package

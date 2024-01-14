@@ -50,6 +50,8 @@ type Cache struct {
 	inflightTasksInvalidate gsync.Map[protocompile.ResolvedPath, time.Time]
 	inflightTasksCompile    gsync.Map[protocompile.ResolvedPath, time.Time]
 	pragmas                 gsync.Map[protocompile.ResolvedPath, *pragmaMap]
+
+	documentVersions *documentVersionQueue
 }
 
 // FindDescriptorByName implements linker.Resolver.
@@ -215,11 +217,12 @@ func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
 		workdir: protocol.DocumentURI(workspace.URI).Path(),
 	}
 	cache := &Cache{
-		workspace:       workspace,
-		compiler:        compiler,
-		resolver:        resolver,
-		diagHandler:     diagHandler,
-		unlinkedResults: make(map[protocompile.ResolvedPath]parser.Result),
+		workspace:        workspace,
+		compiler:         compiler,
+		resolver:         resolver,
+		diagHandler:      diagHandler,
+		unlinkedResults:  make(map[protocompile.ResolvedPath]parser.Result),
+		documentVersions: newDocumentVersionQueue(),
 	}
 	compiler.Hooks = protocompile.CompilerHooks{
 		PreInvalidate:  cache.preInvalidateHook,
@@ -243,9 +246,7 @@ func (c *Cache) LoadFiles(files []string) {
 		}
 	}
 
-	if err := c.DidModifyFiles(context.TODO(), created); err != nil {
-		slog.Error("failed to index files", "error", err)
-	}
+	c.DidModifyFiles(context.TODO(), created)
 }
 
 func (r *Cache) GetMapper(uri protocol.DocumentURI) (*protocol.Mapper, error) {
@@ -267,7 +268,7 @@ func (r *Cache) GetMapper(uri protocol.DocumentURI) (*protocol.Mapper, error) {
 	return protocol.NewMapper(uri, content), nil
 }
 
-func (s *Cache) ChangedText(ctx context.Context, uri protocol.DocumentURI, changes []protocol.TextDocumentContentChangeEvent) ([]byte, error) {
+func (s *Cache) ChangedText(ctx context.Context, uri protocol.VersionedTextDocumentIdentifier, changes []protocol.TextDocumentContentChangeEvent) ([]byte, error) {
 	if len(changes) == 0 {
 		return nil, fmt.Errorf("%w: no content changes provided", jsonrpc2.ErrInternal)
 	}
@@ -278,7 +279,7 @@ func (s *Cache) ChangedText(ctx context.Context, uri protocol.DocumentURI, chang
 		return []byte(changes[0].Text), nil
 	}
 
-	m, err := s.GetMapper(uri)
+	m, err := s.GetMapper(uri.URI)
 	if err != nil {
 		return nil, err
 	}
@@ -400,8 +401,9 @@ func (c *Cache) compileLocked(protos ...string) {
 	c.compileLocked(syntheticFiles...)
 }
 
-func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modification) error {
+func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modification) {
 	c.resolver.UpdateURIPathMappings(modifications)
+	defer c.documentVersions.Update(modifications...)
 
 	var toRecompile []string
 	for _, m := range modifications {
@@ -427,12 +429,11 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modific
 		}
 	}
 	if err := c.compiler.fs.UpdateOverlays(ctx, modifications); err != nil {
-		return err
+		panic(fmt.Errorf("internal protocol error: %w", err))
 	}
 	if len(toRecompile) > 0 {
 		c.Compile(toRecompile...)
 	}
-	return nil
 }
 
 func (c *Cache) ComputeSemanticTokens(doc protocol.TextDocumentIdentifier) ([]uint32, error) {
@@ -1197,4 +1198,10 @@ func (c *Cache) AllMessages() []protoreflect.MessageDescriptor {
 func (c *Cache) FindPragmasByPath(path protocompile.ResolvedPath) (Pragmas, bool) {
 	p, ok := c.pragmas.Load(path)
 	return p, ok
+}
+
+func (c *Cache) WaitDocumentVersion(ctx context.Context, uri protocol.DocumentURI, version int32) error {
+	ctx, ca := context.WithTimeout(ctx, 2*time.Second)
+	defer ca()
+	return c.documentVersions.Wait(ctx, uri, version)
 }

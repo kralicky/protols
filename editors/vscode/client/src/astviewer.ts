@@ -1,22 +1,32 @@
 import * as vscode from "vscode"
 
+type ASTFetcher = (
+  uri: vscode.Uri,
+  version: number,
+  token: vscode.CancellationToken,
+) => Promise<string>
+
 export class ASTViewer implements vscode.TextDocumentContentProvider {
   private virtualUrisByFile = new Map<string, vscode.Uri>()
+  private documentVersionsByUri = new Map<string, number>()
   private closeListener: vscode.Disposable
   private changeListener: vscode.Disposable
-  private fetchAST: (uri: vscode.Uri) => Promise<string>
+  private fetchAST: ASTFetcher
 
-  constructor(fetchAST: (uri: vscode.Uri) => Promise<string>) {
+  constructor(fetchAST: ASTFetcher) {
     this.fetchAST = fetchAST
     this.closeListener = vscode.workspace.onDidCloseTextDocument((doc) => {
       switch (doc.uri.scheme) {
         case "file": {
           this.virtualUrisByFile.delete(doc.uri.toString())
+          this.documentVersionsByUri.delete(doc.uri.toString())
           break
         }
         case "protoast2":
         case "protoast": {
-          this.virtualUrisByFile.delete(fromProtoAstUri(doc.uri).toString())
+          const uri = fromProtoAstUri(doc.uri)
+          this.virtualUrisByFile.delete(uri.toString())
+          this.documentVersionsByUri.delete(uri.toString())
           break
         }
       }
@@ -24,6 +34,10 @@ export class ASTViewer implements vscode.TextDocumentContentProvider {
     this.changeListener = vscode.workspace.onDidChangeTextDocument((e) => {
       const virtualUri = this.virtualUrisByFile.get(e.document.uri.toString())
       if (virtualUri) {
+        this.documentVersionsByUri.set(
+          virtualUri.toString(),
+          e.document.version,
+        )
         this.refresh(virtualUri)
       }
     })
@@ -63,7 +77,8 @@ export class ASTViewer implements vscode.TextDocumentContentProvider {
     if (!this.virtualUrisByFile.has(fileUri.toString())) {
       return ""
     }
-    return this.fetchAST(fileUri)
+    const version = this.documentVersionsByUri.get(uri.toString()) ?? 0
+    return this.fetchAST(fileUri, version, token)
   }
 
   public dispose() {

@@ -3,21 +3,21 @@ module github.com/kralicky/protols
 go 1.21.4
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.31.0-20230914171853-63dfe56cc2c4.1
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.32.0-20231115204500-e097f827e652.1
 	github.com/AlecAivazis/survey/v2 v2.3.7
-	github.com/bufbuild/protovalidate-go v0.3.4
+	github.com/bufbuild/protovalidate-go v0.4.3
 	github.com/google/cel-go v0.18.2
 	github.com/kralicky/gpkg v0.0.0-20231114180450-2f4bff8c5588
-	github.com/kralicky/protocompile v0.0.0-20240113031314-24e69108897d
+	github.com/kralicky/protocompile v0.0.0-20240114032708-6ff5d8987df3
 	github.com/kralicky/tools-lite v0.0.0-20240104191314-c259ddd5a342
 	github.com/mattn/go-tty v0.0.5
 	github.com/spf13/cobra v1.8.0
 	golang.org/x/mod v0.14.0
-	golang.org/x/sync v0.5.0
-	google.golang.org/genproto v0.0.0-20231212172506-995d672761c0
-	google.golang.org/genproto/googleapis/api v0.0.0-20231212172506-995d672761c0
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20231212172506-995d672761c0
-	google.golang.org/protobuf v1.31.1-0.20231027082548-f4a6c1f6e5c1
+	golang.org/x/sync v0.6.0
+	google.golang.org/genproto v0.0.0-20240108191215-35c7eff3a6b1
+	google.golang.org/genproto/googleapis/api v0.0.0-20240108191215-35c7eff3a6b1
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20240108191215-35c7eff3a6b1
+	google.golang.org/protobuf v1.32.0
 )
 
 require (

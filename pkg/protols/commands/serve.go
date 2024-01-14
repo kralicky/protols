@@ -89,7 +89,8 @@ func BuildServeCmd() *cobra.Command {
 
 // methods that are intended to be long-lived, and should not hold up the queue
 var streamingRequestMethods = map[string]bool{
-	"workspace/diagnostic": true,
+	"workspace/diagnostic":     true,
+	"workspace/executeCommand": true,
 }
 
 func AsyncHandler(handler jsonrpc2.Handler) jsonrpc2.Handler {

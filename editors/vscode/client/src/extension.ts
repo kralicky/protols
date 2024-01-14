@@ -12,16 +12,27 @@ export async function activate(context: vscode.ExtensionContext) {
   // Start the client. This will also launch the server
   client.start()
 
-  const astViewer = new ASTViewer((uri) => {
-    return client
-      .sendRequest("workspace/executeCommand", {
-        command: "protols/ast",
-        arguments: [{ uri: fromProtoAstUri(uri).toString() }],
-      })
-      .then((result: string) => {
-        return result
-      })
-  })
+  const astViewer = new ASTViewer(
+    (uri: vscode.Uri, version: number, token: vscode.CancellationToken) => {
+      return client
+        .sendRequest(
+          "workspace/executeCommand",
+          {
+            command: "protols/ast",
+            arguments: [
+              {
+                uri: fromProtoAstUri(uri).toString(),
+                version,
+              },
+            ],
+          },
+          token,
+        )
+        .then((result: string) => {
+          return result
+        })
+    },
+  )
   context.subscriptions.push(
     astViewer,
     vscode.workspace.registerTextDocumentContentProvider("protoast", astViewer),

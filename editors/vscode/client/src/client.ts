@@ -28,10 +28,15 @@ export class ProtolsLanguageClient
     uri: vscode.Uri,
     token: vscode.CancellationToken,
   ): vscode.ProviderResult<string> {
-    return this.sendRequest("workspace/executeCommand", {
-      command: "protols/synthetic-file-contents",
-      arguments: [{ uri: uri.toString() }],
-    }).then((result: string) => {
+    // look up the document version for this uri
+    return this.sendRequest(
+      "workspace/executeCommand",
+      {
+        command: "protols/synthetic-file-contents",
+        arguments: [{ uri: uri.toString() }],
+      },
+      token,
+    ).then((result: string) => {
       return result
     })
   }

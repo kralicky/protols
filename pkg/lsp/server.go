@@ -233,7 +233,7 @@ func (s *Server) DidOpen(ctx context.Context, params *protocol.DidOpenTextDocume
 	if !uri.IsFile() {
 		return nil
 	}
-	return c.DidModifyFiles(ctx, []file.Modification{
+	c.DidModifyFiles(ctx, []file.Modification{
 		{
 			URI:        uri,
 			Action:     file.Open,
@@ -242,6 +242,7 @@ func (s *Server) DidOpen(ctx context.Context, params *protocol.DidOpenTextDocume
 			LanguageID: params.TextDocument.LanguageID,
 		},
 	})
+	return nil
 }
 
 // DidClose implements protocol.Server.
@@ -255,7 +256,7 @@ func (s *Server) DidClose(ctx context.Context, params *protocol.DidCloseTextDocu
 	if !uri.IsFile() {
 		return nil
 	}
-	return c.DidModifyFiles(ctx, []file.Modification{
+	c.DidModifyFiles(ctx, []file.Modification{
 		{
 			URI:     uri,
 			Action:  file.Close,
@@ -263,6 +264,7 @@ func (s *Server) DidClose(ctx context.Context, params *protocol.DidCloseTextDocu
 			Text:    nil,
 		},
 	})
+	return nil
 }
 
 // DidChange implements protocol.Server.
@@ -276,21 +278,22 @@ func (s *Server) DidChange(ctx context.Context, params *protocol.DidChangeTextDo
 	if !uri.IsFile() {
 		return nil
 	}
-	text, err := c.ChangedText(ctx, uri, params.ContentChanges)
+	text, err := c.ChangedText(ctx, params.TextDocument, params.ContentChanges)
 	if err != nil {
 		return err
 	}
-	return c.DidModifyFiles(ctx, []file.Modification{{
+	c.DidModifyFiles(ctx, []file.Modification{{
 		URI:     uri,
 		Action:  file.Change,
 		Version: params.TextDocument.Version,
 		Text:    text,
 	}})
+	return nil
 }
 
 // DidChangeWatchedFiles implements protocol.Server.
 func (s *Server) DidChangeWatchedFiles(ctx context.Context, params *protocol.DidChangeWatchedFilesParams) error {
-	mods := map[*Cache][]file.Modification{}
+	modsByCache := map[*Cache][]file.Modification{}
 	for _, change := range params.Changes {
 		uri := change.URI
 		if !uri.IsFile() {
@@ -300,16 +303,15 @@ func (s *Server) DidChangeWatchedFiles(ctx context.Context, params *protocol.Did
 		if err != nil {
 			continue
 		}
-		mods[cache] = append(mods[cache], file.Modification{
-			URI:    uri,
-			Action: changeTypeToFileAction(change.Type),
-			OnDisk: true,
+		modsByCache[cache] = append(modsByCache[cache], file.Modification{
+			URI:     uri,
+			Action:  changeTypeToFileAction(change.Type),
+			Version: -1,
+			OnDisk:  true,
 		})
 	}
-	for c, mods := range mods {
-		if err := c.DidModifyFiles(ctx, mods); err != nil {
-			slog.Error("failed to update files", "error", err)
-		}
+	for c, mods := range modsByCache {
+		c.DidModifyFiles(ctx, mods)
 	}
 	return nil
 }
@@ -416,7 +418,8 @@ func (s *Server) DidSave(ctx context.Context, params *protocol.DidSaveTextDocume
 	if params.Text != nil {
 		mod.Text = []byte(*params.Text)
 	}
-	return c.DidModifyFiles(ctx, []file.Modification{mod})
+	c.DidModifyFiles(ctx, []file.Modification{mod})
+	return nil
 }
 
 // SemanticTokensFull implements protocol.Server.
@@ -656,12 +659,15 @@ func (s *Server) ExecuteCommand(ctx context.Context, params *protocol.ExecuteCom
 		}
 		return c.GetSyntheticFileContents(ctx, protocol.DocumentURI(req.URI))
 	case "protols/ast":
-		var req SyntheticFileContentsRequest
+		var req DocumentASTRequest
 		if err := json.Unmarshal(params.Arguments[0], &req); err != nil {
 			return nil, err
 		}
 		c, err := s.CacheForURI(protocol.DocumentURI(req.URI))
 		if err != nil {
+			return nil, err
+		}
+		if err := c.WaitDocumentVersion(ctx, protocol.DocumentURI(req.URI), req.Version); err != nil {
 			return nil, err
 		}
 		parseRes, err := c.FindParseResultByURI(protocol.DocumentURI(req.URI))

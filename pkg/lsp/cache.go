@@ -365,7 +365,10 @@ func (c *Cache) compileLocked(protos ...string) {
 	for _, r := range res.Files {
 		path := r.Path()
 		found := false
-		pragmas := r.(linker.Result).AST().Pragmas
+		var pragmas map[string]string
+		if resAst := r.(linker.Result).AST(); resAst != nil {
+			pragmas = resAst.Pragmas
+		}
 
 		for i, f := range c.results {
 			// todo: this is big slow

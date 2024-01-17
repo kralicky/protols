@@ -6,17 +6,8 @@ A language server implementation for Protocol Buffers. Still in development.
 
 Features in progress:
 
-- [x] Code formatting in the style of gofmt
-- [x] Import resolution
-  - [x] Local/relative paths
-  - [x] Go module path lookup with inline sources
-  - [x] Go module path lookup with missing proto sources synthesized from generated code
-  - [x] Context-sensitive imports and pattern detection
-  - [x] Fully interactive sources generated from well-known (or any other) descriptors
-- [x] Legacy compatibility
-  - [x] gogoproto sources (k8s, etc.)
-  - [x] proto2 sources
 - [ ] LSP features:
+  - [x] Document Formatting
   - [x] Full semantic token support
     - [ ] (partial) Embedded CEL expression semantic tokens
   - [x] Document and workspace diagnostics
@@ -31,29 +22,39 @@ Features in progress:
     - [x] Options, extensions, and field references
     - [x] Inlay Hints
     - [ ] CEL tokens
-  - [ ] Code Actions
+  - [ ] Code Actions & Refactors
     - [x] Identify and remove unused imports
-    - [ ] ...
+    - [x] Simplify repeated option declarations
+    - [x] Simplify repeated message literal fields
+    - [ ] Simplify map literal fields
+    - [ ] Extract fields to new message
+    - [ ] Inline fields from message
   - [ ] Code Lens
   - [x] Inlay hints
     - [x] Extension types
+    - [x] Resolved import paths
   - [x] Rename symbols
   - [x] Multi-workspace support
-- [x] Workspace symbol index/search
-  - [x] Editor Breadcrumbs
-- [ ] Code completion:
-  - [x] Message and enum types
-  - [x] Automatic imports
-  - [x] Import paths
-  - [x] Message and field literals
-  - [x] Package names
-- [ ] Code Refactoring
-  - [x] Simplify repeated option declarations
-  - [x] Simplify repeated message literal fields
-  - [ ] Simplify map literal fields
-  - [ ] Extract fields to new message
-  - [ ] Inline fields from message
-- [x] Inlay hints for message and field literal types
+  - [x] Workspace symbol index/search
+    - [x] Editor Breadcrumbs
+  - [ ] Code completion:
+    - [x] Message and enum types
+    - [x] Automatic imports
+    - [x] Import paths
+    - [x] Package names
+    - [x] Message and field literals
+    - [ ] Field literal values
+- [x] Import resolution
+  - [x] Local/relative paths
+  - [x] Go module path lookup with inline sources
+  - [x] Go module path lookup with missing proto sources synthesized from generated code
+  - [x] Context-sensitive imports and pattern detection
+  - [x] Fully interactive sources generated from well-known (or any other) descriptors
+- [x] Legacy compatibility
+  - [x] gogoproto sources (k8s, etc.)
+  - [x] proto2 sources
+- [ ] Future compatibility
+  - [ ] Editions
 - [ ] Code generator tools
   - [x] Built-in compiler with workspace context
   - [ ] CLI support

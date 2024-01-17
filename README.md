@@ -47,6 +47,12 @@ Features in progress:
   - [x] Import paths
   - [x] Message and field literals
   - [x] Package names
+- [ ] Code Refactoring
+  - [x] Simplify repeated option declarations
+  - [x] Simplify repeated message literal fields
+  - [ ] Simplify map literal fields
+  - [ ] Extract fields to new message
+  - [ ] Inline fields from message
 - [x] Inlay hints for message and field literal types
 - [ ] Code generator tools
   - [x] Built-in compiler with workspace context

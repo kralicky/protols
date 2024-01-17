@@ -114,6 +114,8 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 					protocol.QuickFix,
 					protocol.Refactor,
 					protocol.RefactorExtract,
+					protocol.RefactorInline,
+					protocol.RefactorRewrite,
 				},
 			},
 			RenameProvider: &protocol.RenameOptions{
@@ -753,6 +755,13 @@ func (s *Server) CodeAction(ctx context.Context, params *protocol.CodeActionPara
 			return nil, err
 		}
 		result = append(result, c.ToProtocolCodeActions(codeActions.Items, &d)...)
+	}
+	if linkRes, err := c.FindResultByURI(params.TextDocument.URI); err == nil {
+		mapper, err := c.GetMapper(params.TextDocument.URI)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, FindRefactorActions(ctx, linkRes, mapper, params.Range)...)
 	}
 	return result, nil
 }

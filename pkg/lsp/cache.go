@@ -1075,7 +1075,7 @@ func (c *Cache) latestDocumentContentsWellFormedLocked(uri protocol.DocumentURI,
 		}
 		if strict {
 			var ext parser.ExtendedSyntaxError
-			if errors.As(diag.Error, &ext) {
+			if errors.As(diag.Error, &ext) && !ext.CanFormat() {
 				return false, nil
 			}
 		}

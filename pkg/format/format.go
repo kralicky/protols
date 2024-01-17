@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"reflect"
 
+	"github.com/kralicky/protocompile/ast"
 	"github.com/kralicky/protocompile/parser"
 	"github.com/kralicky/protocompile/reporter"
 	"github.com/kralicky/protols/pkg/format/protoprint"
@@ -79,4 +81,38 @@ func PrintAndFormatFileDescriptor(fd protoreflect.FileDescriptor, out io.Writer)
 		return err
 	}
 	return Format(&buf, out)
+}
+
+func PrintNode(fileNode *ast.FileNode, node ast.Node) (string, error) {
+	if fileNode == nil {
+		info := ast.NewFileInfo("", nil)
+		eof := info.AddToken(0, 0)
+		fileNode = ast.NewFileNode(info, nil, nil, eof)
+	}
+	if reflect.ValueOf(node).IsNil() {
+		return "", nil
+	}
+	var writer bytes.Buffer
+
+	f := NewFormatter(&writer, fileNode)
+	switch node := node.(type) {
+	case *ast.FileNode:
+		if err := f.Run(); err != nil {
+			return "", err
+		}
+	default:
+		f.writeNode(node)
+	}
+	str := writer.String()
+	if len(str) > 0 {
+		lower, upper := 0, len(str)
+		if str[0] == '\n' {
+			lower = 1
+		}
+		if str[len(str)-1] == '\n' {
+			upper = len(str) - 1
+		}
+		str = str[lower:upper]
+	}
+	return str, nil
 }

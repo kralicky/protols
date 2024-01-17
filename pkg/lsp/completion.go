@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"reflect"
@@ -404,7 +405,7 @@ func (c *Cache) completeOptionOrExtensionName(
 	case -1:
 	case 0: // first part of the option name
 		var partialName, partialNameSuffix string
-		if node != nil {
+		if node != nil && node.Name != nil && (!node.IsExtension() || node.Name.Start() > node.Open.Token()) {
 			var err error
 			partialName, partialNameSuffix, err = findPartialNames(fileNode, node.Name, mapper, posOffset)
 			if err != nil {
@@ -682,6 +683,7 @@ func (c *Cache) deepCompleteOptionNames(
 ) ([]protocol.CompletionItem, error) {
 	var items []protocol.CompletionItem
 	var prevMsg protoreflect.MessageDescriptor
+	shouldCompleteNonExtensions := true
 	shouldCompleteExtensions := false
 	switch prev := prev.(type) {
 	case protoreflect.MessageDescriptor:
@@ -698,39 +700,44 @@ func (c *Cache) deepCompleteOptionNames(
 			return nil, nil
 		}
 	}
-
-	replaceRange := protocol.Range{
-		Start: adjustColumn(pos, -len(partialName)),
-		End:   adjustColumn(pos, len(partialNameSuffix)),
+	if existingFieldRef != nil && shouldCompleteExtensions && existingFieldRef.IsExtension() {
+		shouldCompleteNonExtensions = false
 	}
-	fields := prevMsg.Fields()
-	for i, l := 0, fields.Len(); i < l; i++ {
-		fld := fields.Get(i)
-		if !strings.HasPrefix(string(fld.Name()), partialName) {
-			continue
+
+	if shouldCompleteNonExtensions {
+		replaceRange := protocol.Range{
+			Start: adjustColumn(pos, -len(partialName)),
+			End:   adjustColumn(pos, len(partialNameSuffix)),
 		}
-		if (partialNameSuffix == "" && fld.Name() != protoreflect.Name(partialName)) ||
-			(fld.Name() != protoreflect.Name(partialName+partialNameSuffix)) {
-			if _, ok := existingOpts[string(fld.FullName())]; ok && fld.Cardinality() != protoreflect.Repeated {
+		fields := prevMsg.Fields()
+		for i, l := 0, fields.Len(); i < l; i++ {
+			fld := fields.Get(i)
+			if !strings.HasPrefix(string(fld.Name()), partialName) {
 				continue
 			}
-		}
-		item := protocol.CompletionItem{
-			Label:  string(fld.Name()),
-			Detail: fieldTypeDetail(fld),
-			Kind:   protocol.FieldCompletion,
-			TextEdit: &protocol.Or_CompletionItem_textEdit{
-				Value: protocol.InsertReplaceEdit{
-					NewText: string(fld.Name()),
-					Insert:  replaceRange,
-					Replace: replaceRange,
+			if (partialNameSuffix == "" && fld.Name() != protoreflect.Name(partialName)) ||
+				(fld.Name() != protoreflect.Name(partialName+partialNameSuffix)) {
+				if _, ok := existingOpts[string(fld.FullName())]; ok && fld.Cardinality() != protoreflect.Repeated {
+					continue
+				}
+			}
+			item := protocol.CompletionItem{
+				Label:  string(fld.Name()),
+				Detail: fieldTypeDetail(fld),
+				Kind:   protocol.FieldCompletion,
+				TextEdit: &protocol.Or_CompletionItem_textEdit{
+					Value: protocol.InsertReplaceEdit{
+						NewText: string(fld.Name()),
+						Insert:  replaceRange,
+						Replace: replaceRange,
+					},
 				},
-			},
+			}
+			if string(fld.Name()) == partialName+partialNameSuffix {
+				item.Preselect = true
+			}
+			items = append(items, item)
 		}
-		if string(fld.Name()) == partialName+partialNameSuffix {
-			item.Preselect = true
-		}
-		items = append(items, item)
 	}
 
 	if shouldCompleteExtensions {
@@ -1235,11 +1242,16 @@ func relativeFullName(target, fromPkg protoreflect.FullName) string {
 	}
 }
 
+var errOutOfRange = errors.New("out of range")
+
 func findPartialNames(fileNode *ast.FileNode, node ast.Node, mapper *protocol.Mapper, posOffset int) (string, string, error) {
 	pos := fileNode.NodeInfo(node)
 	startOffset, endOffset, err := mapper.RangeOffsets(toRange(pos))
 	if err != nil {
 		return "", "", err
+	}
+	if posOffset > endOffset {
+		return "", "", errOutOfRange
 	}
 
 	var partialName, partialNameSuffix string

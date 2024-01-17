@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -589,7 +590,7 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 		return protocol.Intersect(toRange(info), protocol.Range{Start: location, End: location})
 	}
 	intersectsLocationExclusive := func(node, end ast.Node) bool {
-		if end == nil {
+		if reflect.ValueOf(end).IsNil() {
 			return intersectsLocation(node)
 		}
 		if rn, ok := end.(*ast.RuneNode); ok && rn.Virtual {

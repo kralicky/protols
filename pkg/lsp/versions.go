@@ -23,7 +23,7 @@ func newDocumentVersionQueue() *documentVersionQueue {
 
 func (t *documentVersionQueue) Wait(ctx context.Context, uri protocol.DocumentURI, version int32) error {
 	t.mu.Lock()
-	if currentVersion, ok := t.versions[uri]; ok && currentVersion >= version {
+	if currentVersion, ok := t.versions[uri]; ok && (currentVersion >= version || currentVersion == -1) {
 		t.mu.Unlock()
 		return nil
 	}

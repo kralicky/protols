@@ -8,7 +8,7 @@ require (
 	github.com/bufbuild/protovalidate-go v0.4.3
 	github.com/google/cel-go v0.18.2
 	github.com/kralicky/gpkg v0.0.0-20231114180450-2f4bff8c5588
-	github.com/kralicky/protocompile v0.0.0-20240115221137-112c49bde53a
+	github.com/kralicky/protocompile v0.0.0-20240117233338-ed6e32d87295
 	github.com/kralicky/tools-lite v0.0.0-20240104191314-c259ddd5a342
 	github.com/mattn/go-tty v0.0.5
 	github.com/spf13/cobra v1.8.0

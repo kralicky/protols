@@ -1330,6 +1330,9 @@ func (f *formatter) writeEnumValue(enumValueNode *ast.EnumValueNode) {
 		f.Space()
 		f.writeNode(enumValueNode.Options)
 	}
+	if enumValueNode.Semicolon != nil && enumValueNode.Semicolon.Rune != ';' {
+		enumValueNode.Semicolon.Rune = ';'
+	}
 	f.writeLineEnd(enumValueNode.Semicolon)
 }
 

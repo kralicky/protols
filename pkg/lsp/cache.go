@@ -40,12 +40,13 @@ type Cache struct {
 	diagHandler *DiagnosticHandler
 	resultsMu   sync.RWMutex
 	results     linker.Files
-	// unlinkedResultsMu has an invariant that resultsMu is write-locked; it expects
+
+	// partialResultsMu has an invariant that resultsMu is write-locked; it expects
 	// to be required only during compilation. This means that if resultsMu is
-	// held (for reading or writing), unlinkedResultsMu does not need to be held.
-	unlinkedResultsMu sync.Mutex
-	unlinkedResults   map[protocompile.ResolvedPath]parser.Result
-	indexMu           sync.RWMutex
+	// held (for reading or writing), partialResultsMu does not need to be held.
+	partialResultsMu       sync.Mutex
+	unlinkedResults        map[protocompile.ResolvedPath]parser.Result
+	partiallyLinkedResults map[protocompile.ResolvedPath]linker.Result
 
 	inflightTasksInvalidate gsync.Map[protocompile.ResolvedPath, time.Time]
 	inflightTasksCompile    gsync.Map[protocompile.ResolvedPath, time.Time]
@@ -89,6 +90,52 @@ func (c *Cache) FindExtensionsByMessage(message protoreflect.FullName) []protore
 func (c *Cache) FindResultByPath(path string) (linker.Result, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
+	return c.findResultByPathLocked(path)
+}
+
+func (c *Cache) FindResultByURI(uri protocol.DocumentURI) (linker.Result, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	path, err := c.resolver.URIToPath(uri)
+	if err != nil {
+		return nil, err
+	}
+	return c.findResultByPathLocked(path)
+}
+
+func (c *Cache) FindResultOrPartialResultByPath(path string) (linker.Result, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	return c.findResultOrPartialResultByPathLocked(path)
+}
+
+func (c *Cache) FindResultOrPartialResultByURI(uri protocol.DocumentURI) (linker.Result, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	path, err := c.resolver.URIToPath(uri)
+	if err != nil {
+		return nil, err
+	}
+	return c.findResultOrPartialResultByPathLocked(path)
+}
+
+func (c *Cache) FindParseResultByPath(path string) (parser.Result, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	return c.findParseResultByPathLocked(path)
+}
+
+func (c *Cache) FindParseResultByURI(uri protocol.DocumentURI) (parser.Result, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	path, err := c.resolver.URIToPath(uri)
+	if err != nil {
+		return nil, err
+	}
+	return c.findParseResultByPathLocked(path)
+}
+
+func (c *Cache) findResultByPathLocked(path string) (linker.Result, error) {
 	if c.results == nil {
 		return nil, fmt.Errorf("no results exist")
 	}
@@ -99,49 +146,18 @@ func (c *Cache) FindResultByPath(path string) (linker.Result, error) {
 	return f.(linker.Result), nil
 }
 
-func (c *Cache) FindResultByURI(uri protocol.DocumentURI) (linker.Result, error) {
-	c.resultsMu.RLock()
-	defer c.resultsMu.RUnlock()
-	if c.results == nil {
-		return nil, fmt.Errorf("no results exist")
+func (c *Cache) findResultOrPartialResultByPathLocked(path string) (linker.Result, error) {
+	if pr, ok := c.partiallyLinkedResults[protocompile.ResolvedPath(path)]; ok {
+		return pr, nil
 	}
-	path, err := c.resolver.URIToPath(uri)
-	if err != nil {
-		return nil, err
-	}
-	f := c.results.FindFileByPath(path)
-	if f == nil {
-		return nil, fmt.Errorf("FindResultByURI: package not found: %q", path)
-	}
-	return f.(linker.Result), nil
+	return c.findResultByPathLocked(path)
 }
 
-func (c *Cache) FindParseResultByURI(uri protocol.DocumentURI) (parser.Result, error) {
-	c.resultsMu.RLock()
-	defer c.resultsMu.RUnlock()
-	if c.results == nil && len(c.unlinkedResults) == 0 {
-		return nil, fmt.Errorf("no results or partial results exist")
-	}
-	path, err := c.resolver.URIToPath(uri)
-	if err != nil {
-		return nil, err
-	}
+func (c *Cache) findParseResultByPathLocked(path string) (parser.Result, error) {
 	if pr, ok := c.unlinkedResults[protocompile.ResolvedPath(path)]; ok {
 		return pr, nil
 	}
-	return c.FindResultByURI(uri)
-}
-
-func (c *Cache) FindParseResultByPath(path string) (parser.Result, error) {
-	c.resultsMu.RLock()
-	defer c.resultsMu.RUnlock()
-	if c.results == nil && len(c.unlinkedResults) == 0 {
-		return nil, fmt.Errorf("no results or partial results exist")
-	}
-	if pr, ok := c.unlinkedResults[protocompile.ResolvedPath(path)]; ok {
-		return pr, nil
-	}
-	return c.FindResultByPath(path)
+	return c.findResultOrPartialResultByPathLocked(path)
 }
 
 func (c *Cache) FindFileByURI(uri protocol.DocumentURI) (protoreflect.FileDescriptor, error) {
@@ -217,12 +233,13 @@ func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
 		workdir: protocol.DocumentURI(workspace.URI).Path(),
 	}
 	cache := &Cache{
-		workspace:        workspace,
-		compiler:         compiler,
-		resolver:         resolver,
-		diagHandler:      diagHandler,
-		unlinkedResults:  make(map[protocompile.ResolvedPath]parser.Result),
-		documentVersions: newDocumentVersionQueue(),
+		workspace:              workspace,
+		compiler:               compiler,
+		resolver:               resolver,
+		diagHandler:            diagHandler,
+		unlinkedResults:        make(map[protocompile.ResolvedPath]parser.Result),
+		partiallyLinkedResults: make(map[protocompile.ResolvedPath]linker.Result),
+		documentVersions:       newDocumentVersionQueue(),
 	}
 	compiler.Hooks = protocompile.CompilerHooks{
 		PreInvalidate:  cache.preInvalidateHook,
@@ -312,8 +329,6 @@ func (c *Cache) postInvalidateHook(path protocompile.ResolvedPath, prevResult li
 	startTime, _ := c.inflightTasksInvalidate.LoadAndDelete(path)
 	slog.Debug("file invalidated", "path", path, "took", time.Since(startTime))
 	if !willRecompile {
-		c.resultsMu.Lock()
-		defer c.resultsMu.Unlock()
 		slog.Debug("file deleted, clearing linker result", "path", path)
 		for i, f := range c.results {
 			if protocompile.ResolvedPath(f.Path()) == path {
@@ -327,8 +342,9 @@ func (c *Cache) postInvalidateHook(path protocompile.ResolvedPath, prevResult li
 func (c *Cache) preCompile(path protocompile.ResolvedPath) {
 	slog.Debug(fmt.Sprintf("compiling %s\n", path))
 	c.inflightTasksCompile.Store(path, time.Now())
-	c.unlinkedResultsMu.Lock()
-	defer c.unlinkedResultsMu.Unlock()
+	c.partialResultsMu.Lock()
+	defer c.partialResultsMu.Unlock()
+	delete(c.partiallyLinkedResults, path)
 	delete(c.unlinkedResults, path)
 }
 
@@ -388,13 +404,18 @@ func (c *Cache) compileLocked(protos ...string) {
 			c.pragmas.Store(protocompile.ResolvedPath(path), &pragmaMap{m: pragmas})
 		}
 	}
-	c.unlinkedResultsMu.Lock()
+	c.partialResultsMu.Lock()
+	for path, partial := range res.PartialLinkResults {
+		partial := partial
+		slog.With("path", path).Debug("adding new partial linker result")
+		c.partiallyLinkedResults[path] = partial
+	}
 	for path, partial := range res.UnlinkedParserResults {
 		partial := partial
 		slog.With("path", path).Debug("adding new partial linker result")
 		c.unlinkedResults[path] = partial
 	}
-	c.unlinkedResultsMu.Unlock()
+	c.partialResultsMu.Unlock()
 
 	syntheticFiles := c.resolver.CheckIncompleteDescriptors(c.results)
 	if len(syntheticFiles) == 0 {
@@ -869,7 +890,7 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 	if err != nil {
 		return nil, protocol.Range{}, err
 	}
-	linkRes, err := c.FindResultByURI(params.TextDocument.URI)
+	linkRes, err := c.FindResultOrPartialResultByURI(params.TextDocument.URI)
 	if err != nil {
 		return nil, protocol.Range{}, err
 	}

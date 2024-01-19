@@ -28,6 +28,13 @@ func positionsToRange(start, end ast.SourcePos) protocol.Range {
 	}
 }
 
+func pointToRange(point ast.SourcePos) protocol.Range {
+	return protocol.Range{
+		Start: toPosition(point),
+		End:   toPosition(point),
+	}
+}
+
 func adjustColumns(r protocol.Range, leftAdjust int, rightAdjust int) protocol.Range {
 	return protocol.Range{
 		Start: protocol.Position{

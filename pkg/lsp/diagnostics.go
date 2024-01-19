@@ -24,14 +24,22 @@ type ProtoDiagnostic struct {
 	Tags               []protocol.DiagnosticTag
 	RelatedInformation []protocol.DiagnosticRelatedInformation
 	CodeActions        []CodeAction
+	Metadata           map[string]string
 
 	// If this is a warning being treated as an error, WerrorCategory will be set to
 	// a category that can be named in a debug pragma to disable it.
 	WerrorCategory string
 }
 
-type CodeActions struct {
-	Items []CodeAction `json:"items"`
+const (
+	diagnosticKind               = "kind"
+	diagnosticKindUndeclaredName = "undeclaredName"
+	diagnosticKindUnusedImport   = "unusedImport"
+)
+
+type DiagnosticData struct {
+	CodeActions []CodeAction      `json:"codeActions"`
+	Metadata    map[string]string `json:"metadata"`
 }
 
 type CodeAction struct {
@@ -202,10 +210,9 @@ func codeActionsForError(errWithPos reporter.ErrorWithPos) []CodeAction {
 		}
 		return []CodeAction{
 			{
-				Title:       "Add definition for " + name + " in this file",
-				Kind:        protocol.QuickFix,
-				Path:        f.Name(),
-				IsPreferred: true,
+				Title: "Add definition for " + name + " in this file",
+				Kind:  protocol.QuickFix,
+				Path:  f.Name(),
 				Edits: []protocol.TextEdit{
 					{
 						Range: protocol.Range{
@@ -223,6 +230,24 @@ func codeActionsForError(errWithPos reporter.ErrorWithPos) []CodeAction {
 		}
 	}
 	return []CodeAction{}
+}
+
+func metadataForError(errWithPos reporter.ErrorWithPos) map[string]string {
+	err := errWithPos.Unwrap()
+	switch err := err.(type) {
+	case linker.ErrorUnusedImport:
+		return map[string]string{
+			diagnosticKind: diagnosticKindUnusedImport,
+			"path":         err.UnusedImport(),
+		}
+	case linker.ErrorUndeclaredName:
+		return map[string]string{
+			diagnosticKind: diagnosticKindUndeclaredName,
+			"name":         err.UndeclaredName(),
+			"hint":         err.Hint(),
+		}
+	}
+	return nil
 }
 
 func werrorCategoryForError(err error) string {
@@ -279,6 +304,7 @@ func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
 		Tags:               tagsForError(err),
 		RelatedInformation: relatedInformationForError(err),
 		CodeActions:        codeActionsForError(err),
+		Metadata:           metadataForError(err),
 	}
 
 	dl.Add(newDiagnostic)
@@ -307,12 +333,14 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 	dr.diagnosticsMu.Unlock()
 
 	newDiagnostic := &ProtoDiagnostic{
-		Pos:            pos,
-		Severity:       severityForError(protocol.SeverityWarning, err),
-		Error:          err.Unwrap(),
-		Tags:           tagsForError(err),
-		CodeActions:    codeActionsForError(err),
-		WerrorCategory: werrorCategoryForError(err),
+		Pos:                pos,
+		Severity:           severityForError(protocol.SeverityWarning, err),
+		Error:              err.Unwrap(),
+		Tags:               tagsForError(err),
+		CodeActions:        codeActionsForError(err),
+		WerrorCategory:     werrorCategoryForError(err),
+		RelatedInformation: relatedInformationForError(err),
+		Metadata:           metadataForError(err),
 	}
 	dl.Add(newDiagnostic)
 
@@ -366,6 +394,7 @@ func (dr *DiagnosticHandler) FullDiagnosticSnapshot() map[string][]*ProtoDiagnos
 				Tags:               d.Tags,
 				RelatedInformation: d.RelatedInformation,
 				CodeActions:        d.CodeActions,
+				Metadata:           d.Metadata,
 				WerrorCategory:     d.WerrorCategory,
 			})
 		}

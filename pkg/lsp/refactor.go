@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protols/pkg/format"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 var analyzers = []Analyzer{
@@ -37,6 +39,64 @@ func FindRefactorActions(ctx context.Context, linkRes linker.Result, mapper *pro
 		results = append(results, result)
 	}
 	return results
+}
+
+func RefactorUndeclaredName(ctx context.Context, cache *Cache, uri protocol.DocumentURI, name string, rng protocol.Range) []protocol.CodeAction {
+	linkRes, err := cache.FindResultOrPartialResultByURI(uri)
+	if err != nil {
+		return nil
+	}
+	filter := func(d protoreflect.Descriptor) bool {
+		switch d := d.(type) {
+		case protoreflect.MessageDescriptor:
+			return !d.IsMapEntry() && d.ParentFile().Path() != linkRes.Path()
+		case protoreflect.EnumDescriptor:
+			return d.ParentFile().Path() != linkRes.Path()
+		case protoreflect.ExtensionDescriptor:
+			return d.ParentFile().Path() != linkRes.Path()
+		}
+		return false
+	}
+	var candidates []protoreflect.Descriptor
+	if strings.Contains(name, ".") {
+		candidates = cache.FindAllDescriptorsByQualifiedPrefix(ctx, name, filter)
+	} else {
+		candidates = cache.FindAllDescriptorsByQualifiedPrefix(ctx, string(linkRes.Package().Append(protoreflect.Name(name))), filter)
+	}
+
+	var matches []protoreflect.Descriptor
+	for _, candidate := range candidates {
+		baseName := name[strings.LastIndexByte(name, '.')+1:]
+		if string(candidate.Name()) != baseName {
+			continue
+		}
+		if strings.Contains(name, ".") {
+			if strings.HasSuffix(string(candidate.FullName().Parent()), string(protoreflect.FullName(name).Parent())) {
+				matches = append(matches, candidate)
+			}
+		} else {
+			if candidate.Name() == protoreflect.Name(name) {
+				matches = append(matches, candidate)
+			}
+		}
+	}
+	var actions []protocol.CodeAction
+	for _, match := range matches {
+		item := protocol.CodeAction{
+			Title:       fmt.Sprintf("Import %q from %q", match.FullName(), match.ParentFile().Path()),
+			Kind:        protocol.QuickFix,
+			IsPreferred: true,
+			Edit: &protocol.WorkspaceEdit{
+				Changes: map[protocol.DocumentURI][]protocol.TextEdit{
+					uri: {
+						editAddImport(linkRes, match.ParentFile().Path()),
+					},
+				},
+			},
+		}
+		actions = append(actions, item)
+	}
+	return actions
 }
 
 type Analyzer func(ctx context.Context, linkRes linker.Result, mapper *protocol.Mapper, rng protocol.Range, results chan<- protocol.CodeAction)

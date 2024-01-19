@@ -24,6 +24,7 @@ Features in progress:
     - [ ] CEL tokens
   - [ ] Code Actions & Refactors
     - [x] Identify and remove unused imports
+    - [x] Add missing import for unresolved symbol
     - [x] Simplify repeated option declarations
     - [x] Simplify repeated message literal fields
     - [ ] Simplify map literal fields

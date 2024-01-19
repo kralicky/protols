@@ -558,24 +558,22 @@ func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.
 		if rawReport.WerrorCategory != "" {
 			report.Code = rawReport.WerrorCategory
 		}
-		if len(rawReport.CodeActions) > 0 {
-			jsonData, err := json.Marshal(CodeActions{Items: rawReport.CodeActions})
-			if err != nil {
-				slog.With(
-					"error", err,
-					"sourcePos", rawReport.Pos.String(),
-				).Error("failed to marshal suggested fixes")
-				continue
-			}
-			rawMsg := json.RawMessage(jsonData)
-			report.Data = &rawMsg
+		data := DiagnosticData{
+			Metadata:    rawReport.Metadata,
+			CodeActions: rawReport.CodeActions,
 		}
+		jsonData, err := json.Marshal(data)
+		if err != nil {
+			panic(err)
+		}
+		rawMsg := json.RawMessage(jsonData)
+		report.Data = &rawMsg
 		reports = append(reports, report)
 	}
 	return reports
 }
 
-func (c *Cache) ToProtocolCodeActions(rawCodeActions []CodeAction, associatedDiagnostic *protocol.Diagnostic) []protocol.CodeAction {
+func (c *Cache) toProtocolCodeActions(rawCodeActions []CodeAction, associatedDiagnostic *protocol.Diagnostic) []protocol.CodeAction {
 	if len(rawCodeActions) == 0 {
 		return []protocol.CodeAction{}
 	}

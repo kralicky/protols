@@ -109,7 +109,7 @@ func semanticTokensFull(cache *Cache, doc protocol.TextDocumentIdentifier) (*pro
 	if err != nil {
 		return nil, err
 	}
-	maybeLinkRes, _ := cache.FindResultByURI(doc.URI)
+	maybeLinkRes, _ := cache.FindResultOrPartialResultByURI(doc.URI)
 
 	enc := semanticItems{
 		parseRes: parseRes,

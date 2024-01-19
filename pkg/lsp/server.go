@@ -367,6 +367,7 @@ func (s *Server) DidDeleteFiles(ctx context.Context, params *protocol.DeleteFile
 			URI:     protocol.DocumentURI(uri),
 			Action:  file.Delete,
 			Version: -1,
+			OnDisk:  true,
 		})
 	}
 	for c, mods := range modifications {
@@ -746,15 +747,27 @@ func (s *Server) CodeAction(ctx context.Context, params *protocol.CodeActionPara
 		if d.Data == nil {
 			continue
 		}
-		data, err := d.Data.MarshalJSON()
+		dataJson, err := d.Data.MarshalJSON()
 		if err != nil {
 			return nil, err
 		}
-		codeActions := CodeActions{}
-		if err := json.Unmarshal(data, &codeActions); err != nil {
+		data := DiagnosticData{}
+		if err := json.Unmarshal(dataJson, &data); err != nil {
 			return nil, err
 		}
-		result = append(result, c.ToProtocolCodeActions(codeActions.Items, &d)...)
+		result = append(result, c.toProtocolCodeActions(data.CodeActions, &d)...)
+
+		if data.Metadata != nil {
+			if kind, ok := data.Metadata[diagnosticKind]; ok {
+				switch kind {
+				case diagnosticKindUndeclaredName:
+					name := data.Metadata["name"]
+					if name != "" {
+						result = append(result, RefactorUndeclaredName(ctx, c, params.TextDocument.URI, name, d.Range)...)
+					}
+				}
+			}
+		}
 	}
 	if linkRes, err := c.FindResultByURI(params.TextDocument.URI); err == nil {
 		mapper, err := c.GetMapper(params.TextDocument.URI)

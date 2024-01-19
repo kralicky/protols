@@ -444,18 +444,9 @@ func (c *Cache) completeOptionOrExtensionName(
 
 func editAddImport(parseRes parser.Result, path string) protocol.TextEdit {
 	insertionPoint := parseRes.ImportInsertionPoint()
-	text := fmt.Sprintf("import \"%s\";\n", path)
+	text := fmt.Sprintf("\nimport \"%s\";", path)
 	return protocol.TextEdit{
-		Range: protocol.Range{
-			Start: protocol.Position{
-				Line:      uint32(insertionPoint.Line - 1),
-				Character: uint32(insertionPoint.Col - 1),
-			},
-			End: protocol.Position{
-				Line:      uint32(insertionPoint.Line - 1),
-				Character: uint32(insertionPoint.Col - 1),
-			},
-		},
+		Range:   pointToRange(insertionPoint),
 		NewText: text,
 	}
 }

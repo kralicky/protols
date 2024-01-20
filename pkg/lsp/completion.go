@@ -114,7 +114,11 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	completions := []protocol.CompletionItem{}
 	desc, _, _ := deepPathSearch(path, searchTarget, maybeCurrentLinkRes)
 
-	scope, existingOpts := findCompletionScopeAndExistingOptions(path, maybeCurrentLinkRes)
+	scope := findCompletionScope(path, maybeCurrentLinkRes)
+	if scope == nil {
+		return nil, nil
+	}
+	existingOpts := findExistingOptions(scope)
 
 	switch node := path[len(path)-1].(type) {
 	case *ast.MessageNode:
@@ -180,17 +184,39 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				}
 			}
 		}
+	case *ast.RPCTypeNode:
+		// complete message types
+		fileNode := searchTarget.AST()
+		var partialName, partialNameSuffix string
+		withinName := node.MessageType != nil && tokenAtOffset >= node.MessageType.Start() && tokenAtOffset <= node.MessageType.End()
+		if !withinName && tokenAtOffset == node.CloseParen.Token() {
+			// check if the cursor is before or after the paren
+			start := fileNode.NodeInfo(node.CloseParen).Start()
+			if start.Offset == posOffset {
+				withinName = true
+			}
+		}
+		if withinName {
+			var err error
+			partialName, partialNameSuffix, err = findPartialNames(searchTarget.AST(), node.MessageType, mapper, posOffset)
+			if err != nil {
+				return nil, err
+			}
+		}
+		completions = append(completions, completeTypeNames(c, partialName, partialNameSuffix, maybeCurrentLinkRes, desc.FullName(), params.Position)...)
+
 	case *ast.CompactOptionsNode:
 		completions = append(completions,
 			c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
 	case *ast.OptionNode:
 		completions = append(completions,
-			c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
+			c.completeOptionOrExtensionName(scope.Options().ProtoReflect().Descriptor(), path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
 	case *ast.FieldReferenceNode:
 		nodeIdx := -1
 		scope := scope
 		switch prev := path[len(path)-2].(type) {
 		case *ast.OptionNameNode:
+			scope = scope.Options().ProtoReflect().Descriptor()
 			nodeIdx = slices.Index(prev.Parts, node)
 		case *ast.MessageFieldNode:
 			if desc == nil {
@@ -409,7 +435,11 @@ func (c *Cache) completeOptionOrExtensionName(
 			var err error
 			partialName, partialNameSuffix, err = findPartialNames(fileNode, node.Name, mapper, posOffset)
 			if err != nil {
-				return nil
+				// TODO: possible grammar issue here?
+				// this can happen in situations like 'option <cursor>\n'
+				if err.Error() != "column is beyond end of line" {
+					return nil
+				}
 			}
 		}
 		items, err := c.deepCompleteOptionNames(scope, partialName, partialNameSuffix, linkRes, existingOpts, node, pos)
@@ -616,40 +646,29 @@ var (
 	snippetMode           = protocol.SnippetTextFormat
 )
 
-func findCompletionScopeAndExistingOptions(nodePath []ast.Node, linkRes linker.Result) (protoreflect.Descriptor, map[string]struct{}) {
+func findCompletionScope(nodePath []ast.Node, linkRes linker.Result) protoreflect.Descriptor {
 	var scope protoreflect.Descriptor
-	existing := map[string]struct{}{}
 LOOP:
 	for i := len(nodePath) - 1; i >= 0; i-- {
-		switch node := nodePath[i].(type) {
-		case ast.MessageDeclNode:
-			scope = (*descriptorpb.MessageOptions)(nil).ProtoReflect().Descriptor()
-			if desc := linkRes.MessageDescriptor(node); desc != nil && desc.Options != nil {
-				existing = existingOptions(desc.GetOptions().ProtoReflect())
+		switch nodePath[i].(type) {
+		case *ast.MessageNode, *ast.FieldNode, *ast.RPCNode, *ast.EnumNode, *ast.ServiceNode, *ast.MessageFieldNode:
+			desc, _, err := deepPathSearch(nodePath[:i+1], linkRes, linkRes)
+			if err != nil || desc == nil {
+				return nil
 			}
+			scope = desc
 			break LOOP
-		case *ast.FieldNode:
-			scope = (*descriptorpb.FieldOptions)(nil).ProtoReflect().Descriptor()
-			if desc := linkRes.FieldDescriptor(node); desc != nil && desc.Options != nil {
-				existing = existingOptions(desc.GetOptions().ProtoReflect())
-			}
+		case ast.FileDeclNode:
+			scope = linkRes
 			break LOOP
-		case *ast.FileNode:
-			scope = (*descriptorpb.FileOptions)(nil).ProtoReflect().Descriptor()
-			if linkRes.Options() != nil {
-				existing = existingOptions(linkRes.Options().ProtoReflect())
-			}
-			break LOOP
-		case *ast.MessageFieldNode:
-			linkRes.Descriptor(node)
 		}
 	}
-	return scope, existing
+	return scope
 }
 
-func existingOptions(opts protoreflect.Message) map[string]struct{} {
+func findExistingOptions(scope protoreflect.Descriptor) map[string]struct{} {
 	existing := map[string]struct{}{}
-	opts.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+	scope.Options().ProtoReflect().Range(func(fd protoreflect.FieldDescriptor, _ protoreflect.Value) bool {
 		existing[string(fd.FullName())] = struct{}{}
 		return true
 	})
@@ -734,6 +753,9 @@ func (c *Cache) deepCompleteOptionNames(
 	if shouldCompleteExtensions {
 		// find any messages extending prevMsg
 		for _, x := range c.FindExtensionsByMessage(prevMsg.FullName()) {
+			if strings.HasPrefix(string(x.FullName()), "gogoproto.") && !strings.HasPrefix(partialName, "gogo") {
+				continue
+			}
 			item := newExtensionFieldCompletionItem(x, linkRes, partialName, partialNameSuffix, pos)
 			open, close := "(", ")"
 			if existingFieldRef != nil {
@@ -829,14 +851,13 @@ func completeTypeNames(cache *Cache, partialName, partialNameSuffix string, link
 			continue
 		}
 		maybeResolveImport(&item, candidate, linkRes)
-		insertText := strings.TrimPrefix(item.Label, partialName)
 		replaceRange := protocol.Range{
-			Start: pos,
+			Start: adjustColumn(pos, -len(partialName)),
 			End:   adjustColumn(pos, len(partialNameSuffix)),
 		}
 		item.TextEdit = &protocol.Or_CompletionItem_textEdit{
 			Value: protocol.InsertReplaceEdit{
-				NewText: insertText,
+				NewText: item.Label,
 				Insert:  replaceRange,
 				Replace: replaceRange,
 			},

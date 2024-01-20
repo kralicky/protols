@@ -274,7 +274,7 @@ func (p *Printer) PrintProtosToFileSystem(fds []protoreflect.FileDescriptor, roo
 		if err := os.MkdirAll(dir, os.ModePerm); err != nil {
 			return nil, err
 		}
-		return os.OpenFile(fullPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+		return os.OpenFile(fullPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o666)
 	})
 }
 
@@ -970,7 +970,6 @@ func (p *Printer) printMessageBody(md protoreflect.MessageDescriptor, reg *proto
 				ood := d.ContainingOneof()
 				if ood == nil || ood.IsSynthetic() {
 					p.printField(d, reg, w, sourceInfo, childPath, string(scope), indent)
-
 				} else {
 					// print the one-of, including all of its fields
 					p.printOneOf(ood, elements, i, reg, w, sourceInfo, path, indent, int32(ood.Index()))
@@ -1589,6 +1588,9 @@ func (p *Printer) printOptionsLong(opts []option, reg *protoregistry.Types, w *w
 			return sourceInfo.Get(append(path, i))
 		},
 		func(w *writer, indent int, opt option, _ bool) {
+			if opt.val == nil {
+				return
+			}
 			p.indent(w, indent)
 			_, _ = fmt.Fprint(w, "option ")
 			p.printOption(reg, opt.name, opt.val, w, indent)

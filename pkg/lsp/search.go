@@ -28,9 +28,21 @@ var ErrNoDescriptorFound = fmt.Errorf("failed to find descriptor")
 // for the original ast node.
 func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Result) (protoreflect.Descriptor, protocol.Range, error) {
 	root := linkRes.AST()
+
+	if len(path) == 0 {
+		panic("bug: empty path")
+	}
+	if _, ok := path[0].(*ast.FileNode); !ok {
+		panic("bug: first path element is not an *ast.FileNode")
+	}
+
+	if len(path) == 1 {
+		return linkRes, toRange(root.NodeInfo(root)), nil
+	}
+
 	stack := stack{}
 
-	for i := len(path) - 1; i >= 0; i-- {
+	for i := len(path) - 1; i > 0; i-- {
 		currentNode := path[i]
 		switch currentNode.(type) {
 		// short-circuit for some nodes that we know don't map to descriptors -
@@ -155,6 +167,8 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 	if len(stack) == 1 && stack[0].desc != nil {
 		return stack[0].desc, toRange(root.NodeInfo(stack[0].node)), nil
 	}
+
+	stack.push(path[0], linkRes)
 
 	for i := len(stack) - 1; i >= 0; i-- {
 		want := stack[i]
@@ -669,6 +683,12 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 		},
 		DoVisitFieldReferenceNode: func(node *ast.FieldReferenceNode) error {
 			if intersectsLocation(node) {
+				paths = append(paths, slices.Clone(tracker.Path()))
+			}
+			return nil
+		},
+		DoVisitRPCTypeNode: func(node *ast.RPCTypeNode) error {
+			if intersectsLocationExclusive(node, node.CloseParen) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
 			return nil

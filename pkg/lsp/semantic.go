@@ -104,6 +104,13 @@ type semanticItems struct {
 	linkRes  linker.Result // can be nil if there are no linker results available
 }
 
+func (s *semanticItems) AST() *ast.FileNode {
+	if s.linkRes != nil {
+		return s.linkRes.AST()
+	}
+	return s.parseRes.AST()
+}
+
 func semanticTokensFull(cache *Cache, doc protocol.TextDocumentIdentifier) (*protocol.SemanticTokens, error) {
 	parseRes, err := cache.FindParseResultByURI(doc.URI)
 	if err != nil {
@@ -127,21 +134,21 @@ func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng 
 	if err != nil {
 		return nil, err
 	}
-	maybeLinkRes, _ := cache.FindResultByURI(doc.URI)
+	maybeLinkRes, _ := cache.FindResultOrPartialResultByURI(doc.URI)
 
 	mapper, err := cache.GetMapper(doc.URI)
 	if err != nil {
 		return nil, err
 	}
-	a := parseRes.AST()
-	startOff, endOff, _ := mapper.RangeOffsets(rng)
-	startToken := a.ItemAtOffset(startOff)
-	endToken := a.ItemAtOffset(endOff)
 
 	enc := semanticItems{
 		parseRes: parseRes,
 		linkRes:  maybeLinkRes,
 	}
+	a := enc.AST()
+	startOff, endOff, _ := mapper.RangeOffsets(rng)
+	startToken := a.ItemAtOffset(startOff)
+	endToken := a.ItemAtOffset(endOff)
 	computeSemanticTokens(cache, &enc, ast.WithRange(startToken, endToken))
 	ret := &protocol.SemanticTokens{
 		Data: enc.Data(),
@@ -152,7 +159,7 @@ func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng 
 const debugCheckOverlappingTokens = false
 
 func computeSemanticTokens(cache *Cache, e *semanticItems, walkOptions ...ast.WalkOption) {
-	e.inspect(cache, e.parseRes.AST(), walkOptions...)
+	e.inspect(cache, e.AST(), walkOptions...)
 	sort.Slice(e.items, func(i, j int) bool {
 		if e.items[i].line != e.items[j].line {
 			return e.items[i].line < e.items[j].line
@@ -241,7 +248,7 @@ func (s *semanticItems) mktokens(node ast.Node, path []ast.Node, tt tokenType, m
 		return
 	}
 
-	info := s.parseRes.AST().NodeInfo(node)
+	info := s.AST().NodeInfo(node)
 	if !info.IsValid() {
 		return
 	}
@@ -264,7 +271,7 @@ func (s *semanticItems) mktokens(node ast.Node, path []ast.Node, tt tokenType, m
 }
 
 func (s *semanticItems) mktokens_cel(str *ast.StringLiteralNode, start, end int32, tt tokenType, mods tokenModifier) {
-	lineInfo := s.parseRes.AST().NodeInfo(str)
+	lineInfo := s.AST().NodeInfo(str)
 	lineStart := lineInfo.Start()
 
 	nodeTk := semanticItem{
@@ -283,7 +290,7 @@ func (s *semanticItems) mkcomments(node ast.Node) {
 		return
 	}
 
-	info := s.parseRes.AST().NodeInfo(node)
+	info := s.AST().NodeInfo(node)
 
 	leadingComments := info.LeadingComments()
 	for i := 0; i < leadingComments.Len(); i++ {
@@ -572,6 +579,9 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			return nil
 		},
 		DoVisitRPCTypeNode: func(node *ast.RPCTypeNode) error {
+			if node.IsIncomplete() {
+				return nil
+			}
 			s.mktokens(node.MessageType, append(tracker.Path(), node.MessageType), semanticTypeType, 0)
 			return nil
 		},
@@ -627,12 +637,12 @@ func (s *semanticItems) inspectCelExpr(messageLit *ast.MessageLiteralNode) ([]*a
 			parsed, issues := celEnv.Parse(celExpr)
 			if issues != nil && issues.Err() != nil {
 				slog.Warn("error parsing CEL expression",
-					"location", s.parseRes.AST().NodeInfo(stringNodes[0]).String(),
+					"location", s.AST().NodeInfo(stringNodes[0]).String(),
 				)
 				fmt.Println(issues.Err())
 				// TODO
 				// diagnostics = append(diagnostics, ProtoDiagnostic{
-				// 	Pos:      s.parseRes.AST().NodeInfo(stringNodes[0]),
+				// 	Pos:      s.AST().NodeInfo(stringNodes[0]),
 				// 	Severity: protocol.SeverityWarning,
 				// 	Error:    issues.Err(),
 				// })

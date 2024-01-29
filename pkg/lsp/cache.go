@@ -909,7 +909,7 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 	if err != nil {
 		return nil, protocol.Range{}, err
 	}
-	root := parseRes.AST()
+	root := enc.AST()
 
 	token := root.ItemAtOffset(offset)
 	computeSemanticTokens(c, &enc, ast.WithIntersection(token))

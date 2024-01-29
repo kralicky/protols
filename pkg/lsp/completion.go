@@ -42,7 +42,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	if err != nil {
 		return nil, err
 	}
-	maybeCurrentLinkRes, err := c.FindResultByURI(doc.URI)
+	maybeCurrentLinkRes, err := c.FindResultOrPartialResultByURI(doc.URI)
 	if err != nil {
 		return nil, err
 	}
@@ -185,26 +185,39 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			}
 		}
 	case *ast.RPCTypeNode:
+		if node.Stream != nil && tokenAtOffset == node.Stream.Token() {
+			// nothing to complete when the cursor is on the stream keyword
+			break
+		}
 		// complete message types
 		fileNode := searchTarget.AST()
 		var partialName, partialNameSuffix string
-		withinName := node.MessageType != nil && tokenAtOffset >= node.MessageType.Start() && tokenAtOffset <= node.MessageType.End()
-		if !withinName && tokenAtOffset == node.CloseParen.Token() {
-			// check if the cursor is before or after the paren
-			start := fileNode.NodeInfo(node.CloseParen).Start()
-			if start.Offset == posOffset {
-				withinName = true
+		if !node.IsIncomplete() {
+			withinName := node.MessageType != nil && tokenAtOffset >= node.MessageType.Start() && tokenAtOffset <= node.MessageType.End()
+			if !withinName && tokenAtOffset == node.CloseParen.Token() {
+				// check if the cursor is before or after the paren
+				start := fileNode.NodeInfo(node.CloseParen).Start()
+				if start.Offset == posOffset {
+					withinName = true
+				}
+			}
+			if withinName {
+				var err error
+				partialName, partialNameSuffix, err = findPartialNames(searchTarget.AST(), node.MessageType, mapper, posOffset)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
-		if withinName {
-			var err error
-			partialName, partialNameSuffix, err = findPartialNames(searchTarget.AST(), node.MessageType, mapper, posOffset)
-			if err != nil {
-				return nil, err
-			}
+		var scopeName protoreflect.FullName
+		if desc != nil {
+			scopeName = desc.FullName()
 		}
-		completions = append(completions, completeTypeNames(c, partialName, partialNameSuffix, maybeCurrentLinkRes, desc.FullName(), params.Position)...)
-
+		if node.Stream == nil {
+			// add the stream keyword
+			completions = append(completions, completeKeywords([]string{"stream"}, partialName, partialNameSuffix, params.Position)...)
+		}
+		completions = append(completions, completeTypeNames(c, partialName, partialNameSuffix, maybeCurrentLinkRes, scopeName, params.Position)...)
 	case *ast.CompactOptionsNode:
 		completions = append(completions,
 			c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
@@ -651,14 +664,14 @@ func findCompletionScope(nodePath []ast.Node, linkRes linker.Result) protoreflec
 LOOP:
 	for i := len(nodePath) - 1; i >= 0; i-- {
 		switch nodePath[i].(type) {
-		case *ast.MessageNode, *ast.FieldNode, *ast.RPCNode, *ast.EnumNode, *ast.ServiceNode, *ast.MessageFieldNode:
+		case *ast.MessageNode, *ast.FieldNode, *ast.EnumNode, *ast.ServiceNode, *ast.MessageFieldNode:
 			desc, _, err := deepPathSearch(nodePath[:i+1], linkRes, linkRes)
 			if err != nil || desc == nil {
 				return nil
 			}
 			scope = desc
 			break LOOP
-		case ast.FileDeclNode:
+		case ast.FileDeclNode, *ast.RPCNode:
 			scope = linkRes
 			break LOOP
 		}

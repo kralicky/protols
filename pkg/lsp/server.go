@@ -121,7 +121,9 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			RenameProvider: &protocol.RenameOptions{
 				PrepareProvider: true,
 			},
-
+			ImplementationProvider: &protocol.Or_ServerCapabilities_implementationProvider{
+				Value: true,
+			},
 			// DeclarationProvider: &protocol.Or_ServerCapabilities_declarationProvider{Value: true},
 			// TypeDefinitionProvider: true,
 			ReferencesProvider: &protocol.Or_ServerCapabilities_referencesProvider{Value: true},
@@ -797,6 +799,15 @@ func (s *Server) Rename(ctx context.Context, params *protocol.RenameParams) (*pr
 	return c.Rename(params)
 }
 
+// Implementation implements protocol.Server.
+func (s *Server) Implementation(ctx context.Context, params *protocol.ImplementationParams) ([]protocol.Location, error) {
+	c, err := s.CacheForURI(params.TextDocument.URI)
+	if err != nil {
+		return nil, err
+	}
+	return c.FindImplementations(params.TextDocumentPositionParams)
+}
+
 // =====================
 // Unimplemented Methods
 // =====================
@@ -983,11 +994,6 @@ func (*Server) LinkedEditingRange(context.Context, *protocol.LinkedEditingRangeP
 // Moniker implements protocol.Server.
 func (*Server) Moniker(context.Context, *protocol.MonikerParams) ([]protocol.Moniker, error) {
 	return nil, notImplemented("Moniker")
-}
-
-// Implementation implements protocol.Server.
-func (*Server) Implementation(context.Context, *protocol.ImplementationParams) ([]protocol.Location, error) {
-	return nil, notImplemented("Implementation")
 }
 
 // IncomingCalls implements protocol.Server.

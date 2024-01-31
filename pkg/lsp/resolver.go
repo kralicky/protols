@@ -22,6 +22,7 @@ import (
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/cache"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 )
 
@@ -38,7 +39,7 @@ const (
 type Resolver struct {
 	*cache.OverlayFS
 	folder                     protocol.WorkspaceFolder
-	synthesizer                *ProtoSourceSynthesizer
+	goLanguageDriver           *GoLanguageDriver
 	pathsMu                    sync.RWMutex
 	filePathsByURI             map[protocol.DocumentURI]string // URI -> canonical file path (go package + file name)
 	fileURIsByPath             map[string]protocol.DocumentURI // canonical file path (go package + file name) -> URI
@@ -51,7 +52,7 @@ func NewResolver(folder protocol.WorkspaceFolder) *Resolver {
 	return &Resolver{
 		folder:                     folder,
 		OverlayFS:                  cache.NewOverlayFS(cache.NewMemoizedFS()),
-		synthesizer:                NewProtoSourceSynthesizer(protocol.DocumentURI(folder.URI).Path()),
+		goLanguageDriver:           NewGoLanguageDriver(protocol.DocumentURI(folder.URI).Path()),
 		filePathsByURI:             make(map[protocol.DocumentURI]string),
 		fileURIsByPath:             make(map[string]protocol.DocumentURI),
 		syntheticFileOriginalNames: make(map[protocol.DocumentURI]string),
@@ -332,7 +333,7 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 		// to avoid conflicting symbols
 		return r.checkWellKnownImportPath(strings.TrimPrefix(path, "github.com/gogo/googleapis/"))
 	}
-	res, err := r.synthesizer.ImportFromGoModule(path)
+	res, err := r.goLanguageDriver.ImportFromGoModule(path)
 	if err != nil {
 		return protocompile.SearchResult{}, err
 	}
@@ -345,7 +346,7 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 		uri := protocol.URIFromPath(res.SourcePath)
 		r.filePathsByURI[uri] = path
 		r.fileURIsByPath[path] = uri
-		if res.Module.Path == r.synthesizer.localModName {
+		if res.Module.Path == r.goLanguageDriver.localModName {
 			r.importSourcesByURI[uri] = SourceLocalGoModule
 		} else {
 			r.importSourcesByURI[uri] = SourceGoModuleCache
@@ -363,7 +364,7 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 		}, nil
 	}
 
-	if synthesized, err := r.synthesizer.SynthesizeFromGoSource(path, res); err == nil {
+	if synthesized, err := r.goLanguageDriver.SynthesizeFromGoSource(path, res); err == nil {
 		var original, resolved string
 		if res.KnownAltPath == "" {
 			original = *synthesized.Name
@@ -442,7 +443,7 @@ func (r *Resolver) LookupGoModule(filename string, f io.ReadCloser) (string, err
 	// }
 
 	// Check if the filename is relative to a local go module
-	if pkgName, err := r.synthesizer.ImplicitGoPackagePath(filename); err == nil {
+	if pkgName, err := r.goLanguageDriver.ImplicitGoPackagePath(filename); err == nil {
 		return pkgName, nil
 	}
 
@@ -500,6 +501,10 @@ func (r *Resolver) PreloadWellKnownPaths() {
 	for _, importName := range wellKnownModuleImports {
 		r.findFileByPathLocked(importName, nil)
 	}
+}
+
+func (r *Resolver) FindGeneratedFiles(uri protocol.DocumentURI, fd protoreflect.FileDescriptor) ([]ParsedGoFile, error) {
+	return r.goLanguageDriver.FindGeneratedFiles(uri, fd)
 }
 
 func (r *Resolver) findImportPathsByPrefix(prefix string) map[protocol.DocumentURI]string {

@@ -12,26 +12,28 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 	"github.com/kralicky/tools-lite/pkg/diff"
 	"github.com/kralicky/tools-lite/pkg/gocommand"
 	"github.com/kralicky/tools-lite/pkg/imports"
 	"golang.org/x/mod/module"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
-// creates proto files out of thin air
-type ProtoSourceSynthesizer struct {
+type GoLanguageDriver struct {
 	processEnv                *imports.ProcessEnv
 	moduleResolver            *imports.ModuleResolver
 	knownAlternativePackages  [][]diff.Edit
 	localModDir, localModName string
 }
 
-func NewProtoSourceSynthesizer(workdir string) *ProtoSourceSynthesizer {
+func NewGoLanguageDriver(workdir string) *GoLanguageDriver {
 	env := map[string]string{}
 	for _, key := range requiredGoEnvVars {
 		if v, ok := os.LookupEnv(key); ok {
@@ -53,12 +55,71 @@ func NewProtoSourceSynthesizer(workdir string) *ProtoSourceSynthesizer {
 	resolver.ClearForNewMod()
 	modDir, modName := resolver.ModInfo(workdir)
 
-	return &ProtoSourceSynthesizer{
+	return &GoLanguageDriver{
 		processEnv:     procEnv,
 		moduleResolver: resolver,
 		localModDir:    modDir,
 		localModName:   modName,
 	}
+}
+
+type ParsedGoFile struct {
+	*goast.File
+	Fset     *token.FileSet
+	Filename string
+}
+
+func (f ParsedGoFile) Position(pos token.Pos) protocol.Position {
+	position := f.Fset.Position(pos)
+	return protocol.Position{
+		Line:      uint32(position.Line) - 1,
+		Character: uint32(position.Column) - 1,
+	}
+}
+
+func (s *GoLanguageDriver) FindGeneratedFiles(uri protocol.DocumentURI, fd protoreflect.FileDescriptor) ([]ParsedGoFile, error) {
+	pkgPath := fd.Options().(*descriptorpb.FileOptions).GetGoPackage()
+	if pkgPath == "" {
+		var err error
+		pkgPath, err = s.ImplicitGoPackagePath(uri.Path())
+		if err != nil {
+			return nil, err
+		}
+	}
+	var pkgNameAlias string
+	if strings.Contains(pkgPath, ";") {
+		// path/to/package;alias
+		pkgPath, pkgNameAlias, _ = strings.Cut(pkgPath, ";")
+	}
+	mod, dir := s.moduleResolver.FindPackage(pkgPath)
+	if mod == nil {
+		return nil, fmt.Errorf("no package found for %s", pkgPath)
+	}
+	fset := token.NewFileSet()
+	pkgs, _ := goparser.ParseDir(fset, dir, func(fi fs.FileInfo) bool {
+		if strings.HasSuffix(fi.Name(), "_test.go") {
+			return false
+		}
+		return strings.HasSuffix(fi.Name(), ".pb.go")
+	}, goparser.ParseComments)
+	var res []ParsedGoFile
+	for _, pkg := range pkgs {
+		if pkgNameAlias != "" && pkg.Name != pkgNameAlias {
+			continue
+		}
+		for filename, f := range pkg.Files {
+			preamble, ok := ParseGeneratedPreamble(f)
+			if !ok || preamble.Source != fd.Path() {
+				continue
+			}
+			res = append(res, ParsedGoFile{
+				File:     f,
+				Fset:     fset,
+				Filename: filename,
+			})
+		}
+	}
+	return res, nil
 }
 
 type GoModuleImportResults struct {
@@ -69,10 +130,7 @@ type GoModuleImportResults struct {
 	KnownAltPath string
 }
 
-func (s *ProtoSourceSynthesizer) ImportFromGoModule(importName string) (GoModuleImportResults, error) {
-	// fmt.Println("tryGoImport", importName)
-	// defer func() { fmt.Println("tryGoImport done", _filePath, _err) }()
-
+func (s *GoLanguageDriver) ImportFromGoModule(importName string) (GoModuleImportResults, error) {
 	last := strings.LastIndex(importName, "/")
 	if last == -1 {
 		return GoModuleImportResults{}, fmt.Errorf("%w: %s", os.ErrNotExist, "not a go import")
@@ -93,11 +151,9 @@ func (s *ProtoSourceSynthesizer) ImportFromGoModule(importName string) (GoModule
 	if pkgData == nil || dir == "" {
 		for _, edits := range s.knownAlternativePackages {
 			edited, err := diff.Apply(importPath, edits)
-			// fmt.Printf("tryGoImport > %q not found, trying %q instead based on previously detected patterns\n", importPath, edited)
 			if err == nil {
 				pkgData, dir = s.moduleResolver.FindPackage(edited)
 				if pkgData != nil && dir != "" {
-					// fmt.Println("tryGoImport > successfully found", edited)
 					knownAltPath = path.Join(edited, filename)
 					goto edit_success
 				}
@@ -106,8 +162,6 @@ func (s *ProtoSourceSynthesizer) ImportFromGoModule(importName string) (GoModule
 		return GoModuleImportResults{}, fmt.Errorf("%w: %s", os.ErrNotExist, "no packages found")
 	}
 edit_success:
-	// fmt.Println("tryGoImport > pkgData", pkgData)
-
 	// We now have a valid go package. First check if there's a .proto file in the package.
 	// If there is, we're done.
 	if _, err := os.Stat(filepath.Join(dir, filename)); err == nil {
@@ -131,7 +185,7 @@ edit_success:
 	return res, nil
 }
 
-func (s *ProtoSourceSynthesizer) ImplicitGoPackagePath(filename string) (string, error) {
+func (s *GoLanguageDriver) ImplicitGoPackagePath(filename string) (string, error) {
 	// check if there is a known go module at the path
 	relativePath, err := filepath.Rel(s.localModDir, filename)
 	if err != nil {
@@ -141,7 +195,7 @@ func (s *ProtoSourceSynthesizer) ImplicitGoPackagePath(filename string) (string,
 	return path.Join(s.localModName, path.Dir(relativePath)), nil
 }
 
-func (s *ProtoSourceSynthesizer) SynthesizeFromGoSource(importName string, res GoModuleImportResults) (desc *descriptorpb.FileDescriptorProto, _err error) {
+func (s *GoLanguageDriver) SynthesizeFromGoSource(importName string, res GoModuleImportResults) (desc *descriptorpb.FileDescriptorProto, _err error) {
 	// buckle up
 	fset := token.NewFileSet()
 	packages, err := goparser.ParseDir(fset, res.DirInModule, func(fi fs.FileInfo) bool {
@@ -157,7 +211,6 @@ func (s *ProtoSourceSynthesizer) SynthesizeFromGoSource(importName string, res G
 		return nil, fmt.Errorf("wrong number of packages found: %d", len(packages))
 	}
 	var rawDescByteArray *goast.Object
-	// fmt.Println(">> [OK] found packages:", packages)
 PACKAGES:
 	for _, pkg := range packages {
 		// we're looking for the byte array that contains the raw file descriptor
@@ -173,29 +226,24 @@ PACKAGES:
 				// generated from a different proto file
 				continue
 			}
-			for _, comment := range f.Comments {
-				text := comment.Text()
-				_, path, ok := strings.Cut(text, "source: ")
-				path = strings.TrimSpace(path)
-				if !ok || !strings.HasSuffix(path, ".proto") {
-					continue
-				}
+			preamble, ok := ParseGeneratedPreamble(f)
+			if !ok || preamble.Source == "" {
+				continue
+			}
 
-				// found a possible match, check if there's a symbol with the right name
-				symbolName := fmt.Sprintf("file_%s_rawDesc", strings.ReplaceAll(strings.ReplaceAll(path, "/", "_"), ".", "_"))
-				object := f.Scope.Lookup(symbolName)
-				if object != nil && object.Kind == goast.Var {
-					// found it!
-					rawDescByteArray = object
-					break PACKAGES
-				}
+			// found a possible match, check if there's a symbol with the right name
+			symbolName := fmt.Sprintf("file_%s_rawDesc", strings.ReplaceAll(strings.ReplaceAll(preamble.Source, "/", "_"), ".", "_"))
+			object := f.Scope.Lookup(symbolName)
+			if object != nil && object.Kind == goast.Var {
+				// found it!
+				rawDescByteArray = object
+				break PACKAGES
 			}
 		}
 	}
 	if rawDescByteArray == nil {
 		return nil, fmt.Errorf("%w: %s", os.ErrNotExist, "could not find file descriptor in package")
 	}
-	// fmt.Println(">> [OK] found ast object")
 	// we have the raw descriptor byte array, which is just a bunch of hex numbers in a slice
 	// which we can decode from the ast.
 	// The ast for the byte array will look like:
@@ -223,7 +271,6 @@ PACKAGES:
 		}
 		buf.WriteByte(byte(i))
 	}
-	// fmt.Println(">> [OK] decoded byte array")
 
 	// now we have a byte array containing the raw file descriptor, which we can unmarshal
 	// into a FileDescriptorProto.
@@ -232,7 +279,6 @@ PACKAGES:
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", os.ErrNotExist, err)
 	}
-	// fmt.Println(">> [OK] decoded raw file descriptor")
 	if fd.GetName() != importName {
 		// this package uses an alternate import path. we need to keep track of this
 		// in case any of its dependencies use a similar path structure.
@@ -240,8 +286,6 @@ PACKAGES:
 		resolvedImportPath := importName
 		edits := diff.Strings(alternateImportPath, resolvedImportPath)
 		s.knownAlternativePackages = append(s.knownAlternativePackages, edits)
-
-		// *fd.Name = importName
 	}
 	return fd, nil
 }
@@ -266,4 +310,61 @@ func DecodeRawFileDescriptor(data []byte) (*descriptorpb.FileDescriptorProto, er
 	}
 
 	return fd, nil
+}
+
+type PreambleInfo struct {
+	GeneratedBy string
+	Versions    map[string]string
+	Source      string
+}
+
+var (
+	doNotEditRegex    = regexp.MustCompile(`^// Code generated(?:\s*by\s+(.+)\.)?.*DO NOT EDIT\.?$`)
+	versionEntryRegex = regexp.MustCompile(`^// [\s-]+([^\s]+)\s+([^\s]+)$`)
+)
+
+func ParseGeneratedPreamble(f *goast.File) (PreambleInfo, bool) {
+	var info PreambleInfo
+	var group *goast.CommentGroup
+COMMENTS:
+	for _, cg := range f.Comments {
+		for _, comment := range cg.List {
+			if comment.Pos() > f.Package {
+				break
+			}
+			matches := doNotEditRegex.FindStringSubmatch(comment.Text)
+			if len(matches) == 0 {
+				continue
+			}
+			if len(matches) > 1 {
+				info.GeneratedBy = matches[1]
+			}
+			group = cg
+			break COMMENTS
+		}
+	}
+	if group == nil {
+		return PreambleInfo{}, false
+	}
+	if len(group.List) == 1 {
+		return info, true
+	}
+	for i, comment := range group.List[1:] {
+		switch {
+		case strings.HasPrefix(comment.Text, "// versions:"):
+			for j := i + 1; j < len(group.List); j++ {
+				matches := versionEntryRegex.FindStringSubmatch(group.List[j].Text)
+				if len(matches) != 3 {
+					break
+				}
+				if info.Versions == nil {
+					info.Versions = make(map[string]string)
+				}
+				info.Versions[matches[1]] = matches[2]
+			}
+		case strings.HasPrefix(comment.Text, "// source:"):
+			info.Source = strings.TrimSpace(strings.TrimPrefix(comment.Text, "// source:"))
+		}
+	}
+	return info, true
 }

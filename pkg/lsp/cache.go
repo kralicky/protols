@@ -357,9 +357,12 @@ func (c *Cache) postCompile(path protocompile.ResolvedPath) {
 	}
 }
 
-func (c *Cache) Compile(protos ...string) {
+func (c *Cache) Compile(protos []string, after ...func()) {
 	c.resultsMu.Lock()
 	defer c.resultsMu.Unlock()
+	for _, f := range after {
+		defer f()
+	}
 	c.compileLocked(protos...)
 }
 
@@ -427,7 +430,6 @@ func (c *Cache) compileLocked(protos ...string) {
 
 func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modification) {
 	c.resolver.UpdateURIPathMappings(modifications)
-	defer c.documentVersions.Update(modifications...)
 
 	var toRecompile []string
 	for _, m := range modifications {
@@ -456,7 +458,9 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modific
 		panic(fmt.Errorf("internal protocol error: %w", err))
 	}
 	if len(toRecompile) > 0 {
-		c.Compile(toRecompile...)
+		c.Compile(toRecompile, func() {
+			c.documentVersions.Update(modifications...)
+		})
 	}
 }
 

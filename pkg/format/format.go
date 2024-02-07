@@ -10,6 +10,7 @@ import (
 	"github.com/kralicky/protocompile/parser"
 	"github.com/kralicky/protocompile/reporter"
 	"github.com/kralicky/protols/pkg/format/protoprint"
+	"github.com/kralicky/protols/pkg/util"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -19,7 +20,7 @@ func Format(in io.Reader, out io.Writer) error {
 			return err
 		},
 		func(err reporter.ErrorWithPos) {},
-	)))
+	)), 0)
 	if err != nil {
 		return err
 	}
@@ -85,7 +86,7 @@ func PrintAndFormatFileDescriptor(fd protoreflect.FileDescriptor, out io.Writer)
 
 func PrintNode(fileNode *ast.FileNode, node ast.Node) (string, error) {
 	if fileNode == nil {
-		info := ast.NewFileInfo("", nil)
+		info := ast.NewFileInfo("", nil, 0)
 		eof := info.AddToken(0, 0)
 		fileNode = ast.NewFileNode(info, nil, nil, eof)
 	}

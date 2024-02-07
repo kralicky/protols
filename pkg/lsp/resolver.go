@@ -38,6 +38,7 @@ const (
 
 type Resolver struct {
 	*cache.OverlayFS
+	fsDelegate                 *cache.MemoizedFS
 	folder                     protocol.WorkspaceFolder
 	goLanguageDriver           *GoLanguageDriver
 	pathsMu                    sync.RWMutex
@@ -49,9 +50,11 @@ type Resolver struct {
 }
 
 func NewResolver(folder protocol.WorkspaceFolder) *Resolver {
+	fsDelegate := cache.NewMemoizedFS()
 	return &Resolver{
 		folder:                     folder,
-		OverlayFS:                  cache.NewOverlayFS(cache.NewMemoizedFS()),
+		OverlayFS:                  cache.NewOverlayFS(fsDelegate),
+		fsDelegate:                 fsDelegate,
 		goLanguageDriver:           NewGoLanguageDriver(protocol.DocumentURI(folder.URI).Path()),
 		filePathsByURI:             make(map[protocol.DocumentURI]string),
 		fileURIsByPath:             make(map[string]protocol.DocumentURI),
@@ -59,6 +62,10 @@ func NewResolver(folder protocol.WorkspaceFolder) *Resolver {
 		syntheticFiles:             make(map[protocol.DocumentURI]string),
 		importSourcesByURI:         map[protocol.DocumentURI]ImportSource{},
 	}
+}
+
+func (r *Resolver) OpenFileFromDisk(ctx context.Context, uri protocol.DocumentURI) (file.Handle, error) {
+	return r.fsDelegate.ReadFile(ctx, uri)
 }
 
 func (r *Resolver) PathToURI(path string) (protocol.DocumentURI, error) {
@@ -318,6 +325,7 @@ func (r *Resolver) checkFS(path string, whence protocompile.ImportContext) (prot
 			if err == nil && content != nil {
 				return protocompile.SearchResult{
 					ResolvedPath: protocompile.ResolvedPath(path),
+					Version:      fh.Version(),
 					Source:       bytes.NewReader(content),
 				}, nil
 			}
@@ -352,6 +360,7 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 			r.importSourcesByURI[uri] = SourceGoModuleCache
 		}
 		return protocompile.SearchResult{
+			Version:      1,
 			ResolvedPath: protocompile.ResolvedPath(path),
 			Source:       src, // this is closed by the compiler
 		}, nil
@@ -359,6 +368,7 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 
 	if src, ok := r.syntheticFiles[r.fileURIsByPath[path]]; ok {
 		return protocompile.SearchResult{
+			Version:      1,
 			ResolvedPath: protocompile.ResolvedPath(path),
 			Source:       strings.NewReader(src),
 		}, nil
@@ -384,6 +394,7 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 		r.importSourcesByURI[uri] = SourceSynthetic
 		r.syntheticFileOriginalNames[uri] = original
 		return protocompile.SearchResult{
+			Version:      1,
 			ResolvedPath: protocompile.ResolvedPath(resolved),
 			Proto:        synthesized,
 		}, nil
@@ -403,6 +414,7 @@ func (r *Resolver) checkGlobalCache(path string) (protocompile.SearchResult, err
 	}
 	if src, ok := r.syntheticFiles[protocol.DocumentURI(syntheticURI.String())]; ok {
 		return protocompile.SearchResult{
+			Version:      1,
 			ResolvedPath: protocompile.ResolvedPath(path),
 			Source:       strings.NewReader(src),
 		}, nil

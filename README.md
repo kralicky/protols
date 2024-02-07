@@ -13,24 +13,26 @@ Features in progress:
   - [x] Document and workspace diagnostics
   - [x] Import links
   - [x] Find references/definition
-    - [x] Types
+    - [x] Types and enums
     - [x] Imports
     - [x] Options, extensions, and field references
     - [x] Inlay Hints
   - [x] Hover
-    - [x] Types
+    - [x] Types and enums
     - [x] Options, extensions, and field references
     - [x] Inlay Hints
     - [ ] CEL tokens
   - [ ] Code Actions & Refactors
     - [x] Identify and remove unused imports
     - [x] Add missing import for unresolved symbol
+    - [x] Auto-fix imports on save
     - [x] Simplify repeated option declarations
     - [x] Simplify repeated message literal fields
     - [ ] Simplify map literal fields
     - [ ] Extract fields to new message
     - [ ] Inline fields from message
-  - [ ] Code Lens
+  - [x] Code Lens
+    - [x] Generate file/package/workspace
   - [x] Inlay hints
     - [x] Extension types
     - [x] Resolved import paths
@@ -38,13 +40,15 @@ Features in progress:
   - [x] Multi-workspace support
   - [x] Workspace symbol index/search
     - [x] Editor Breadcrumbs
-  - [ ] Code completion:
+  - [ ] Completion:
     - [x] Message and enum types
-    - [x] Automatic imports
+    - [x] Extendee types
+    - [x] Context-sensitive keywords
     - [x] Import paths
     - [x] Package names
     - [x] Message and field literals
     - [ ] Field literal values
+  - [ ] Type hierarchy
 - [x] Import resolution
   - [x] Local/relative paths
   - [x] Go module path lookup with inline sources
@@ -63,7 +67,11 @@ Features in progress:
     - [x] 'protols vet'
     - [ ] 'protols rename'
     - [ ] ...
-  - [ ] Interact with generated code (find references, rename)
+  - [ ] Interact with generated code
+    - [x] Go to Generated Definition
+    - [ ] Find references
+    - [ ] Call hierarchy
+    - [ ] Cross-language rename
 - [ ] Debugging tools
   - [x] AST viewer
   - [x] Wire message decoder ('protols decode')

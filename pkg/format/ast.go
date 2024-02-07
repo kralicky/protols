@@ -255,11 +255,6 @@ func (v *dumpVisitor) VisitPackageNode(node *ast.PackageNode) error {
 	return nil
 }
 
-func (v *dumpVisitor) VisitPositiveUintLiteralNode(node *ast.PositiveUintLiteralNode) error {
-	v.buf.WriteString(fmt.Sprintf("val=%d\n", node.Val))
-	return nil
-}
-
 func (v *dumpVisitor) VisitRPCNode(node *ast.RPCNode) error {
 	v.buf.WriteString(fmt.Sprintf("name=%q input=%q output=%q #decls=%d\n", maybe(node.Name).Val, maybe(node.Input).MessageType.AsIdentifier(), maybe(node.Output).MessageType.AsIdentifier(), len(node.Decls)))
 	return nil

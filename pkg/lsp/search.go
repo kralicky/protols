@@ -53,7 +53,6 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 			*ast.EmptyDeclNode,
 			*ast.RuneNode,
 			*ast.UintLiteralNode,
-			*ast.PositiveUintLiteralNode,
 			*ast.NegativeIntLiteralNode,
 			*ast.FloatLiteralNode,
 			*ast.SpecialFloatLiteralNode,
@@ -348,6 +347,12 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 						switch val := haveNode.Val.(type) {
 						case ast.IdentValueNode:
 							want.desc = haveDesc.Enum().Values().ByName(protoreflect.Name(val.AsIdentifier()))
+						case *ast.ArrayLiteralNode:
+							for _, el := range val.Elements {
+								if wantNode == el {
+									want.desc = haveDesc.Enum().Values().ByName(protoreflect.Name(wantNode.AsIdentifier()))
+								}
+							}
 						}
 					}
 				case ast.FieldDeclNode:

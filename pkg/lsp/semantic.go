@@ -523,13 +523,12 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			return nil
 		},
 		DoVisitOptionNode: func(node *ast.OptionNode) error {
-			switch val := node.Val.(type) {
-			case ast.IdentValueNode:
-				// handle bool literal identifiers
-				if id := val.AsIdentifier(); id == "true" || id == "false" {
-					s.mktokens(node.Val, append(tracker.Path(), node.Val), semanticTypeKeyword, 0)
-				} else {
-					s.mktokens(node.Val, append(tracker.Path(), node.Val), semanticTypeVariable, semanticModifierReadonly)
+			if node.Name != nil && len(node.Name.Parts) > 0 {
+				switch val := node.Val.(type) {
+				case ast.IdentValueNode:
+					s.inspectFieldLiteral(node.Name.Parts[len(node.Name.Parts)-1], val, tracker)
+				case *ast.ArrayLiteralNode:
+					s.inspectArrayLiteral(node.Name.Parts[len(node.Name.Parts)-1], val, tracker)
 				}
 			}
 			return nil
@@ -561,14 +560,11 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			return nil
 		},
 		DoVisitMessageFieldNode: func(node *ast.MessageFieldNode) error {
-			// check for enum value fields
 			switch val := node.Val.(type) {
 			case ast.IdentValueNode:
-				if id := val.AsIdentifier(); id == "true" || id == "false" {
-					s.mktokens(node.Val, append(tracker.Path(), node.Val), semanticTypeKeyword, 0)
-				} else {
-					s.mktokens(node.Val, append(tracker.Path(), node.Val), semanticTypeVariable, semanticModifierReadonly)
-				}
+				s.inspectFieldLiteral(node, val, tracker)
+			case *ast.ArrayLiteralNode:
+				s.inspectArrayLiteral(node, val, tracker)
 			}
 			return nil
 		},
@@ -609,6 +605,84 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			return nil
 		},
 	}, walkOptions...)
+}
+
+func (s *semanticItems) inspectFieldLiteral(node ast.Node, val ast.IdentValueNode, tracker *ast.AncestorTracker) {
+	var fd protoreflect.FieldDescriptor
+	switch node := node.(type) {
+	case *ast.FieldReferenceNode:
+		fd = s.linkRes.FindFieldDescriptorByFieldReferenceNode(node)
+	case *ast.MessageFieldNode:
+		fd = s.linkRes.FindFieldDescriptorByMessageFieldNode(node)
+	}
+
+	if fd == nil {
+		return
+	}
+	switch fd.Kind() {
+	case protoreflect.FloatKind, protoreflect.DoubleKind:
+		switch val.AsIdentifier() {
+		case "inf", "infinity", "nan", "-inf", "-infinity", "-nan":
+			s.mktokens(val, append(tracker.Path(), val), semanticTypeNumber, 0)
+		}
+	case protoreflect.BoolKind:
+		switch val.AsIdentifier() {
+		case "true", "false":
+			s.mktokens(val, append(tracker.Path(), val), semanticTypeKeyword, 0)
+		}
+	case protoreflect.EnumKind:
+		if enum := fd.Enum(); enum != nil {
+			if enum.Values().ByName(protoreflect.Name(val.AsIdentifier())) != nil {
+				s.mktokens(val, append(tracker.Path(), val), semanticTypeEnumMember, 0)
+			}
+		}
+	}
+}
+
+func (s *semanticItems) inspectArrayLiteral(node ast.Node, val *ast.ArrayLiteralNode, tracker *ast.AncestorTracker) {
+	var fd protoreflect.FieldDescriptor
+	switch node := node.(type) {
+	case *ast.FieldReferenceNode:
+		fd = s.linkRes.FindFieldDescriptorByFieldReferenceNode(node)
+	case *ast.MessageFieldNode:
+		fd = s.linkRes.FindFieldDescriptorByMessageFieldNode(node)
+	}
+	if fd == nil {
+		return
+	}
+	switch fd.Kind() {
+	case protoreflect.FloatKind, protoreflect.DoubleKind:
+		for _, elem := range val.Elements {
+			switch val := elem.Value().(type) {
+			case ast.Identifier:
+				switch val {
+				case "inf", "infinity", "nan", "-inf", "-infinity", "-nan":
+					s.mktokens(elem, append(tracker.Path(), elem), semanticTypeNumber, 0)
+				}
+			}
+		}
+	case protoreflect.BoolKind:
+		for _, elem := range val.Elements {
+			switch val := elem.Value().(type) {
+			case ast.Identifier:
+				switch val {
+				case "true", "false":
+					s.mktokens(elem, append(tracker.Path(), elem), semanticTypeKeyword, 0)
+				}
+			}
+		}
+	case protoreflect.EnumKind:
+		if enum := fd.Enum(); enum != nil {
+			for _, elem := range val.Elements {
+				switch val := elem.Value().(type) {
+				case ast.Identifier:
+					if enum.Values().ByName(protoreflect.Name(val)) != nil {
+						s.mktokens(elem, append(tracker.Path(), elem), semanticTypeEnumMember, 0)
+					}
+				}
+			}
+		}
+	}
 }
 
 func (s *semanticItems) inspectCelExpr(messageLit *ast.MessageLiteralNode) ([]*ast.StringLiteralNode, []ProtoDiagnostic) {

@@ -717,7 +717,7 @@ LOOP:
 		case *ast.MessageNode, *ast.FieldNode, *ast.EnumNode, *ast.ServiceNode, *ast.MessageFieldNode:
 			desc, _, err := deepPathSearch(nodePath[:i+1], linkRes, linkRes)
 			if err != nil || desc == nil {
-				return nil
+				continue
 			}
 			scope = desc
 			break LOOP

@@ -15,6 +15,7 @@ import (
 	"github.com/kralicky/protocompile/parser"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
@@ -320,10 +321,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		case tokenAtOffset >= node.FldType.Start() && tokenAtOffset <= node.FldType.End():
 			// complete within the field type
 			pos := searchTarget.AST().NodeInfo(node.FldType).Start()
-			startOffset, err := mapper.PositionOffset(protocol.Position{
-				Line:      uint32(pos.Line - 1),
-				Character: uint32(pos.Col - 1),
-			})
+			startOffset, err := mapper.PositionOffset(toPosition(pos))
 			if err != nil {
 				return nil, err
 			}
@@ -357,13 +355,22 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			completions = append(completions, messageKeywordCompletions(searchTarget.AST(), completeType, completeTypeSuffix, params.Position)...)
 		}
 	case *ast.ImportNode:
-		// complete import paths
 		quoteIdx := strings.IndexRune(textPrecedingCursor, '"')
-		if quoteIdx != -1 {
-			partialPath := strings.TrimSpace(textPrecedingCursor[quoteIdx+1:])
-			endQuoteIdx := strings.IndexRune(textFollowingCursor, '"')
-			var partialPathSuffix string
-			if endQuoteIdx != -1 {
+		// complete the "public" keyword
+		if quoteIdx == -1 && node.Public == nil {
+			completions = append(completions, protocol.CompletionItem{
+				Label: "public",
+				Kind:  protocol.KeywordCompletion,
+			})
+		}
+
+		// complete import paths
+		if quoteIdx != -1 || node.Name == nil {
+			var partialPath, partialPathSuffix string
+			if quoteIdx != -1 {
+				partialPath = strings.TrimSpace(textPrecedingCursor[quoteIdx+1:])
+			}
+			if endQuoteIdx := strings.IndexRune(textFollowingCursor, '"'); endQuoteIdx != -1 {
 				partialPathSuffix = strings.TrimSpace(textFollowingCursor[:endQuoteIdx])
 			}
 
@@ -379,15 +386,36 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 					existingImportPaths = append(existingImportPaths, imp.Path())
 				}
 			}
-			completions = append(completions, completeImports(c, partialPath, partialPathSuffix, existingImportPaths, params.Position)...)
+
+			pathImports := completeImports(c, partialPath, partialPathSuffix, existingImportPaths, params.Position, node.Name == nil)
+			completions = append(completions, pathImports...)
+		}
+	case *ast.ExtendNode:
+		var partialName, partialNameSuffix string
+		if node.IsIncomplete() && node.Extendee == nil {
+			if strings.TrimSpace(textPrecedingCursor) != "extend" {
+				break
+			}
 		} else {
-			if strings.TrimSpace(textPrecedingCursor) == "import" && node.Public == nil {
-				completions = append(completions, protocol.CompletionItem{
-					Label: "public",
-					Kind:  protocol.KeywordCompletion,
-				})
+			// check if the cursor is within the extendee name
+			if tokenAtOffset >= node.Extendee.Start() && tokenAtOffset <= node.Extendee.End() {
+				pos := searchTarget.AST().NodeInfo(node.Extendee).Start()
+				startOffset, err := mapper.PositionOffset(toPosition(pos))
+				if err != nil {
+					return nil, err
+				}
+				cursorIndexIntoType := posOffset - startOffset
+				if cursorIndexIntoType < 0 {
+					break // cursor is between the keyword and type, nothing to complete
+				}
+				completeType := string(node.Extendee.AsIdentifier())
+				partialName = completeType[:cursorIndexIntoType]
+				partialNameSuffix = completeType[cursorIndexIntoType:]
+			} else {
+				break
 			}
 		}
+		completions = append(completions, completeExtendeeTypeNames(c, partialName, partialNameSuffix, maybeCurrentLinkRes, "", params.Position)...)
 	case *ast.SyntaxNode:
 		// complete syntax versions
 		quoteIdx := strings.IndexRune(textPrecedingCursor, '"')
@@ -558,6 +586,28 @@ func (c *Cache) completePackageNames(
 		}
 	}
 	return items
+}
+
+var allowedProto3Extendees []protoreflect.Descriptor
+
+func init() {
+	for _, name := range []protoreflect.FullName{
+		"google.protobuf.FileOptions",
+		"google.protobuf.MessageOptions",
+		"google.protobuf.FieldOptions",
+		"google.protobuf.OneofOptions",
+		"google.protobuf.ExtensionRangeOptions",
+		"google.protobuf.EnumOptions",
+		"google.protobuf.EnumValueOptions",
+		"google.protobuf.ServiceOptions",
+		"google.protobuf.MethodOptions",
+	} {
+		msg, err := protoregistry.GlobalTypes.FindMessageByName(name)
+		if err != nil {
+			panic(err)
+		}
+		allowedProto3Extendees = append(allowedProto3Extendees, msg.Descriptor())
+	}
 }
 
 type fieldCompletionStyle int
@@ -831,13 +881,38 @@ func completeTypeNames(cache *Cache, partialName, partialNameSuffix string, link
 		}
 		return false
 	}
-	var trimPrefix string
 	if strings.Contains(partialName, ".") {
 		candidates = cache.FindAllDescriptorsByQualifiedPrefix(context.TODO(), partialName, filter)
 	} else {
+		candidates = cache.FindAllDescriptorsByPrefix(context.TODO(), partialName, filter)
+	}
+	return completeTypeNamesFromList(candidates, partialName, partialNameSuffix, linkRes, scope, pos)
+}
+
+func completeExtendeeTypeNames(cache *Cache, partialName, partialNameSuffix string, linkRes linker.Result, scope protoreflect.FullName, pos protocol.Position) []protocol.CompletionItem {
+	candidates := allowedProto3Extendees
+	if isProto2(linkRes.AST()) {
+		filter := func(d protoreflect.Descriptor) bool {
+			switch d := d.(type) {
+			case protoreflect.MessageDescriptor:
+				return !d.IsMapEntry() && d.ExtensionRanges().Len() > 0
+			}
+			return false
+		}
+		if strings.Contains(partialName, ".") {
+			candidates = append(candidates, cache.FindAllDescriptorsByQualifiedPrefix(context.TODO(), partialName, filter)...)
+		} else {
+			candidates = append(candidates, cache.FindAllDescriptorsByPrefix(context.TODO(), partialName, filter)...)
+		}
+	}
+	return completeTypeNamesFromList(candidates, partialName, partialNameSuffix, linkRes, scope, pos)
+}
+
+func completeTypeNamesFromList(candidates []protoreflect.Descriptor, partialName, partialNameSuffix string, linkRes linker.Result, scope protoreflect.FullName, pos protocol.Position) []protocol.CompletionItem {
+	var trimPrefix string
+	if !strings.Contains(partialName, ".") {
 		localPackage := linkRes.Package()
 		trimPrefix = string(localPackage + ".")
-		candidates = cache.FindAllDescriptorsByPrefix(context.TODO(), partialName, filter)
 	}
 	items := []protocol.CompletionItem{}
 	labelPrefix := ""
@@ -880,7 +955,7 @@ func completeTypeNames(cache *Cache, partialName, partialNameSuffix string, link
 	return items
 }
 
-func completeImports(cache *Cache, partialPath, partialPathSuffix string, existingImportPaths []string, pos protocol.Position) []protocol.CompletionItem {
+func completeImports(cache *Cache, partialPath, partialPathSuffix string, existingImportPaths []string, pos protocol.Position, insertQuotes bool) []protocol.CompletionItem {
 	paths := cache.FindImportPathsByPrefix(context.TODO(), partialPath)
 	items := []protocol.CompletionItem{}
 	existing := map[protocol.DocumentURI]struct{}{}
@@ -900,6 +975,9 @@ func completeImports(cache *Cache, partialPath, partialPathSuffix string, existi
 			label = base
 		}
 		insertText := strings.TrimPrefix(importPath, partialPath)
+		if insertQuotes {
+			insertText = fmt.Sprintf("%q", insertText)
+		}
 		replaceRange := protocol.Range{
 			Start: pos,
 			End:   adjustColumn(pos, len(partialPathSuffix)),

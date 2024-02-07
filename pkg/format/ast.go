@@ -114,7 +114,11 @@ func (v *dumpVisitor) VisitEnumValueNode(node *ast.EnumValueNode) error {
 }
 
 func (v *dumpVisitor) VisitExtendNode(node *ast.ExtendNode) error {
-	v.buf.WriteString(fmt.Sprintf("extendee=%q #decls=%d\n", node.Extendee.AsIdentifier(), len(node.Decls)))
+	if node.IsIncomplete() {
+		v.buf.WriteString("!extendee\n")
+	} else {
+		v.buf.WriteString(fmt.Sprintf("extendee=%q #decls=%d\n", node.Extendee.AsIdentifier(), len(node.Decls)))
+	}
 	return nil
 }
 
@@ -171,7 +175,17 @@ func (v *dumpVisitor) VisitIncompleteIdentNode(node *ast.IncompleteIdentNode) er
 }
 
 func (v *dumpVisitor) VisitImportNode(node *ast.ImportNode) error {
-	v.buf.WriteString(fmt.Sprintf("name=%q\n", node.Name.AsString()))
+	if node.IsIncomplete() {
+		v.buf.WriteString("!name\n")
+	} else {
+		if node.Public != nil {
+			v.buf.WriteString("public ")
+		}
+		if node.Weak != nil {
+			v.buf.WriteString("weak ")
+		}
+		v.buf.WriteString(fmt.Sprintf("name=%q\n", node.Name.AsString()))
+	}
 	return nil
 }
 

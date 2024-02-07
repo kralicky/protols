@@ -1449,8 +1449,10 @@ func (f *formatter) writeExtend(extendNode *ast.ExtendNode) {
 		}
 	}
 	f.writeStart(extendNode.Keyword)
-	f.Space()
-	f.writeInline(extendNode.Extendee)
+	if extendNode.Extendee != nil {
+		f.Space()
+		f.writeInline(extendNode.Extendee)
+	}
 	f.Space()
 	f.writeCompositeTypeBody(
 		extendNode.OpenBrace,

@@ -678,6 +678,9 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 	// get the source positions of the import statements
 	for _, decl := range resAst.Decls {
 		if imp, ok := decl.(*ast.ImportNode); ok {
+			if imp.IsIncomplete() {
+				continue
+			}
 			imports = append(imports, imp)
 		}
 	}
@@ -826,6 +829,9 @@ func (c *Cache) computeImportHints(doc protocol.TextDocumentIdentifier, rng prot
 	// get the source positions of the import statements
 	for _, decl := range resAst.Decls {
 		if imp, ok := decl.(*ast.ImportNode); ok {
+			if imp.IsIncomplete() {
+				continue
+			}
 			imports = append(imports, imp)
 		}
 	}

@@ -184,6 +184,9 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 				case *ast.OptionNode:
 					want.desc = haveDesc.Options().(*descriptorpb.FileOptions).ProtoReflect().Descriptor()
 				case *ast.ImportNode:
+					if wantNode.IsIncomplete() {
+						return nil, protocol.Range{}, nil
+					}
 					wantName := wantNode.Name.AsString()
 					imports := haveDesc.Imports()
 					for i, l := 0, imports.Len(); i < l; i++ {
@@ -636,6 +639,16 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 		},
 		DoVisitMessageNode: func(node *ast.MessageNode) error {
 			if intersectsLocationExclusive(node, node.CloseBrace) {
+				paths = append(paths, slices.Clone(tracker.Path()))
+			}
+			return nil
+		},
+		DoVisitExtendNode: func(node *ast.ExtendNode) error {
+			if node.IsIncomplete() {
+				if intersectsLocation(node) {
+					paths = append(paths, slices.Clone(tracker.Path()))
+				}
+			} else if intersectsLocationExclusive(node, node.CloseBrace) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
 			return nil

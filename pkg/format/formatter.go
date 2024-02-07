@@ -1965,18 +1965,24 @@ func (f *formatter) writeBody(
 	openBraceWriterFunc func(ast.Node),
 	closeBraceWriterFunc func(ast.Node, *ast.RuneNode, bool),
 ) {
-	if elementWriterFunc == nil && !f.hasInteriorComments(openBrace, closeBrace) {
-		// completely empty body
-		f.writeInline(openBrace)
-		closeBraceWriterFunc(closeBrace, semicolon, true)
-		return
+	if openBrace != nil && closeBrace != nil {
+		if elementWriterFunc == nil && !f.hasInteriorComments(openBrace, closeBrace) {
+			// completely empty body
+			f.writeInline(openBrace)
+			closeBraceWriterFunc(closeBrace, semicolon, true)
+			return
+		}
 	}
 
-	openBraceWriterFunc(openBrace)
+	if openBrace != nil {
+		openBraceWriterFunc(openBrace)
+	}
 	if elementWriterFunc != nil {
 		elementWriterFunc()
 	}
-	closeBraceWriterFunc(closeBrace, semicolon, false)
+	if closeBrace != nil {
+		closeBraceWriterFunc(closeBrace, semicolon, false)
+	}
 }
 
 // writeOpenBracePrefix writes the open brace with its leading comments in-line.
@@ -2169,7 +2175,16 @@ func (f *formatter) writeSpecialFloatLiteral(specialFloatLiteralNode *ast.Specia
 // Note that the raw string is written as-is so that it preserves
 // the quote style used in the original source.
 func (f *formatter) writeStringLiteral(stringLiteralNode *ast.StringLiteralNode) {
-	f.writeRaw(stringLiteralNode)
+	info := f.fileNode.NodeInfo(stringLiteralNode)
+	rawText := info.RawText()
+	if len(rawText) > 1 && rawText[0] == '\'' && rawText[len(rawText)-1] == '\'' {
+		// convert single quotes to double quotes
+		b := []rune(rawText)
+		b[0] = '"'
+		b[len(b)-1] = '"'
+		rawText = string(b)
+	}
+	f.WriteString(rawText)
 }
 
 // writeUintLiteral writes a uint literal (e.g. '42').

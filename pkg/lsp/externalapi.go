@@ -5,6 +5,7 @@ import (
 
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // Intended for use with external tools only, not part of LSP implementation.
@@ -27,9 +28,12 @@ func (c *Cache) XGetAllDiagnostics() (map[protocol.DocumentURI][]protocol.Diagno
 func (c *Cache) XGetLinkerResults() []linker.Result {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
-	results := make([]linker.Result, len(c.results))
-	for i, result := range c.results {
-		results[i] = result.(linker.Result)
+	results := make([]linker.Result, 0, len(c.results))
+	for _, result := range c.results {
+		if result.Syntax() == protoreflect.Editions {
+			continue
+		}
+		results = append(results, result.(linker.Result))
 	}
 	return results
 }
@@ -60,4 +64,16 @@ func (c *Cache) XGetURIPathMappings() PathMappings {
 		FilePathsByURI:                  maps.Clone(c.resolver.filePathsByURI),
 		SyntheticFileOriginalNamesByURI: maps.Clone(c.resolver.syntheticFileOriginalNames),
 	}
+}
+
+func (c *Cache) XListWorkspaceLocalURIs() []protocol.DocumentURI {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	uris := make([]protocol.DocumentURI, 0, len(c.resolver.filePathsByURI))
+	for uri := range c.resolver.filePathsByURI {
+		if c.resolver.IsRealWorkspaceLocalFile(uri) {
+			uris = append(uris, uri)
+		}
+	}
+	return uris
 }

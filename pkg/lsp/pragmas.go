@@ -11,8 +11,9 @@ func init() {
 }
 
 const (
-	PragmaNoFormat = "nofmt"
-	PragmaDebug    = "debug"
+	PragmaNoFormat   = "nofmt"
+	PragmaNoGenerate = "nogen"
+	PragmaDebug      = "debug"
 
 	PragmaDebugWnoerror = "Wnoerror"
 	WnoerrorAll         = "all"

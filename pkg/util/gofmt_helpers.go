@@ -1,7 +1,7 @@
 // Copyright 2009 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
-package format
+package util
 
 import (
 	"fmt"
@@ -28,8 +28,8 @@ import (
 // so this limit may be approximate.
 var fdSem = make(chan bool, 200)
 
-// writeFile updates a file with the new formatted data.
-func writeFile(filename string, orig, formatted []byte, perm fs.FileMode, size int64) error {
+// OverwriteFile updates a file with the new formatted data.
+func OverwriteFile(filename string, orig, formatted []byte, perm fs.FileMode, size int64) error {
 	// Make a temporary backup file before rewriting the original file.
 	bakname, err := backupFile(filename, orig, perm)
 	if err != nil {

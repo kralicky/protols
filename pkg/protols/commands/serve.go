@@ -3,15 +3,23 @@ package commands
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
+	"path"
+	"strings"
 	"sync"
 
+	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protols/pkg/lsp"
+	"github.com/kralicky/protols/pkg/util"
+	"github.com/kralicky/protols/sdk/codegen"
+	"github.com/kralicky/protols/sdk/plugin"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/kralicky/tools-lite/pkg/event"
 	"github.com/kralicky/tools-lite/pkg/event/core"
@@ -67,7 +75,13 @@ func BuildServeCmd() *cobra.Command {
 				return ctx
 			})
 
-			server := lsp.NewServer(client)
+			server := lsp.NewServer(client,
+				lsp.WithUnknownCommandHandler(
+					&unknownHandler{Generators: codegen.DefaultGenerators()},
+					"protols/generate",
+					"protols/generateWorkspace",
+				),
+			)
 			conn.Go(cmd.Context(), protocol.CancelHandler(
 				AsyncHandler(
 					jsonrpc2.MustReplyHandler(
@@ -119,4 +133,103 @@ func AsyncHandler(handler jsonrpc2.Handler) jsonrpc2.Handler {
 		}()
 		return nil
 	}
+}
+
+type unknownHandler struct {
+	Generators []codegen.Generator
+}
+
+// Execute implements lsp.UnknownCommandHandler.
+func (h *unknownHandler) Execute(ctx context.Context, uc lsp.UnknownCommand) (any, error) {
+	switch uc.Command {
+	case "protols/generate":
+		var req lsp.GenerateCodeRequest
+		if err := json.Unmarshal(uc.Arguments[0], &req); err != nil {
+			return nil, err
+		}
+		if uc.Cache == nil {
+			return nil, errors.New("no cache available")
+		}
+		return nil, h.doGenerate(ctx, uc.Cache, req.URIs)
+	case "protols/generateWorkspace":
+		if uc.Cache == nil {
+			return nil, errors.New("no cache available")
+		}
+		return nil, h.doGenerate(ctx, uc.Cache, uc.Cache.XListWorkspaceLocalURIs())
+	default:
+		panic("unknown command: " + uc.Command)
+	}
+}
+
+var _ lsp.UnknownCommandHandler = (*unknownHandler)(nil)
+
+func (h *unknownHandler) doGenerate(ctx context.Context, cache *lsp.Cache, uris []protocol.DocumentURI) error {
+	pathMappings := cache.XGetURIPathMappings()
+	roots := make(linker.Files, 0, len(uris))
+	outputDirs := map[string]string{}
+	for _, uri := range uris {
+		res, err := cache.FindResultByURI(uri)
+		if err != nil {
+			return err
+		}
+		if res.Package() == "" {
+			continue
+		}
+		if _, ok := res.AST().Pragma(lsp.PragmaNoGenerate); ok {
+			continue
+		}
+		roots = append(roots, res)
+		p := pathMappings.FilePathsByURI[uri]
+		outputDirs[path.Dir(p)] = path.Dir(uri.Path())
+		if opts := res.Options(); opts.ProtoReflect().IsValid() {
+			if goPkg := opts.(*descriptorpb.FileOptions).GoPackage; goPkg != nil {
+				// if the file has a different go_package than the implicit one, add
+				// it to the output dirs map as well
+				outputDirs[strings.Split(*goPkg, ";")[0]] = path.Dir(uri.Path())
+			}
+		}
+	}
+	closure := linker.ComputeReflexiveTransitiveClosure(roots)
+	closureResults := make([]linker.Result, len(closure))
+	for i, res := range closure {
+		closureResults[i] = res.(linker.Result)
+	}
+
+	plugin, err := plugin.New(roots, closureResults, pathMappings)
+	if err != nil {
+		return err
+	}
+	for _, g := range h.Generators {
+		if err := g.Generate(plugin); err != nil {
+			return err
+		}
+	}
+	response := plugin.Response()
+	if response.Error != nil {
+		return errors.New(response.GetError())
+	}
+	var errs error
+	for _, rf := range response.GetFile() {
+		dir, ok := outputDirs[path.Dir(rf.GetName())]
+		if !ok {
+			errs = errors.Join(errs, fmt.Errorf("cannot write outside of workspace module: %s", rf.GetName()))
+			continue
+		}
+		absPath := path.Join(dir, path.Base(rf.GetName()))
+		if info, err := os.Stat(absPath); err == nil {
+			original, err := os.ReadFile(absPath)
+			if err != nil {
+				return err
+			}
+			updated := rf.GetContent()
+			if err := util.OverwriteFile(absPath, original, []byte(updated), info.Mode().Perm(), info.Size()); err != nil {
+				return err
+			}
+		} else {
+			if err := os.WriteFile(absPath, []byte(rf.GetContent()), 0o644); err != nil {
+				return err
+			}
+		}
+	}
+	return errs
 }

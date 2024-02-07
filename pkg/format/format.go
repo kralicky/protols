@@ -50,7 +50,7 @@ func FileInPlace(filename string) error {
 	if err := Format(bytes.NewReader(original), &formatted); err != nil {
 		return err
 	}
-	return writeFile(filename, original, formatted.Bytes(), info.Mode().Perm(), info.Size())
+	return util.OverwriteFile(filename, original, formatted.Bytes(), info.Mode().Perm(), info.Size())
 }
 
 func PrintDescriptor(d protoreflect.Descriptor) (string, error) {

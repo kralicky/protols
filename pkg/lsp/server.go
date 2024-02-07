@@ -2,17 +2,14 @@ package lsp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
 	"net/url"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 
-	"github.com/kralicky/protols/pkg/format"
 	"github.com/kralicky/protols/pkg/sources"
 	"github.com/kralicky/tools-lite/gopls/pkg/file"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/progress"
@@ -22,9 +19,13 @@ import (
 )
 
 type Server struct {
-	cachesMu sync.RWMutex
-	caches   map[string]*Cache
-	client   protocol.Client
+	ServerOptions
+
+	cachesMu     sync.RWMutex
+	caches       map[string]*Cache
+	cacheCancels map[string]context.CancelCauseFunc
+
+	client protocol.Client
 
 	trackerMu sync.Mutex
 	tracker   *progress.Tracker
@@ -33,7 +34,33 @@ type Server struct {
 	diagnosticStreamCancel func()
 }
 
-func NewServer(client protocol.Client) *Server {
+type ServerOptions struct {
+	unknownCommandHandlers map[string]UnknownCommandHandler
+}
+
+type ServerOption func(*ServerOptions)
+
+func (o *ServerOptions) apply(opts ...ServerOption) {
+	for _, op := range opts {
+		op(o)
+	}
+}
+
+func WithUnknownCommandHandler(handler UnknownCommandHandler, cmds ...string) ServerOption {
+	return func(o *ServerOptions) {
+		if o.unknownCommandHandlers == nil {
+			o.unknownCommandHandlers = make(map[string]UnknownCommandHandler)
+		}
+		for _, cmd := range cmds {
+			o.unknownCommandHandlers[cmd] = handler
+		}
+	}
+}
+
+func NewServer(client protocol.Client, opts ...ServerOption) *Server {
+	var options ServerOptions
+	options.apply(opts...)
+
 	executablePath, _ := os.Executable()
 
 	slog.With(
@@ -42,9 +69,56 @@ func NewServer(client protocol.Client) *Server {
 	).Info("starting server")
 
 	return &Server{
-		caches:  map[string]*Cache{},
-		client:  client,
-		tracker: progress.NewTracker(client),
+		ServerOptions: options,
+		caches:        map[string]*Cache{},
+		cacheCancels:  map[string]context.CancelCauseFunc{},
+		client:        client,
+		tracker:       progress.NewTracker(client),
+	}
+}
+
+func (s *Server) cacheInit(cache *Cache, path string) {
+	s.cachesMu.Lock()
+	defer s.cachesMu.Unlock()
+
+	ctx, ca := context.WithCancelCause(context.Background())
+	s.cacheCancels[path] = ca
+
+	cache.LoadFiles(sources.SearchDirs(path))
+	s.caches[path] = cache
+
+	diagnostics := make(chan protocol.WorkspaceDiagnosticReportPartialResult, 1)
+	go cache.StreamWorkspaceDiagnostics(ctx, diagnostics)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case report := <-diagnostics:
+				for _, item := range report.Items {
+					switch item := item.Value.(type) {
+					case protocol.WorkspaceFullDocumentDiagnosticReport:
+						s.client.PublishDiagnostics(ctx, &protocol.PublishDiagnosticsParams{
+							URI:         item.URI,
+							Version:     item.Version,
+							Diagnostics: item.Items,
+						})
+					}
+				}
+			}
+		}
+	}()
+}
+
+func (s *Server) cacheDestroy(path string, err error) {
+	s.cachesMu.Lock()
+	defer s.cachesMu.Unlock()
+
+	if _, ok := s.caches[path]; ok {
+		delete(s.caches, path)
+		ca := s.cacheCancels[path]
+		delete(s.cacheCancels, path)
+		ca(err)
 	}
 }
 
@@ -52,15 +126,12 @@ func NewServer(client protocol.Client) *Server {
 func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitialize) (result *protocol.InitializeResult, err error) {
 	folders := params.WorkspaceFolders
 	s.tracker.SetSupportsWorkDoneProgress(params.Capabilities.Window.WorkDoneProgress)
-	s.cachesMu.Lock()
 	for _, folder := range folders {
 		path := protocol.DocumentURI(folder.URI).Path()
 		slog.Info("adding workspace folder", "path", path)
-		c := NewCache(folder)
-		c.LoadFiles(sources.SearchDirs(path))
-		s.caches[path] = c
+		cache := NewCache(folder)
+		s.cacheInit(cache, path)
 	}
-	s.cachesMu.Unlock()
 	filters := []protocol.FileOperationFilter{
 		{
 			Scheme: "file",
@@ -78,12 +149,12 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 				Save:      &protocol.SaveOptions{IncludeText: false},
 			},
 			HoverProvider: &protocol.Or_ServerCapabilities_hoverProvider{Value: true},
-			DiagnosticProvider: &protocol.Or_ServerCapabilities_diagnosticProvider{
-				Value: protocol.DiagnosticOptions{
-					WorkspaceDiagnostics:  true,
-					InterFileDependencies: true,
-				},
-			},
+			// DiagnosticProvider: &protocol.Or_ServerCapabilities_diagnosticProvider{
+			// 	Value: protocol.DiagnosticOptions{
+			// 		WorkspaceDiagnostics:  true,
+			// 		InterFileDependencies: true,
+			// 	},
+			// },
 			Workspace: &protocol.WorkspaceOptions{
 				WorkspaceFolders: &protocol.WorkspaceFolders5Gn{
 					Supported:           true,
@@ -116,19 +187,26 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 					protocol.RefactorExtract,
 					protocol.RefactorInline,
 					protocol.RefactorRewrite,
+					protocol.Source,
+					protocol.SourceFixAll,
+					protocol.SourceOrganizeImports,
 				},
 			},
 			RenameProvider: &protocol.RenameOptions{
 				PrepareProvider: true,
 			},
-			ImplementationProvider: &protocol.Or_ServerCapabilities_implementationProvider{
-				Value: true,
+			// ImplementationProvider: &protocol.Or_ServerCapabilities_implementationProvider{
+			// 	Value: true,
+			// },
+			CodeLensProvider: &protocol.CodeLensOptions{
+				ResolveProvider: false,
 			},
 			// DeclarationProvider: &protocol.Or_ServerCapabilities_declarationProvider{Value: true},
 			// TypeDefinitionProvider: true,
 			ReferencesProvider: &protocol.Or_ServerCapabilities_referencesProvider{Value: true},
 			// WorkspaceSymbolProvider: &protocol.Or_ServerCapabilities_workspaceSymbolProvider{Value: true},
 			DefinitionProvider: &protocol.Or_ServerCapabilities_definitionProvider{Value: true},
+
 			SemanticTokensProvider: &protocol.SemanticTokensOptions{
 				Legend: protocol.SemanticTokensLegend{
 					TokenTypes:     semanticTokenTypes,
@@ -179,6 +257,17 @@ func (s *Server) CacheForURI(uri protocol.DocumentURI) (*Cache, error) {
 		}
 	}
 	return nil, fmt.Errorf("%w: uri %s does not belong to any workspace folder", jsonrpc2.ErrMethodNotFound, uri)
+}
+
+func (s *Server) CacheForWorkspace(workspace protocol.WorkspaceFolder) (*Cache, error) {
+	s.cachesMu.RLock()
+	defer s.cachesMu.RUnlock()
+	for _, c := range s.caches {
+		if c.workspace.URI == workspace.URI {
+			return c, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: workspace %s does not exist", jsonrpc2.ErrMethodNotFound, workspace.Name)
 }
 
 // Completion implements protocol.Server.
@@ -650,58 +739,6 @@ func (s *Server) InlayHint(ctx context.Context, params *protocol.InlayHintParams
 	return c.ComputeInlayHints(params.TextDocument, params.Range)
 }
 
-// ExecuteCommand implements protocol.Server.
-func (s *Server) ExecuteCommand(ctx context.Context, params *protocol.ExecuteCommandParams) (interface{}, error) {
-	switch params.Command {
-	case "protols/synthetic-file-contents":
-		var req SyntheticFileContentsRequest
-		if err := json.Unmarshal(params.Arguments[0], &req); err != nil {
-			return nil, err
-		}
-		c, err := s.CacheForURI(protocol.DocumentURI(req.URI))
-		if err != nil {
-			return nil, err
-		}
-		return c.GetSyntheticFileContents(ctx, protocol.DocumentURI(req.URI))
-	case "protols/ast":
-		var req DocumentASTRequest
-		if err := json.Unmarshal(params.Arguments[0], &req); err != nil {
-			return nil, err
-		}
-		c, err := s.CacheForURI(protocol.DocumentURI(req.URI))
-		if err != nil {
-			return nil, err
-		}
-		if err := c.WaitDocumentVersion(ctx, protocol.DocumentURI(req.URI), req.Version); err != nil {
-			return nil, err
-		}
-		parseRes, err := c.FindParseResultByURI(protocol.DocumentURI(req.URI))
-		if err != nil {
-			return nil, err
-		}
-		return format.DumpAST(parseRes.AST(), parseRes), nil
-	case "protols/reindex-workspaces":
-		s.cachesMu.Lock()
-		allWorkspaces := []protocol.WorkspaceFolder{}
-		for _, c := range s.caches {
-			allWorkspaces = append(allWorkspaces, c.workspace)
-		}
-		slog.Info("reindexing workspaces")
-		clear(s.caches)
-		runtime.GC()
-		for _, folder := range allWorkspaces {
-			path := protocol.DocumentURI(folder.URI).Path()
-			c := NewCache(folder)
-			c.LoadFiles(sources.SearchDirs(path))
-			s.caches[path] = c
-		}
-		s.cachesMu.Unlock()
-		return nil, nil
-	default:
-		return nil, fmt.Errorf("%w: unknown command %q", jsonrpc2.ErrMethodNotFound, params.Command)
-	}
-}
-
 // References implements protocol.Server.
 func (s *Server) References(ctx context.Context, params *protocol.ReferenceParams) ([]protocol.Location, error) {
 	c, err := s.CacheForURI(params.TextDocument.URI)
@@ -725,13 +762,12 @@ func (s *Server) DidChangeWorkspaceFolders(ctx context.Context, params *protocol
 		path := protocol.DocumentURI(folder.URI).Path()
 		slog.Info("adding workspace folder", "path", path)
 		c := NewCache(folder)
-		c.LoadFiles(sources.SearchDirs(path))
-		s.caches[path] = c
+		s.cacheInit(c, path)
 	}
 	for _, folder := range removed {
 		path := protocol.DocumentURI(folder.URI).Path()
 		slog.Info("removing workspace folder", "path", path)
-		delete(s.caches, path)
+		s.cacheDestroy(path, fmt.Errorf("workspace folder removed: %s", path))
 	}
 	s.cachesMu.Unlock()
 	return nil
@@ -743,42 +779,7 @@ func (s *Server) CodeAction(ctx context.Context, params *protocol.CodeActionPara
 	if err != nil {
 		return nil, err
 	}
-	diagnostics := params.Context.Diagnostics
-	var result []protocol.CodeAction
-	for _, d := range diagnostics {
-		if d.Data == nil {
-			continue
-		}
-		dataJson, err := d.Data.MarshalJSON()
-		if err != nil {
-			return nil, err
-		}
-		data := DiagnosticData{}
-		if err := json.Unmarshal(dataJson, &data); err != nil {
-			return nil, err
-		}
-		result = append(result, c.toProtocolCodeActions(data.CodeActions, &d)...)
-
-		if data.Metadata != nil {
-			if kind, ok := data.Metadata[diagnosticKind]; ok {
-				switch kind {
-				case diagnosticKindUndeclaredName:
-					name := data.Metadata["name"]
-					if name != "" {
-						result = append(result, RefactorUndeclaredName(ctx, c, params.TextDocument.URI, name, d.Range)...)
-					}
-				}
-			}
-		}
-	}
-	if linkRes, err := c.FindResultByURI(params.TextDocument.URI); err == nil {
-		mapper, err := c.GetMapper(params.TextDocument.URI)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, FindRefactorActions(ctx, linkRes, mapper, params.Range)...)
-	}
-	return result, nil
+	return c.GetCodeActions(ctx, params)
 }
 
 // PrepareRename implements protocol.Server.
@@ -799,13 +800,13 @@ func (s *Server) Rename(ctx context.Context, params *protocol.RenameParams) (*pr
 	return c.Rename(params)
 }
 
-// Implementation implements protocol.Server.
-func (s *Server) Implementation(ctx context.Context, params *protocol.ImplementationParams) ([]protocol.Location, error) {
+// CodeLens implements protocol.Server.
+func (s *Server) CodeLens(ctx context.Context, params *protocol.CodeLensParams) (result []protocol.CodeLens, err error) {
 	c, err := s.CacheForURI(params.TextDocument.URI)
 	if err != nil {
 		return nil, err
 	}
-	return c.FindImplementations(params.TextDocumentPositionParams)
+	return c.ComputeCodeLens(params.TextDocument.URI)
 }
 
 // =====================
@@ -874,11 +875,6 @@ func (s *Server) WillSaveWaitUntil(ctx context.Context, params *protocol.WillSav
 // WorkDoneProgressCancel implements protocol.Server.
 func (*Server) WorkDoneProgressCancel(context.Context, *protocol.WorkDoneProgressCancelParams) error {
 	return notImplemented("WorkDoneProgressCancel")
-}
-
-// CodeLens implements protocol.Server.
-func (s *Server) CodeLens(ctx context.Context, params *protocol.CodeLensParams) (result []protocol.CodeLens, err error) {
-	return nil, notImplemented("CodeLens")
 }
 
 // CodeLensRefresh implements protocol.Server.
@@ -994,6 +990,11 @@ func (*Server) LinkedEditingRange(context.Context, *protocol.LinkedEditingRangeP
 // Moniker implements protocol.Server.
 func (*Server) Moniker(context.Context, *protocol.MonikerParams) ([]protocol.Moniker, error) {
 	return nil, notImplemented("Moniker")
+}
+
+// Implementation implements protocol.Server.
+func (s *Server) Implementation(ctx context.Context, params *protocol.ImplementationParams) ([]protocol.Location, error) {
+	return nil, notImplemented("Implementation")
 }
 
 // IncomingCalls implements protocol.Server.

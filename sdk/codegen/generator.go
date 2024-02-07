@@ -13,7 +13,6 @@ import (
 	"github.com/kralicky/protols/sdk/codegen/generators/golang/grpc"
 	"github.com/kralicky/protols/sdk/driver"
 	"google.golang.org/protobuf/compiler/protogen"
-	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/pluginpb"
 )
 
@@ -41,7 +40,7 @@ func (g *GeneratedFile) Read(p []byte) (int, error) {
 }
 
 func (g *GeneratedFile) WriteToDisk() error {
-	return os.WriteFile(g.SourceRelPath, []byte(g.Content), 0644)
+	return os.WriteFile(g.SourceRelPath, []byte(g.Content), 0o644)
 }
 
 type GenerateStrategy int
@@ -78,6 +77,7 @@ func GenerateCode(generators []Generator, searchDirs []string, opts ...GenerateC
 	options := &GenerateCodeOptions{
 		strategy: WorkspaceLocalDescriptorsOnly,
 	}
+	options.apply(opts...)
 
 	wd, err := os.Getwd()
 	if err != nil {
@@ -105,15 +105,6 @@ func GenerateCode(generators []Generator, searchDirs []string, opts ...GenerateC
 		uri := results.FileURIsByPath[desc.Path()]
 		if uri.IsFile() {
 			sourcePkgDirs[filepath.Dir(desc.Path())] = filepath.Dir(uri.Path())
-		}
-		// fix up any incomplete go_package options if we have the info available
-		// this will transform e.g. `go_package = "bar"` to `go_package = "github.com/foo/bar"`
-		goPackage := desc.Options().(*descriptorpb.FileOptions).GetGoPackage()
-		if !strings.Contains(goPackage, ".") && !strings.Contains(goPackage, "/") {
-			p := path.Dir(desc.Path())
-			if strings.HasSuffix(p, goPackage) {
-				*desc.Options().(*descriptorpb.FileOptions).GoPackage = p
-			}
 		}
 	}
 

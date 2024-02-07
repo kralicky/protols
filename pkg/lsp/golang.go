@@ -63,6 +63,10 @@ func NewGoLanguageDriver(workdir string) *GoLanguageDriver {
 	}
 }
 
+func (s *GoLanguageDriver) RefreshModules() {
+	s.moduleResolver.ClearForNewScan()
+}
+
 type ParsedGoFile struct {
 	*goast.File
 	Fset     *token.FileSet
@@ -90,6 +94,13 @@ func (s *GoLanguageDriver) FindGeneratedFiles(uri protocol.DocumentURI, fd proto
 	if strings.Contains(pkgPath, ";") {
 		// path/to/package;alias
 		pkgPath, pkgNameAlias, _ = strings.Cut(pkgPath, ";")
+	} else if !strings.Contains(pkgPath, "/") && !strings.Contains(pkgPath, ".") {
+		// alias only
+		implicitPath, err := s.ImplicitGoPackagePath(uri.Path())
+		if err != nil {
+			return nil, err
+		}
+		pkgPath, pkgNameAlias = implicitPath, pkgPath
 	}
 	mod, dir := s.moduleResolver.FindPackage(pkgPath)
 	if mod == nil {

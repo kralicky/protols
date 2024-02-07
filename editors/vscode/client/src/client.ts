@@ -32,7 +32,7 @@ export class ProtolsLanguageClient
     return this.sendRequest(
       "workspace/executeCommand",
       {
-        command: "protols/synthetic-file-contents",
+        command: "protols/syntheticFileContents",
         arguments: [{ uri: uri.toString() }],
       },
       token,

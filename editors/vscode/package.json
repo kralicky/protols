@@ -49,13 +49,29 @@
 				"title": "Protols: Stop Language Server"
 			},
 			{
-				"command": "protols.reindex-workspaces",
+				"command": "protols.reindexWorkspaces",
 				"title": "Protols: Reindex Workspaces"
 			},
 			{
 				"command": "protols.ast",
 				"title": "Protols: Show Document AST",
 				"icon": "$(open-preview)"
+			},
+			{
+				"command": "protols.generate",
+				"title": "Protols: Generate File"
+			},
+			{
+				"command": "protols.generateWorkspace",
+				"title": "Protols: Generate Workspace"
+			},
+			{
+				"command": "protols.goToGeneratedDefinition",
+				"title": "Go to Generated Definition"
+			},
+			{
+				"command": "protols.refreshModules",
+				"title": "Protols: Refresh Modules"
 			}
 		],
 		"menus": {
@@ -63,6 +79,13 @@
 				{
 					"when": "resourceLangId == protobuf",
 					"command": "protols.ast",
+					"group": "navigation@100"
+				}
+			],
+			"editor/context": [
+				{
+					"command": "protols.goToGeneratedDefinition",
+					"when": "resourceLangId == protobuf",
 					"group": "navigation@100"
 				}
 			]
@@ -91,7 +114,11 @@
 		},
 		"configurationDefaults": {
 			"[protobuf]": {
-				"editor.semanticHighlighting.enabled": true
+				"editor.semanticHighlighting.enabled": true,
+				"editor.codeActionsOnSave": {
+					"source.organizeImports": "explicit"
+				},
+				"editor.formatOnSave": true
 			}
 		}
 	},

@@ -8,6 +8,7 @@ import (
 
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protols/pkg/lsp"
+	sdkutil "github.com/kralicky/protols/sdk/util"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -202,7 +203,8 @@ func (d *Driver) Compile(protos []string) (*Results, error) {
 		}
 		switch d.renameStrategy {
 		case RestoreExternalGoModuleDescriptorNames:
-			restoreDescriptorNames(&results, pathMappings)
+			sdkutil.RestoreDescriptorNames(results.AllDescriptorProtos, pathMappings)
+			sdkutil.RestoreDescriptorNames(results.WorkspaceLocalDescriptorProtos, pathMappings)
 		}
 	}
 	return &results, nil
@@ -213,11 +215,14 @@ func (d *Driver) Compile(protos []string) (*Results, error) {
 //  2. A subset of the first list, containing only files that exist on disk
 //     and are local to the workspace.
 func (d *Driver) sortAndFilterResults(results []linker.Result, pathMapping map[string]protocol.DocumentURI) ([]protoreflect.FileDescriptor, []protoreflect.FileDescriptor) {
-	sorted := make([]protoreflect.FileDescriptor, 0, len(results))
+	sorted := sdkutil.TopologicalSort(results)
+	sortedFds := make([]protoreflect.FileDescriptor, len(sorted))
+	for i, res := range sorted {
+		sortedFds[i] = res
+	}
 	localToWorkspace := []protoreflect.FileDescriptor{}
-	topologicalSort(results, &sorted, make(map[string]struct{}))
-	for _, res := range sorted {
-		uri := pathMapping[res.Path()]
+	for _, fd := range sortedFds {
+		uri := pathMapping[fd.Path()]
 		if !uri.IsFile() {
 			continue
 		}
@@ -226,68 +231,8 @@ func (d *Driver) sortAndFilterResults(results []linker.Result, pathMapping map[s
 			continue
 		}
 		if _, err := os.Stat(path); err == nil && filepath.IsLocal(path) {
-			localToWorkspace = append(localToWorkspace, res)
+			localToWorkspace = append(localToWorkspace, fd)
 		}
 	}
-	return sorted, localToWorkspace
-}
-
-func topologicalSort[F linker.File, S ~[]F](results S, sorted *[]protoreflect.FileDescriptor, seen map[string]struct{}) {
-	for _, res := range results {
-		if _, ok := seen[res.Path()]; ok {
-			continue
-		}
-		seen[res.Path()] = struct{}{}
-		deps := []linker.File{}
-		imports := res.Imports()
-		for i := 0; i < imports.Len(); i++ {
-			im := imports.Get(i)
-
-			deps = append(deps, res.FindImportByPath(im.Path()))
-		}
-		topologicalSort(deps, sorted, seen)
-		*sorted = append(*sorted, res)
-	}
-}
-
-func restoreDescriptorNames(results *Results, pathMapping lsp.PathMappings) {
-	for _, fpb := range results.AllDescriptorProtos {
-		uri, ok := pathMapping.FileURIsByPath[fpb.GetName()]
-		if !ok {
-			continue
-		}
-		if orig, hasOriginalName := pathMapping.SyntheticFileOriginalNamesByURI[uri]; hasOriginalName {
-			if orig == fpb.GetName() {
-				continue
-			}
-			*fpb.Name = orig
-		}
-		for i, dep := range fpb.Dependency {
-			uri, ok := pathMapping.FileURIsByPath[dep]
-			if !ok {
-				continue
-			}
-			if orig, hasOriginalName := pathMapping.SyntheticFileOriginalNamesByURI[uri]; hasOriginalName {
-				if orig == dep {
-					continue
-				}
-				fpb.Dependency[i] = orig
-			}
-		}
-	}
-
-	for _, fpb := range results.WorkspaceLocalDescriptorProtos {
-		for i, dep := range fpb.Dependency {
-			uri, ok := pathMapping.FileURIsByPath[dep]
-			if !ok {
-				continue
-			}
-			if orig, hasOriginalName := pathMapping.SyntheticFileOriginalNamesByURI[uri]; hasOriginalName {
-				if orig == dep {
-					continue
-				}
-				fpb.Dependency[i] = orig
-			}
-		}
-	}
+	return sortedFds, localToWorkspace
 }

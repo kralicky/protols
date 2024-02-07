@@ -18,7 +18,9 @@ import (
 )
 
 type ProtoDiagnostic struct {
-	Pos                ast.SourceSpan
+	Path               string
+	Version            int32
+	Range              protocol.Range
 	Severity           protocol.DiagnosticSeverity
 	Error              error
 	Tags               []protocol.DiagnosticTag
@@ -101,7 +103,7 @@ func (dl *DiagnosticList) resetResultId() {
 
 type (
 	DiagnosticEvent int
-	ListenerFunc    = func(event DiagnosticEvent, path string, diagnostics ...*ProtoDiagnostic)
+	ListenerFunc    = func(event DiagnosticEvent, path string, version int32, diagnostics ...*ProtoDiagnostic)
 )
 
 const (
@@ -132,8 +134,7 @@ func severityForError(original protocol.DiagnosticSeverity, errWithPos reporter.
 
 	switch err.(type) {
 	case linker.ErrorUnusedImport:
-		// doesn't show up as a "problem" in vscode, but still shows hover text and dims the line
-		return protocol.SeverityHint
+		return protocol.SeverityWarning
 	default:
 		return original
 	}
@@ -147,7 +148,7 @@ func codeActionsForError(errWithPos reporter.ErrorWithPos) []CodeAction {
 		return []CodeAction{
 			{
 				Title:       "Remove unused import",
-				Kind:        protocol.QuickFix,
+				Kind:        protocol.SourceOrganizeImports,
 				Path:        pos.Start().Filename,
 				IsPreferred: true,
 				Edits: []protocol.TextEdit{
@@ -290,15 +291,21 @@ func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
 
 	slog.Debug(fmt.Sprintf("[diagnostic] error: %s\n", err.Error()))
 
-	pos := err.GetPosition()
-	filename := pos.Start().Filename
+	span := err.GetPosition()
+	var version int32
+	if info, ok := span.(ast.NodeInfo); ok {
+		version = info.Internal().ParentFile().Version()
+	}
+	filename := span.Start().Filename
 
 	dr.diagnosticsMu.Lock()
 	dl, _ := dr.getOrCreateDiagnosticListLocked(filename)
 	dr.diagnosticsMu.Unlock()
 
 	newDiagnostic := &ProtoDiagnostic{
-		Pos:                pos,
+		Path:               filename,
+		Version:            version,
+		Range:              toRange(span),
 		Severity:           protocol.SeverityError,
 		Error:              err.Unwrap(),
 		Tags:               tagsForError(err),
@@ -311,7 +318,7 @@ func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
 
 	dr.listenerMu.RLock()
 	if dr.listener != nil {
-		dr.listener(DiagnosticEventAdd, filename, newDiagnostic)
+		dr.listener(DiagnosticEventAdd, filename, version, newDiagnostic)
 	}
 	dr.listenerMu.RUnlock()
 
@@ -325,15 +332,21 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 
 	slog.Debug(fmt.Sprintf("[diagnostic] warning: %s\n", err.Error()))
 
-	pos := err.GetPosition()
-	filename := pos.Start().Filename
+	span := err.GetPosition()
+	var version int32
+	if info, ok := span.(ast.NodeInfo); ok {
+		version = info.Internal().ParentFile().Version()
+	}
+	filename := span.Start().Filename
 
 	dr.diagnosticsMu.Lock()
 	dl, _ := dr.getOrCreateDiagnosticListLocked(filename)
 	dr.diagnosticsMu.Unlock()
 
 	newDiagnostic := &ProtoDiagnostic{
-		Pos:                pos,
+		Path:               filename,
+		Version:            version,
+		Range:              toRange(span),
 		Severity:           severityForError(protocol.SeverityWarning, err),
 		Error:              err.Unwrap(),
 		Tags:               tagsForError(err),
@@ -346,23 +359,7 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 
 	dr.listenerMu.RLock()
 	if dr.listener != nil {
-		dr.listener(DiagnosticEventAdd, filename, newDiagnostic)
-	}
-	dr.listenerMu.RUnlock()
-}
-
-func (dr *DiagnosticHandler) PostDiagnostic(d ProtoDiagnostic) {
-	filename := d.Pos.Start().Filename
-
-	dr.diagnosticsMu.Lock()
-	dl, _ := dr.getOrCreateDiagnosticListLocked(filename)
-	dr.diagnosticsMu.Unlock()
-
-	dl.Add(&d)
-
-	dr.listenerMu.RLock()
-	if dr.listener != nil {
-		dr.listener(DiagnosticEventAdd, filename, &d)
+		dr.listener(DiagnosticEventAdd, filename, version, newDiagnostic)
 	}
 	dr.listenerMu.RUnlock()
 }
@@ -388,7 +385,9 @@ func (dr *DiagnosticHandler) FullDiagnosticSnapshot() map[string][]*ProtoDiagnos
 		list := make([]*ProtoDiagnostic, 0, len(dl.Diagnostics))
 		for _, d := range dl.Diagnostics {
 			list = append(list, &ProtoDiagnostic{
-				Pos:                d.Pos,
+				Path:               d.Path,
+				Version:            d.Version,
+				Range:              d.Range,
 				Severity:           d.Severity,
 				Error:              d.Error,
 				Tags:               d.Tags,
@@ -413,9 +412,13 @@ func (dr *DiagnosticHandler) ClearDiagnosticsForPath(path string) {
 
 	slog.Debug(fmt.Sprintf("[diagnostic] clearing %d diagnostics for %s\n", len(prev), path))
 
+	var version int32
+	if len(prev) > 0 {
+		version = prev[len(prev)-1].Version
+	}
 	dr.listenerMu.RLock()
 	if dr.listener != nil {
-		dr.listener(DiagnosticEventClear, path, prev...)
+		dr.listener(DiagnosticEventClear, path, version, prev...)
 	}
 	dr.listenerMu.RUnlock()
 }
@@ -429,7 +432,11 @@ func (dr *DiagnosticHandler) Stream(ctx context.Context, callback ListenerFunc) 
 
 	dr.listenerMu.RLock()
 	for path, dl := range dr.diagnostics {
-		callback(DiagnosticEventAdd, path, dl.Diagnostics...)
+		var version int32 = 1
+		if len(dl.Diagnostics) > 0 {
+			version = max(version, dl.Diagnostics[len(dl.Diagnostics)-1].Version)
+		}
+		callback(DiagnosticEventAdd, path, version, dl.Diagnostics...)
 	}
 	dr.listenerMu.RUnlock()
 

@@ -41,7 +41,7 @@ func FindRefactorActions(ctx context.Context, linkRes linker.Result, mapper *pro
 	return results
 }
 
-func RefactorUndeclaredName(ctx context.Context, cache *Cache, uri protocol.DocumentURI, name string, rng protocol.Range) []protocol.CodeAction {
+func RefactorUndeclaredName(ctx context.Context, cache *Cache, uri protocol.DocumentURI, name string, kind protocol.CodeActionKind) []protocol.CodeAction {
 	linkRes, err := cache.FindResultOrPartialResultByURI(uri)
 	if err != nil {
 		return nil
@@ -84,7 +84,7 @@ func RefactorUndeclaredName(ctx context.Context, cache *Cache, uri protocol.Docu
 	for _, match := range matches {
 		item := protocol.CodeAction{
 			Title:       fmt.Sprintf("Import %q from %q", match.FullName(), match.ParentFile().Path()),
-			Kind:        protocol.QuickFix,
+			Kind:        kind,
 			IsPreferred: true,
 			Edit: &protocol.WorkspaceEdit{
 				Changes: map[protocol.DocumentURI][]protocol.TextEdit{

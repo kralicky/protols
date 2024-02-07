@@ -535,7 +535,7 @@ func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.
 		if rawReport.Severity == protocol.SeverityWarning && rawReport.WerrorCategory != "" {
 			// look up Werror debug pragma for this file
 			shouldElevate := true
-			if p, ok := c.FindPragmasByPath(protocompile.ResolvedPath(rawReport.Pos.Start().Filename)); ok {
+			if p, ok := c.FindPragmasByPath(protocompile.ResolvedPath(rawReport.Path)); ok {
 				if dbg, ok := p.Lookup(PragmaDebug); ok {
 					for _, v := range strings.Fields(dbg) {
 						if k, v, ok := strings.Cut(v, "="); ok {
@@ -552,7 +552,7 @@ func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.
 			}
 		}
 		report := protocol.Diagnostic{
-			Range:              toRange(rawReport.Pos),
+			Range:              rawReport.Range,
 			Severity:           rawReport.Severity,
 			Message:            rawReport.Error.Error(),
 			Tags:               rawReport.Tags,
@@ -577,50 +577,15 @@ func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.
 	return reports
 }
 
-func (c *Cache) toProtocolCodeActions(rawCodeActions []CodeAction, associatedDiagnostic *protocol.Diagnostic) []protocol.CodeAction {
-	if len(rawCodeActions) == 0 {
-		return []protocol.CodeAction{}
-	}
-	var codeActions []protocol.CodeAction
-	for _, rawCodeAction := range rawCodeActions {
-		uri, err := c.resolver.PathToURI(string(rawCodeAction.Path))
-		if err != nil {
-			slog.With(
-				"error", err,
-				"path", string(rawCodeAction.Path),
-			).Error("failed to resolve path to uri")
-			continue
-		}
-		codeActions = append(codeActions, protocol.CodeAction{
-			Title:       rawCodeAction.Title,
-			Kind:        rawCodeAction.Kind,
-			Diagnostics: []protocol.Diagnostic{*associatedDiagnostic},
-			IsPreferred: rawCodeAction.IsPreferred,
-			Edit: &protocol.WorkspaceEdit{
-				Changes: map[protocol.DocumentURI][]protocol.TextEdit{
-					uri: rawCodeAction.Edits,
-				},
-			},
-			Command: rawCodeAction.Command,
-		})
-	}
-	return codeActions
-}
-
 type workspaceDiagnosticCallbackFunc = func(uri protocol.DocumentURI, reports []protocol.Diagnostic, kind protocol.DocumentDiagnosticReportKind, resultId string)
 
 func (c *Cache) StreamWorkspaceDiagnostics(ctx context.Context, ch chan<- protocol.WorkspaceDiagnosticReportPartialResult) {
 	currentDiagnostics := make(map[protocol.DocumentURI][]protocol.Diagnostic)
-	diagnosticVersions := make(map[protocol.DocumentURI]int32)
-	c.diagHandler.Stream(ctx, func(event DiagnosticEvent, path string, diagnostics ...*ProtoDiagnostic) {
+	c.diagHandler.Stream(ctx, func(event DiagnosticEvent, path string, version int32, diagnostics ...*ProtoDiagnostic) {
 		uri, err := c.resolver.PathToURI(path)
 		if err != nil {
 			return
 		}
-
-		version := diagnosticVersions[uri]
-		version++
-		diagnosticVersions[uri] = version
 
 		switch event {
 		case DiagnosticEventAdd:

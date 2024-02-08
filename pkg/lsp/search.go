@@ -290,15 +290,17 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 				case *ast.FieldReferenceNode:
 					want.desc = haveDesc
 				case *ast.FieldNode:
-					switch wantNode {
-					case containingField.Name:
+					if wantNode == containingField.Name {
 						want.desc = haveDesc.Descriptor()
-					case containingField.FldType:
-						switch haveDesc.Kind() {
-						case protoreflect.MessageKind:
-							want.desc = haveDesc.Message()
-						case protoreflect.EnumKind:
-							want.desc = haveDesc.Enum()
+					} else {
+						composite, ok := containingField.FldType.(ast.CompositeNode)
+						if (ok && slices.Contains(composite.Children(), want.node)) || wantNode == containingField.FldType {
+							switch haveDesc.Kind() {
+							case protoreflect.MessageKind:
+								want.desc = haveDesc.Message()
+							case protoreflect.EnumKind:
+								want.desc = haveDesc.Enum()
+							}
 						}
 					}
 				}

@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,12 +11,142 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kralicky/protocompile"
 	"github.com/kralicky/protocompile/ast"
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protocompile/parser"
 	"github.com/kralicky/protocompile/reporter"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 )
+
+func (c *Cache) ComputeDiagnosticReports(uri protocol.DocumentURI, prevResultId string) ([]protocol.Diagnostic, protocol.DocumentDiagnosticReportKind, string, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	var maybePrevResultId []string
+	if prevResultId != "" {
+		maybePrevResultId = append(maybePrevResultId, prevResultId)
+	}
+	path, err := c.resolver.URIToPath(uri)
+	if err != nil {
+		slog.With(
+			"error", err,
+			"uri", string(uri),
+		).Error("failed to resolve uri to path")
+		return nil, protocol.DiagnosticUnchanged, "", nil
+	}
+	rawReports, resultId, unchanged := c.diagHandler.GetDiagnosticsForPath(path, maybePrevResultId...)
+	if unchanged {
+		return nil, protocol.DiagnosticUnchanged, resultId, nil
+	}
+	protocolReports := c.toProtocolDiagnostics(rawReports)
+	if protocolReports == nil {
+		protocolReports = []protocol.Diagnostic{}
+	}
+
+	return protocolReports, protocol.DiagnosticFull, resultId, nil
+}
+
+func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.Diagnostic {
+	var reports []protocol.Diagnostic
+	for _, rawReport := range rawReports {
+		for i, info := range rawReport.RelatedInformation {
+			u, err := c.resolver.PathToURI(string(info.Location.URI))
+			if err == nil {
+				rawReport.RelatedInformation[i].Location.URI = u
+			}
+		}
+		if rawReport.Severity == protocol.SeverityWarning && rawReport.WerrorCategory != "" {
+			// look up Werror debug pragma for this file
+			shouldElevate := true
+			if p, ok := c.FindPragmasByPath(protocompile.ResolvedPath(rawReport.Path)); ok {
+				if dbg, ok := p.Lookup(PragmaDebug); ok {
+					for _, v := range strings.Fields(dbg) {
+						if k, v, ok := strings.Cut(v, "="); ok {
+							if k == PragmaDebugWnoerror && (v == rawReport.WerrorCategory || v == WnoerrorAll) {
+								shouldElevate = false
+								break
+							}
+						}
+					}
+				}
+			}
+			if shouldElevate {
+				rawReport.Severity = protocol.SeverityError
+			}
+		}
+		report := protocol.Diagnostic{
+			Range:              rawReport.Range,
+			Severity:           rawReport.Severity,
+			Message:            rawReport.Error.Error(),
+			Tags:               rawReport.Tags,
+			RelatedInformation: rawReport.RelatedInformation,
+			Source:             "protols",
+		}
+		if rawReport.WerrorCategory != "" {
+			report.Code = rawReport.WerrorCategory
+		}
+		data := DiagnosticData{
+			Metadata:    rawReport.Metadata,
+			CodeActions: rawReport.CodeActions,
+		}
+		jsonData, err := json.Marshal(data)
+		if err != nil {
+			panic(err)
+		}
+		rawMsg := json.RawMessage(jsonData)
+		report.Data = &rawMsg
+		reports = append(reports, report)
+	}
+	return reports
+}
+
+type workspaceDiagnosticCallbackFunc = func(uri protocol.DocumentURI, reports []protocol.Diagnostic, kind protocol.DocumentDiagnosticReportKind, resultId string)
+
+func (c *Cache) StreamWorkspaceDiagnostics(ctx context.Context, ch chan<- protocol.WorkspaceDiagnosticReportPartialResult) {
+	currentDiagnostics := make(map[protocol.DocumentURI][]protocol.Diagnostic)
+	c.diagHandler.Stream(ctx, func(event DiagnosticEvent, path string, version int32, diagnostics ...*ProtoDiagnostic) {
+		uri, err := c.resolver.PathToURI(path)
+		if err != nil {
+			return
+		}
+
+		switch event {
+		case DiagnosticEventAdd:
+			protocolDiagnostics := c.toProtocolDiagnostics(diagnostics)
+			currentDiagnostics[uri] = append(currentDiagnostics[uri], protocolDiagnostics...)
+			ch <- protocol.WorkspaceDiagnosticReportPartialResult{
+				Items: []protocol.Or_WorkspaceDocumentDiagnosticReport{
+					{
+						Value: protocol.WorkspaceFullDocumentDiagnosticReport{
+							Version: version,
+							URI:     uri,
+							FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
+								Kind:  string(protocol.DiagnosticFull),
+								Items: currentDiagnostics[uri],
+							},
+						},
+					},
+				},
+			}
+		case DiagnosticEventClear:
+			delete(currentDiagnostics, uri)
+			ch <- protocol.WorkspaceDiagnosticReportPartialResult{
+				Items: []protocol.Or_WorkspaceDocumentDiagnosticReport{
+					{
+						Value: protocol.WorkspaceFullDocumentDiagnosticReport{
+							Version: version,
+							URI:     uri,
+							FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
+								Kind:  string(protocol.DiagnosticFull),
+								Items: []protocol.Diagnostic{},
+							},
+						},
+					},
+				},
+			}
+		}
+	})
+}
 
 type ProtoDiagnostic struct {
 	Path               string

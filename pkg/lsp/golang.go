@@ -33,6 +33,8 @@ type GoLanguageDriver struct {
 	localModDir, localModName string
 }
 
+var requiredGoEnvVars = []string{"GO111MODULE", "GOFLAGS", "GOINSECURE", "GOMOD", "GOMODCACHE", "GONOPROXY", "GONOSUMDB", "GOPATH", "GOPROXY", "GOROOT", "GOSUMDB", "GOWORK"}
+
 func NewGoLanguageDriver(workdir string) *GoLanguageDriver {
 	env := map[string]string{}
 	for _, key := range requiredGoEnvVars {

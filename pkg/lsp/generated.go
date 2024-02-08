@@ -11,7 +11,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-func (c *Cache) GeneratedDefinition(ctx context.Context, params protocol.TextDocumentPositionParams) ([]protocol.Location, error) {
+func (c *Cache) FindGeneratedDefinition(ctx context.Context, params protocol.TextDocumentPositionParams) ([]protocol.Location, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
 	linkRes, err := c.FindResultByURI(params.TextDocument.URI)

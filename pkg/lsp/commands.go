@@ -182,7 +182,7 @@ func (s *Server) ExecuteCommand(ctx context.Context, params *protocol.ExecuteCom
 		if err != nil {
 			return nil, err
 		}
-		return c.GeneratedDefinition(ctx, req.TextDocumentPositionParams)
+		return c.FindGeneratedDefinition(ctx, req.TextDocumentPositionParams)
 	default:
 		var jsonData map[string]interface{}
 		if err := json.Unmarshal(params.Arguments[0], &jsonData); err != nil {

@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"maps"
+	"slices"
 
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
@@ -76,4 +77,18 @@ func (c *Cache) XListWorkspaceLocalURIs() []protocol.DocumentURI {
 		}
 	}
 	return uris
+}
+
+func (c *Cache) XGetAllMessages() []protoreflect.MessageDescriptor {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	var all []protoreflect.MessageDescriptor
+	for _, res := range c.results {
+		msgs := res.Messages()
+		all = slices.Grow(all, msgs.Len())
+		for i, l := 0, msgs.Len(); i < l; i++ {
+			all = append(all, msgs.Get(i))
+		}
+	}
+	return all
 }

@@ -111,6 +111,38 @@ func (s *semanticItems) AST() *ast.FileNode {
 	return s.parseRes.AST()
 }
 
+func (c *Cache) ComputeSemanticTokens(doc protocol.TextDocumentIdentifier) ([]uint32, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI, false); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, fmt.Errorf("document contents not well formed")
+	}
+
+	result, err := semanticTokensFull(c, doc)
+	if err != nil {
+		return nil, err
+	}
+	return result.Data, nil
+}
+
+func (c *Cache) ComputeSemanticTokensRange(doc protocol.TextDocumentIdentifier, rng protocol.Range) ([]uint32, error) {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	if ok, err := c.latestDocumentContentsWellFormedLocked(doc.URI, false); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, fmt.Errorf("document contents not well formed")
+	}
+
+	result, err := semanticTokensRange(c, doc, rng)
+	if err != nil {
+		return nil, err
+	}
+	return result.Data, nil
+}
+
 func semanticTokensFull(cache *Cache, doc protocol.TextDocumentIdentifier) (*protocol.SemanticTokens, error) {
 	parseRes, err := cache.FindParseResultByURI(doc.URI)
 	if err != nil {

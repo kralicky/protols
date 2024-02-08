@@ -97,7 +97,7 @@ func decodeWithType(ctx context.Context, in io.Reader, msgType string) (proto.Me
 		URI: string(protocol.URIFromPath(cwd)),
 	})
 	cache.LoadFiles(sources.SearchDirs(cwd))
-	allMsgs := cache.AllMessages()
+	allMsgs := cache.XGetAllMessages()
 	var exact protoreflect.MessageDescriptor
 	var exactNameOnly []protoreflect.MessageDescriptor
 	var partialMatch []protoreflect.MessageDescriptor

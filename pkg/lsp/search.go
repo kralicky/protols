@@ -684,7 +684,8 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 			}
 			if node.Sep != nil && node.Name != nil && tokenAtOffset == node.Sep.Token() {
 				// this won't be visited by the walker, but we want the path to
-				// end with the field reference node
+				// end with the field reference node if the cursor is between the
+				// field name and the separator
 				paths = append(paths, append(slices.Clone(tracker.Path()), node.Name))
 			}
 			return nil

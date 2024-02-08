@@ -165,7 +165,6 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				}
 				completions = append(completions, fieldCompletion(fld, insertPos, messageLiteralStyle))
 			}
-
 		case protoreflect.ExtensionTypeDescriptor:
 			if _, ok := path[len(path)-2].(*ast.ExtendNode); ok {
 				// this is a field of an extend node, not a message literal
@@ -183,6 +182,21 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 					}
 					completions = append(completions, fieldCompletion(fld, insertPos, compactOptionsStyle))
 				}
+			}
+		}
+	case *ast.MessageFieldNode:
+		// this can be the closest node if the field is incomplete and the cursor
+		// is positioned at a virtual semicolon
+		fd := maybeCurrentLinkRes.FindFieldDescriptorByMessageFieldNode(node)
+		if fd != nil {
+			if node.IsIncomplete() && tokenAtOffset == node.End() {
+				completions = append(completions,
+					c.completeFieldLiteralValues(fd, node.Val, searchTarget.AST(), mapper, posOffset, params.Position)...)
+			}
+			if !node.IsIncomplete() && tokenAtOffset >= node.Val.Start() && tokenAtOffset <= node.Val.End() {
+				// complete within the field value
+				completions = append(completions,
+					c.completeFieldLiteralValues(fd, node.Val, searchTarget.AST(), mapper, posOffset, params.Position)...)
 			}
 		}
 	case *ast.RPCTypeNode:
@@ -223,8 +237,17 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		completions = append(completions,
 			c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
 	case *ast.OptionNode:
-		completions = append(completions,
-			c.completeOptionOrExtensionName(scope.Options().ProtoReflect().Descriptor(), path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
+		switch {
+		case !node.Name.IsIncomplete() && node.Equals != nil && tokenAtOffset > node.Equals.Token():
+			// complete option values
+			ref := node.Name.Parts[len(node.Name.Parts)-1]
+			fd := maybeCurrentLinkRes.FindFieldDescriptorByFieldReferenceNode(ref)
+			completions = append(completions,
+				c.completeFieldLiteralValues(fd, node.Val, searchTarget.AST(), mapper, posOffset, params.Position)...)
+		default:
+			completions = append(completions,
+				c.completeOptionOrExtensionName(scope.Options().ProtoReflect().Descriptor(), path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
+		}
 	case *ast.FieldReferenceNode:
 		nodeIdx := -1
 		scope := scope
@@ -586,6 +609,60 @@ func (c *Cache) completePackageNames(
 		}
 	}
 	return items
+}
+
+func (c *Cache) completeFieldLiteralValues(
+	fd protoreflect.FieldDescriptor,
+	valueNode ast.ValueNode,
+	fileNode *ast.FileNode,
+	mapper *protocol.Mapper,
+	posOffset int,
+	pos protocol.Position,
+) []protocol.CompletionItem {
+	var partialName, partialNameSuffix string
+	if valueNode != nil {
+		var err error
+		partialName, partialNameSuffix, err = findPartialNames(fileNode, valueNode, mapper, posOffset)
+		if err != nil {
+			return nil
+		}
+	}
+
+	switch fd.Kind() {
+	case protoreflect.MessageKind:
+		msg := fd.Message()
+		if !msg.IsMapEntry() {
+			if valueNode == (ast.NoSourceNode{}) {
+				return []protocol.CompletionItem{
+					{
+						Label: "{...}",
+						LabelDetails: &protocol.CompletionItemLabelDetails{
+							Detail:      string(" " + msg.Name()),
+							Description: string(msg.FullName()),
+						},
+						Kind: protocol.StructCompletion,
+						TextEdit: &protocol.Or_CompletionItem_textEdit{
+							Value: protocol.TextEdit{
+								Range: protocol.Range{
+									Start: pos,
+									End:   pos,
+								},
+								NewText: "{\n  ${0}\n};",
+							},
+						},
+						InsertTextFormat: &snippetMode,
+						InsertTextMode:   &adjustIndentationMode,
+					},
+				}
+			}
+		}
+	case protoreflect.EnumKind:
+		enum := fd.Enum()
+		return completeEnumValues(enum, partialName, partialNameSuffix, pos)
+	case protoreflect.BoolKind:
+		return completeKeywords([]string{"true", "false"}, partialName, partialNameSuffix, pos)
+	}
+	return nil
 }
 
 var allowedProto3Extendees []protoreflect.Descriptor
@@ -1025,6 +1102,32 @@ func completeSyntaxVersions(partialVersion, partialVersionSuffix string, pos pro
 	return items
 }
 
+func completeEnumValues(enum protoreflect.EnumDescriptor, partialName, partialNameSuffix string, pos protocol.Position) []protocol.CompletionItem {
+	items := []protocol.CompletionItem{}
+	for i, l := 0, enum.Values().Len(); i < l; i++ {
+		val := enum.Values().Get(i)
+		if !strings.HasPrefix(string(val.Name()), partialName) {
+			continue
+		}
+		replaceRange := protocol.Range{
+			Start: adjustColumn(pos, -len(partialName)),
+			End:   adjustColumn(pos, len(partialNameSuffix)),
+		}
+		items = append(items, protocol.CompletionItem{
+			Label: string(val.Name()),
+			Kind:  protocol.EnumCompletion,
+			TextEdit: &protocol.Or_CompletionItem_textEdit{
+				Value: protocol.InsertReplaceEdit{
+					NewText: string(val.Name()),
+					Insert:  replaceRange,
+					Replace: replaceRange,
+				},
+			},
+		})
+	}
+	return items
+}
+
 func newMapFieldCompletionItem(fld protoreflect.FieldDescriptor, partialName, partialNameSuffix string, pos protocol.Position) protocol.CompletionItem {
 	return protocol.CompletionItem{
 		Label:            string(fld.Name()),
@@ -1349,6 +1452,9 @@ var errOutOfRange = errors.New("out of range")
 
 func findPartialNames(fileNode *ast.FileNode, node ast.Node, mapper *protocol.Mapper, posOffset int) (string, string, error) {
 	pos := fileNode.NodeInfo(node)
+	if !pos.IsValid() {
+		return "", "", nil
+	}
 	startOffset, endOffset, err := mapper.RangeOffsets(toRange(pos))
 	if err != nil {
 		return "", "", err

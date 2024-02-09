@@ -42,7 +42,6 @@ func BuildServeCmd() *cobra.Command {
 				return err
 			}
 			stream := jsonrpc2.NewHeaderStream(cc)
-			stream = protocol.LoggingStream(stream, os.Stdout)
 			conn := jsonrpc2.NewConn(stream)
 			client := protocol.ClientDispatcher(conn)
 

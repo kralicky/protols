@@ -94,7 +94,7 @@
 			"type": "object",
 			"title": "Protobuf Language Server",
 			"properties": {
-				"protols.trace.server": {
+				"protobuf.trace.server": {
 					"scope": "window",
 					"type": "string",
 					"enum": [

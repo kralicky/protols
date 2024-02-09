@@ -84,41 +84,45 @@ export async function activate(context: vscode.ExtensionContext) {
         if (!client.isRunning()) {
           return
         }
-        await client
-          .sendRequest("workspace/executeCommand", {
-            command: "protols/goToGeneratedDefinition",
-            arguments: [
-              client.code2ProtocolConverter.asTextDocumentPositionParams(
-                editor.document,
-                editor.selection.anchor,
-              ),
-            ],
-          })
-          .then((result: Location[]) => {
-            const locations = result.map(
-              client.protocol2CodeConverter.asLocation,
-            )
-            if (locations.length) {
-              if (locations.length === 1) {
-                vscode.commands.executeCommand(
-                  "vscode.open",
-                  locations[0].uri.with({
-                    fragment: `L${locations[0].range.start.line + 1},${
-                      locations[0].range.start.character + 1
-                    }`,
-                  }),
-                )
-              } else {
-                vscode.commands.executeCommand(
-                  "editor.action.showReferences",
-                  editor.document.uri,
+        try {
+          await client
+            .sendRequest("workspace/executeCommand", {
+              command: "protols/goToGeneratedDefinition",
+              arguments: [
+                client.code2ProtocolConverter.asTextDocumentPositionParams(
+                  editor.document,
                   editor.selection.anchor,
-                  locations,
-                )
+                ),
+              ],
+            })
+            .then((result: Location[]) => {
+              const locations = result.map(
+                client.protocol2CodeConverter.asLocation,
+              )
+              if (locations.length) {
+                if (locations.length === 1) {
+                  vscode.commands.executeCommand(
+                    "vscode.open",
+                    locations[0].uri.with({
+                      fragment: `L${locations[0].range.start.line + 1},${
+                        locations[0].range.start.character + 1
+                      }`,
+                    }),
+                  )
+                } else {
+                  vscode.commands.executeCommand(
+                    "editor.action.showReferences",
+                    editor.document.uri,
+                    editor.selection.anchor,
+                    locations,
+                  )
+                }
+                return
               }
-              return
-            }
-          })
+            })
+        } catch (e) {
+          vscode.window.showErrorMessage(e.message)
+        }
       },
     ),
     vscode.commands.registerTextEditorCommand(

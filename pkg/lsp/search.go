@@ -220,6 +220,11 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 					// looking for one segment of a compound ident in the extendee in "extend <extendee> {"
 					if wantNode.Token() >= prevNode.Extendee.Start() && wantNode.Token() <= prevNode.Extendee.End() {
 						want.desc = linkRes.FindExtendeeDescriptorByName(protoreflect.FullName(strings.TrimPrefix(string(prevNode.Extendee.AsIdentifier()), ".")))
+						if want.desc == nil && len(prevNode.Decls) == 0 {
+							// this extend node is not technically valid yet, and is not
+							// linked to a descriptor.
+							return nil, protocol.Range{}, fmt.Errorf("extend declaration is invalid")
+						}
 					}
 				}
 			case *ast.StringLiteralNode:

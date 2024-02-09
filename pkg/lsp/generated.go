@@ -14,18 +14,19 @@ import (
 func (c *Cache) FindGeneratedDefinition(ctx context.Context, params protocol.TextDocumentPositionParams) ([]protocol.Location, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
-	linkRes, err := c.FindResultByURI(params.TextDocument.URI)
-	if err != nil {
-		return nil, err
-	}
 	desc, _, err := c.FindTypeDescriptorAtLocation(params)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("no generated definition found: %w", err)
 	}
 
-	genFiles, err := c.resolver.FindGeneratedFiles(params.TextDocument.URI, linkRes)
+	parentUri, err := c.resolver.PathToURI(desc.ParentFile().Path())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("no generated definition found: %w", err)
+	}
+
+	genFiles, err := c.resolver.FindGeneratedFiles(parentUri, desc.ParentFile())
+	if err != nil {
+		return nil, fmt.Errorf("no generated definition found: %w", err)
 	}
 
 	var locations []protocol.Location
@@ -69,9 +70,18 @@ func (c *Cache) FindGeneratedDefinition(ctx context.Context, params protocol.Tex
 		}
 	case protoreflect.EnumValueDescriptor:
 		if parentEnum, ok := desc.Parent().(protoreflect.EnumDescriptor); ok {
-			parentEnumIdent := GoIdent(parentEnum)
+			// names of enum values are different for top-level enums and enums
+			// nested in messages.
+			// see newEnumValue() in protobuf-go/compiler/protogen/protogen.go
+			var identPrefix string
+			switch container := parentEnum.Parent().(type) {
+			case protoreflect.MessageDescriptor:
+				identPrefix = GoIdent(container)
+			case protoreflect.FileDescriptor:
+				identPrefix = GoIdent(parentEnum)
+			}
 			for _, gen := range genFiles {
-				spec := lookupValueSpec(gen, desc, parentEnumIdent+"_%s")
+				spec := lookupValueSpec(gen, desc, identPrefix+"_%s")
 				if spec != nil {
 					locations = append(locations, nodeLocation(gen, spec.Names[0]))
 				}
@@ -100,6 +110,10 @@ func (c *Cache) FindGeneratedDefinition(ctx context.Context, params protocol.Tex
 				}
 			}
 		}
+	}
+
+	if len(locations) == 0 {
+		return nil, fmt.Errorf("no generated definition found for %s", desc.FullName())
 	}
 	return locations, nil
 }
@@ -131,9 +145,13 @@ var (
 
 func GoIdent(desc protoreflect.Descriptor) string {
 	switch desc := desc.(type) {
+	case protoreflect.EnumValueDescriptor:
+		// enum values are not camel-cased
+		return strs.GoSanitized(string(desc.Name()))
 	case protoreflect.FieldDescriptor, protoreflect.MethodDescriptor:
 		return strs.GoCamelCase(string(desc.Name()))
 	default:
-		return strs.GoCamelCase(strings.TrimPrefix(string(desc.FullName()), string(desc.ParentFile().Package())+"."))
+		name := strs.GoCamelCase(strings.TrimPrefix(string(desc.FullName()), string(desc.ParentFile().Package())+"."))
+		return name
 	}
 }

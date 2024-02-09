@@ -955,7 +955,7 @@ GROUPS:
 							if elem.Val != nil {
 								fclone.writeNode(elem.Val)
 							}
-							fclone.writeLineEnd(compactOptionsNode.Commas[elemIdx])
+							fclone.writeLineEnd(compactOptionsNode.Options[elemIdx].Semicolon)
 						}
 					} else {
 						if elem.Val != nil {
@@ -1779,8 +1779,8 @@ func (f *formatter) writeCompactOptions(compactOptionsNode *ast.CompactOptionsNo
 				f.Space()
 				f.writeInline(optionNode.Val)
 
-				if i < len(compactOptionsNode.Options)-1 && i < len(compactOptionsNode.Commas) {
-					f.writeInline(compactOptionsNode.Commas[i])
+				if optionNode.Semicolon != nil && i < len(compactOptionsNode.Options)-1 {
+					f.writeInline(optionNode.Semicolon)
 					f.Space()
 				}
 			}

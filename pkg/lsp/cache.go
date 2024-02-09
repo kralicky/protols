@@ -74,6 +74,7 @@ func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
 			RetainResults:                true,
 			RetainASTs:                   true,
 			IncludeDependenciesInResults: true,
+			InterpretOptionsLenient:      true,
 		},
 		workdir: protocol.DocumentURI(workspace.URI).Path(),
 	}
@@ -273,7 +274,11 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 	}
 	root := enc.AST()
 
-	token := root.ItemAtOffset(offset)
+	token, comment := root.ItemAtOffset(offset)
+	if token == ast.TokenError && comment.IsValid() {
+		return nil, protocol.Range{}, nil
+	}
+
 	computeSemanticTokens(c, &enc, ast.WithIntersection(token))
 
 	item, found := findNarrowestSemanticToken(parseRes, enc.items, params.Position)

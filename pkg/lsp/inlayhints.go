@@ -35,8 +35,8 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 	}
 	a := res.AST()
 	startOff, endOff, _ := mapper.RangeOffsets(rng)
-	startToken := a.ItemAtOffset(startOff)
-	endToken := a.ItemAtOffset(endOff)
+	startToken := a.TokenAtOffset(startOff)
+	endToken := a.TokenAtOffset(endOff)
 	res.RangeFieldReferenceNodesWithDescriptors(func(node ast.Node, desc protoreflect.FieldDescriptor) bool {
 		switch node := node.(type) {
 		case *ast.FieldReferenceNode:

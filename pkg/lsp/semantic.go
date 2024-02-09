@@ -179,8 +179,8 @@ func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng 
 	}
 	a := enc.AST()
 	startOff, endOff, _ := mapper.RangeOffsets(rng)
-	startToken := a.ItemAtOffset(startOff)
-	endToken := a.ItemAtOffset(endOff)
+	startToken := a.TokenAtOffset(startOff)
+	endToken := a.TokenAtOffset(endOff)
 	computeSemanticTokens(cache, &enc, ast.WithRange(startToken, endToken))
 	ret := &protocol.SemanticTokens{
 		Data: enc.Data(),

@@ -92,7 +92,11 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	} else {
 		searchTarget = currentParseRes
 	}
-	tokenAtOffset := searchTarget.AST().TokenAtOffset(posOffset)
+	tokenAtOffset, comment := searchTarget.AST().ItemAtOffset(posOffset)
+	if tokenAtOffset == ast.TokenError && comment.IsValid() {
+		// don't complete within comments
+		return nil, nil
+	}
 
 	path, found := findNarrowestEnclosingScope(searchTarget, tokenAtOffset, params.Position)
 	if !found {
@@ -242,8 +246,10 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			// complete option values
 			ref := node.Name.Parts[len(node.Name.Parts)-1]
 			fd := maybeCurrentLinkRes.FindFieldDescriptorByFieldReferenceNode(ref)
-			completions = append(completions,
-				c.completeFieldLiteralValues(fd, node.Val, searchTarget.AST(), mapper, posOffset, params.Position)...)
+			if fd != nil {
+				completions = append(completions,
+					c.completeFieldLiteralValues(fd, node.Val, searchTarget.AST(), mapper, posOffset, params.Position)...)
+			}
 		default:
 			completions = append(completions,
 				c.completeOptionOrExtensionName(scope.Options().ProtoReflect().Descriptor(), path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
@@ -647,7 +653,7 @@ func (c *Cache) completeFieldLiteralValues(
 									Start: pos,
 									End:   pos,
 								},
-								NewText: "{\n  ${0}\n};",
+								NewText: "{\n  ${0}\n}",
 							},
 						},
 						InsertTextFormat: &snippetMode,

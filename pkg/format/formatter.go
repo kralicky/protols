@@ -267,12 +267,14 @@ func (f *formatter) writeFileHeader() {
 			continue
 		}
 	}
-	if f.fileNode.Syntax == nil && packageNode == nil && importNodes == nil && optionNodes == nil {
+	if f.fileNode.Syntax == nil && f.fileNode.Edition == nil && packageNode == nil && importNodes == nil && optionNodes == nil {
 		// There aren't any header values, so we can return early.
 		return
 	}
 	if syntaxNode := f.fileNode.Syntax; syntaxNode != nil {
 		f.writeSyntax(syntaxNode)
+	} else if editionNode := f.fileNode.Edition; editionNode != nil {
+		f.writeEdition(editionNode)
 	}
 	if packageNode != nil {
 		f.writePackage(packageNode)
@@ -367,6 +369,20 @@ func (f *formatter) writeSyntax(syntaxNode *ast.SyntaxNode) {
 	f.Space()
 	f.writeInline(syntaxNode.Syntax)
 	f.writeLineEnd(syntaxNode.Semicolon)
+}
+
+// writeEdition writes the edition.
+//
+// For example,
+//
+//	edition = "2023";
+func (f *formatter) writeEdition(editionNode *ast.EditionNode) {
+	f.writeStart(editionNode.Keyword)
+	f.Space()
+	f.writeInline(editionNode.Equals)
+	f.Space()
+	f.writeInline(editionNode.Edition)
+	f.writeLineEnd(editionNode.Semicolon)
 }
 
 // writePackage writes the package.
@@ -2317,6 +2333,8 @@ func (f *formatter) writeNode(node ast.Node) {
 		f.writeStringLiteral(element)
 	case *ast.SyntaxNode:
 		f.writeSyntax(element)
+	case *ast.EditionNode:
+		f.writeEdition(element)
 	case *ast.UintLiteralNode:
 		f.writeUintLiteral(element)
 	case *ast.EmptyDeclNode:

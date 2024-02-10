@@ -1,17 +1,26 @@
 package lsp
 
 import (
+	"context"
 	"fmt"
+	"runtime"
 
 	"github.com/kralicky/protocompile/ast"
+	"github.com/kralicky/protocompile/parser"
+	"github.com/kralicky/protocompile/protoutil"
+	"github.com/kralicky/protols/pkg/x/symbols"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]protocol.DocumentSymbol, error) {
+func (c *Cache) DocumentSymbolsForFile(uri protocol.DocumentURI) ([]protocol.DocumentSymbol, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
+	return c.documentSymbolsForFileLocked(uri)
+}
 
-	f, err := c.FindResultByURI(doc.URI)
+func (c *Cache) documentSymbolsForFileLocked(uri protocol.DocumentURI) ([]protocol.DocumentSymbol, error) {
+	f, err := c.FindResultByURI(uri)
 	if err != nil {
 		return nil, err
 	}
@@ -32,6 +41,111 @@ func (c *Cache) DocumentSymbolsForFile(doc protocol.TextDocumentIdentifier) ([]p
 		}
 	}
 	return symbols, nil
+}
+
+func (c *Cache) QueryWorkspaceSymbols(ctx context.Context, query string) []protocol.SymbolInformation {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+
+	descriptors := make(chan protoreflect.Descriptor, runtime.NumCPU()+1)
+
+	store := symbols.NewSymbolStore(func(si symbols.SymbolInformation[protoreflect.Descriptor]) (protocol.SymbolInformation, bool) {
+		parent := si.Data.ParentFile()
+		uri, err := c.resolver.PathToURI(parent.Path())
+		if err != nil {
+			return protocol.SymbolInformation{}, false
+		}
+		res, err := c.FindResultByURI(uri)
+		if err != nil {
+			return protocol.SymbolInformation{}, false
+		}
+		return toSymbolInformation(uri, res, si.Data)
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		matchFunc := symbols.ParseQuery(query, symbols.NewFuzzyMatcher)
+		for desc := range descriptors {
+			_, score := matchFunc([]string{string(desc.FullName())})
+			store.Store(symbols.SymbolInformation[protoreflect.Descriptor]{
+				Score:  float64(score),
+				Symbol: string(desc.FullName()),
+				Data:   desc,
+			})
+		}
+	}()
+	err := c.rangeAllDescriptorsLocked(ctx, func(d protoreflect.Descriptor) bool {
+		switch d := d.(type) {
+		case protoreflect.MessageDescriptor:
+			if d.IsPlaceholder() || d.IsMapEntry() {
+				return true
+			}
+		case protoreflect.EnumDescriptor:
+		case protoreflect.ServiceDescriptor:
+		case protoreflect.MethodDescriptor:
+		case protoreflect.FieldDescriptor:
+		case protoreflect.EnumValueDescriptor:
+		default:
+			return true
+		}
+
+		descriptors <- d
+		return true
+	})
+	close(descriptors)
+	if err != nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return store.Results()
+	case <-ctx.Done():
+		return nil
+	}
+}
+
+func toSymbolInformation(uri protocol.DocumentURI, res parser.Result, desc protoreflect.Descriptor) (protocol.SymbolInformation, bool) {
+	if wrapper, ok := desc.(protoutil.DescriptorProtoWrapper); ok {
+		descpb := wrapper.AsProto()
+		fileNode := res.AST()
+		if node := res.Node(descpb); node != nil {
+			info := fileNode.NodeInfo(node)
+			var containerName string
+			if _, ok := desc.Parent().(protoreflect.FileDescriptor); !ok {
+				containerName = string(desc.Parent().FullName())
+			}
+			return protocol.SymbolInformation{
+				Name: string(desc.FullName()),
+				Kind: symbolKind(desc),
+				Location: protocol.Location{
+					URI:   uri,
+					Range: toRange(info),
+				},
+				ContainerName: containerName,
+			}, true
+		}
+	}
+	return protocol.SymbolInformation{}, false
+}
+
+func symbolKind(desc protoreflect.Descriptor) protocol.SymbolKind {
+	switch desc.(type) {
+	case protoreflect.MessageDescriptor:
+		return protocol.Class
+	case protoreflect.EnumDescriptor:
+		return protocol.Enum
+	case protoreflect.ServiceDescriptor:
+		return protocol.Interface
+	case protoreflect.MethodDescriptor:
+		return protocol.Function
+	case protoreflect.FieldDescriptor:
+		return protocol.Field
+	case protoreflect.EnumValueDescriptor:
+		return protocol.EnumMember
+	default:
+		return protocol.Null
+	}
 }
 
 func messageSymbols(fn *ast.FileNode, node *ast.MessageNode) []protocol.DocumentSymbol {

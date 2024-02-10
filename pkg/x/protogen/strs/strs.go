@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// contains select methods from protobuf/internal/strs.
+// contains select definitions from protobuf/internal/strs.
 package strs
 
 import (

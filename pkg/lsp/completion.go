@@ -965,9 +965,9 @@ func completeTypeNames(cache *Cache, partialName, partialNameSuffix string, link
 		return false
 	}
 	if strings.Contains(partialName, ".") {
-		candidates = cache.FindAllDescriptorsByQualifiedPrefix(context.TODO(), partialName, filter)
+		candidates = cache.FindAllDescriptorsByQualifiedPrefix(context.TODO(), partialName, filter).All()
 	} else {
-		candidates = cache.FindAllDescriptorsByPrefix(context.TODO(), partialName, filter)
+		candidates = cache.FindAllDescriptorsByPrefix(context.TODO(), partialName, filter).All()
 	}
 	return completeTypeNamesFromList(candidates, partialName, partialNameSuffix, linkRes, scope, pos)
 }
@@ -983,9 +983,9 @@ func completeExtendeeTypeNames(cache *Cache, partialName, partialNameSuffix stri
 			return false
 		}
 		if strings.Contains(partialName, ".") {
-			candidates = append(candidates, cache.FindAllDescriptorsByQualifiedPrefix(context.TODO(), partialName, filter)...)
+			candidates = append(candidates, cache.FindAllDescriptorsByQualifiedPrefix(context.TODO(), partialName, filter).All()...)
 		} else {
-			candidates = append(candidates, cache.FindAllDescriptorsByPrefix(context.TODO(), partialName, filter)...)
+			candidates = append(candidates, cache.FindAllDescriptorsByPrefix(context.TODO(), partialName, filter).All()...)
 		}
 	}
 	return completeTypeNamesFromList(candidates, partialName, partialNameSuffix, linkRes, scope, pos)

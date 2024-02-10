@@ -306,44 +306,90 @@ func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) (p
 	}, nil
 }
 
-func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, filter ...func(protoreflect.Descriptor) bool) []protoreflect.Descriptor {
+type WorkspaceDescriptors interface {
+	Len() int
+	All() []protoreflect.Descriptor
+	Range(func(path string, descriptors []protoreflect.Descriptor))
+}
+
+type workspaceDescriptors struct {
+	results   [][]protoreflect.Descriptor
+	pathIndex []string
+	len       int
+}
+
+func (wd workspaceDescriptors) All() []protoreflect.Descriptor {
+	all := make([]protoreflect.Descriptor, 0, wd.len)
+	for _, item := range wd.results {
+		all = append(all, item...)
+	}
+	return all
+}
+
+func (wd workspaceDescriptors) Range(fn func(path string, descriptors []protoreflect.Descriptor)) {
+	for i, path := range wd.pathIndex {
+		fn(path, wd.results[i])
+	}
+}
+
+func (wd workspaceDescriptors) Len() int {
+	return wd.len
+}
+
+func (c *Cache) FindAllDescriptorsByPrefix(ctx context.Context, prefix string, filter ...func(protoreflect.Descriptor) bool) WorkspaceDescriptors {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
+	return c.findAllDescriptorsByPrefixLocked(ctx, prefix, filter...)
+}
+
+func (c *Cache) findAllDescriptorsByPrefixLocked(ctx context.Context, prefix string, filter ...func(protoreflect.Descriptor) bool) WorkspaceDescriptors {
 	eg, ctx := errgroup.WithContext(ctx)
-	resultsByPackage := make([][]protoreflect.Descriptor, len(c.results))
+	eg.SetLimit(runtime.NumCPU())
+	descriptorsByFile := make([][]protoreflect.Descriptor, len(c.results))
+	pathIndex := make([]string, len(c.results))
 	for i, res := range c.results {
-		i, res := i, res
+		pathIndex[i] = res.Path()
 		pkg := res.Package()
 		if pkg == "" {
 			// skip searching in files that do not have a package name
 			continue
 		}
 		eg.Go(func() (err error) {
-			resultsByPackage[i], err = res.(linker.Result).FindDescriptorsByPrefix(ctx, string(pkg.Append(protoreflect.Name(prefix))), filter...)
+			descriptorsByFile[i], err = res.(linker.Result).FindDescriptorsByPrefix(ctx, string(pkg.Append(protoreflect.Name(prefix))), filter...)
 			return
 		})
 	}
 	eg.Wait()
-	combined := make([]protoreflect.Descriptor, 0, len(c.results))
-	for _, results := range resultsByPackage {
-		combined = append(combined, results...)
+	totalLen := 0
+	for _, item := range descriptorsByFile {
+		totalLen += len(item)
 	}
-	return combined
+	return workspaceDescriptors{
+		results:   descriptorsByFile,
+		pathIndex: pathIndex,
+		len:       totalLen,
+	}
 }
 
 // Like FindAllDescriptorsByPrefix, but assumes a fully qualified prefix with
 // package name.
-func (c *Cache) FindAllDescriptorsByQualifiedPrefix(ctx context.Context, prefix string, filter ...func(protoreflect.Descriptor) bool) []protoreflect.Descriptor {
+func (c *Cache) FindAllDescriptorsByQualifiedPrefix(ctx context.Context, prefix string, filter ...func(protoreflect.Descriptor) bool) WorkspaceDescriptors {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
+	return c.findAllDescriptorsByQualifiedPrefixLocked(ctx, prefix, filter...)
+}
+
+func (c *Cache) findAllDescriptorsByQualifiedPrefixLocked(ctx context.Context, prefix string, filter ...func(protoreflect.Descriptor) bool) WorkspaceDescriptors {
 	eg, ctx := errgroup.WithContext(ctx)
+	eg.SetLimit(runtime.NumCPU())
 	resultsByPackage := make([][]protoreflect.Descriptor, len(c.results))
+	pathIndex := make([]string, len(c.results))
 	isFullyQualified := strings.HasPrefix(prefix, ".")
 	if isFullyQualified {
 		prefix = prefix[1:]
 	}
 	for i, res := range c.results {
-		i, res := i, res
+		pathIndex[i] = res.Path()
 		pkg := res.Package()
 		if pkg == "" {
 			// skip searching in files that do not have a package name
@@ -359,11 +405,34 @@ func (c *Cache) FindAllDescriptorsByQualifiedPrefix(ctx context.Context, prefix 
 		})
 	}
 	eg.Wait()
-	combined := make([]protoreflect.Descriptor, 0, len(c.results))
-	for _, results := range resultsByPackage {
-		combined = append(combined, results...)
+	totalLen := 0
+	for _, item := range resultsByPackage {
+		totalLen += len(item)
 	}
-	return combined
+	return workspaceDescriptors{
+		results:   resultsByPackage,
+		pathIndex: pathIndex,
+		len:       totalLen,
+	}
+}
+
+// RangeAllDescriptors calls fn for each descriptor in the cache, possibly in
+// a separate goroutine for each file.
+func (c *Cache) RangeAllDescriptors(ctx context.Context, fn func(protoreflect.Descriptor) bool) error {
+	c.resultsMu.RLock()
+	defer c.resultsMu.RUnlock()
+	return c.rangeAllDescriptorsLocked(ctx, fn)
+}
+
+func (c *Cache) rangeAllDescriptorsLocked(ctx context.Context, fn func(protoreflect.Descriptor) bool) error {
+	eg, ctx := errgroup.WithContext(ctx)
+	eg.SetLimit(runtime.NumCPU())
+	for _, res := range c.results {
+		eg.Go(func() (err error) {
+			return res.(linker.Result).RangeDescriptors(ctx, fn)
+		})
+	}
+	return eg.Wait()
 }
 
 func (c *Cache) FindImportPathsByPrefix(ctx context.Context, prefix string) map[protocol.DocumentURI]string {

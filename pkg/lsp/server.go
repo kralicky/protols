@@ -203,9 +203,9 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 			},
 			// DeclarationProvider: &protocol.Or_ServerCapabilities_declarationProvider{Value: true},
 			// TypeDefinitionProvider: true,
-			ReferencesProvider: &protocol.Or_ServerCapabilities_referencesProvider{Value: true},
-			// WorkspaceSymbolProvider: &protocol.Or_ServerCapabilities_workspaceSymbolProvider{Value: true},
-			DefinitionProvider: &protocol.Or_ServerCapabilities_definitionProvider{Value: true},
+			ReferencesProvider:      &protocol.Or_ServerCapabilities_referencesProvider{Value: true},
+			WorkspaceSymbolProvider: &protocol.Or_ServerCapabilities_workspaceSymbolProvider{Value: true},
+			DefinitionProvider:      &protocol.Or_ServerCapabilities_definitionProvider{Value: true},
 
 			SemanticTokensProvider: &protocol.SemanticTokensOptions{
 				Legend: protocol.SemanticTokensLegend{
@@ -562,7 +562,7 @@ func (s *Server) DocumentSymbol(ctx context.Context, params *protocol.DocumentSy
 	if err != nil {
 		return nil, err
 	}
-	symbols, err := c.DocumentSymbolsForFile(params.TextDocument)
+	symbols, err := c.DocumentSymbolsForFile(params.TextDocument.URI)
 	if err != nil {
 		return nil, err
 	}
@@ -809,6 +809,15 @@ func (s *Server) CodeLens(ctx context.Context, params *protocol.CodeLensParams) 
 	return c.ComputeCodeLens(params.TextDocument.URI)
 }
 
+// Symbol implements protocol.Server.
+func (s *Server) Symbol(ctx context.Context, params *protocol.WorkspaceSymbolParams) ([]protocol.SymbolInformation, error) {
+	var symbolInfos []protocol.SymbolInformation
+	for _, c := range s.caches {
+		symbolInfos = append(symbolInfos, c.QueryWorkspaceSymbols(ctx, params.Query)...)
+	}
+	return symbolInfos, nil
+}
+
 // =====================
 // Unimplemented Methods
 // =====================
@@ -835,11 +844,6 @@ func (*Server) Subtypes(context.Context, *protocol.TypeHierarchySubtypesParams) 
 // Supertypes implements protocol.Server.
 func (*Server) Supertypes(context.Context, *protocol.TypeHierarchySupertypesParams) ([]protocol.TypeHierarchyItem, error) {
 	return nil, notImplemented("Supertypes")
-}
-
-// Symbol implements protocol.Server.
-func (*Server) Symbol(context.Context, *protocol.WorkspaceSymbolParams) ([]protocol.SymbolInformation, error) {
-	return nil, notImplemented("Symbol")
 }
 
 // TypeDefinition implements protocol.Server.

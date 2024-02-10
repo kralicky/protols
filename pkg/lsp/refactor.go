@@ -59,9 +59,9 @@ func RefactorUndeclaredName(ctx context.Context, cache *Cache, uri protocol.Docu
 	}
 	var candidates []protoreflect.Descriptor
 	if strings.Contains(name, ".") {
-		candidates = cache.FindAllDescriptorsByQualifiedPrefix(ctx, name, filter)
+		candidates = cache.FindAllDescriptorsByQualifiedPrefix(ctx, name, filter).All()
 	} else {
-		candidates = cache.FindAllDescriptorsByQualifiedPrefix(ctx, string(linkRes.Package().Append(protoreflect.Name(name))), filter)
+		candidates = cache.FindAllDescriptorsByQualifiedPrefix(ctx, string(linkRes.Package().Append(protoreflect.Name(name))), filter).All()
 	}
 
 	var matches []protoreflect.Descriptor

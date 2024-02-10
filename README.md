@@ -38,8 +38,8 @@ Features in progress:
     - [x] Resolved import paths
   - [x] Rename symbols
   - [x] Multi-workspace support
-  - [x] Workspace symbol index/search
-    - [x] Editor Breadcrumbs
+  - [x] Document symbols
+  - [x] Workspace symbol query with fuzzy matching
   - [ ] Completion:
     - [x] Message and enum types
     - [x] Extendee types
@@ -48,7 +48,6 @@ Features in progress:
     - [x] Package names
     - [x] Message and field literals
     - [ ] Field literal values
-  - [ ] Type hierarchy
 - [x] Import resolution
   - [x] Local/relative paths
   - [x] Go module path lookup with inline sources

@@ -691,6 +691,7 @@ func columnFormatElements[T ast.Node, C elementsContainer[T]](f *formatter, ctr 
 				if isMessageOrArrayLiteral {
 					startNewGroup()
 					currentGroup = append(currentGroup, e)
+					startNewGroup() // group this field by itself
 					continue
 				}
 			}

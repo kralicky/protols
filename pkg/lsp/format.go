@@ -2,12 +2,10 @@ package lsp
 
 import (
 	"bytes"
-	"fmt"
 
 	"github.com/kralicky/protols/pkg/format"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 	"github.com/kralicky/tools-lite/pkg/diff"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options protocol.FormattingOptions, maybeRange ...protocol.Range) ([]protocol.TextEdit, error) {
@@ -43,17 +41,4 @@ func (c *Cache) FormatDocument(doc protocol.TextDocumentIdentifier, options prot
 
 	edits := diff.Bytes(mapper.Content, buf.Bytes())
 	return protocol.EditsFromDiffEdits(mapper, edits)
-}
-
-func makeTooltip(d protoreflect.Descriptor) *protocol.OrPTooltipPLabel {
-	str, err := format.PrintDescriptor(d)
-	if err != nil {
-		return nil
-	}
-	return &protocol.OrPTooltipPLabel{
-		Value: protocol.MarkupContent{
-			Kind:  protocol.Markdown,
-			Value: fmt.Sprintf("```protobuf\n%s\n```", str),
-		},
-	}
 }

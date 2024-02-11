@@ -39,6 +39,20 @@
 				]
 			}
 		],
+		"grammars": [
+			{
+				"language": "protobuf",
+				"scopeName": "source.protobuf",
+				"path": "./syntaxes/protobuf.tmLanguage.json"
+			},
+			{
+				"scopeName": "markdown.codeblock.protobuf",
+				"path": "./syntaxes/codeblock.json",
+				"injectTo": [
+					"text.html.markdown"
+				]
+			}
+		],
 		"commands": [
 			{
 				"command": "protols.restart",

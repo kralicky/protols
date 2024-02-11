@@ -1,0 +1,68 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "fileTypes": [
+    "protobuf"
+  ],
+  "scopeName": "source.protobuf",
+  "name": "Protocol Buffers",
+  "patterns": [
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    }
+  ],
+  "repository": {
+    "keywords": {
+      "patterns": [
+        {
+          "match": "\\b(?:syntax|edition|import|weak|public|package|option|true|false|inf|infinity|nan|repeated|optional|required|group|oneof|map|extensions|to|max|reserved|enum|message|extend|service|rpc|stream|returns)\\b",
+          "name": "keyword.other.protobuf"
+        }
+      ]
+    },
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.protobuf",
+          "begin": "//",
+          "end": "$\\n?"
+        },
+        {
+          "name": "comment.block.protobuf",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.protobuf",
+          "begin": "\"",
+          "end": "\""
+        },
+        {
+          "name": "string.quoted.single.protobuf",
+          "begin": "'",
+          "end": "'"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.protobuf",
+          "match": "\\b(?:0x[0-9a-fA-F]+|\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)\\b"
+        }
+      ]
+    }
+  }
+}

@@ -1,21 +1,73 @@
 package lsp
 
-import "github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+import (
+	"fmt"
+
+	"github.com/kralicky/protocompile/ast"
+	"github.com/kralicky/protols/pkg/format"
+	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"google.golang.org/protobuf/reflect/protoreflect"
+)
 
 func (c *Cache) ComputeHover(params protocol.TextDocumentPositionParams) (*protocol.Hover, error) {
 	desc, rng, err := c.FindTypeDescriptorAtLocation(params)
 	if err != nil {
 		return nil, err
-	}
-	if desc == nil {
+	} else if desc == nil {
 		return nil, nil
 	}
-	tooltip := makeTooltip(desc)
-	if tooltip == nil {
+	location, err := c.FindDefinitionForTypeDescriptor(desc)
+	if err != nil {
+		return nil, err
+	}
+
+	parseRes, err := c.FindParseResultByURI(location.URI)
+	if err != nil {
+		return nil, err
+	}
+
+	mapper, err := c.GetMapper(location.URI)
+	if err != nil {
+		return nil, err
+	}
+
+	offset, err := mapper.PositionOffset(location.Range.Start)
+	if err != nil {
+		return nil, err
+	}
+
+	tokenAtOffset, comment := parseRes.AST().ItemAtOffset(offset)
+	if tokenAtOffset == ast.TokenError && comment.IsValid() {
 		return nil, nil
+	}
+
+	path, found := findNarrowestEnclosingScope(parseRes, tokenAtOffset, location.Range.Start)
+	if !found {
+		return nil, nil
+	}
+	node := path[len(path)-1]
+	text, err := format.PrintNode(parseRes.AST(), node)
+	if err != nil {
+		return nil, err
 	}
 	return &protocol.Hover{
-		Contents: tooltip.Value.(protocol.MarkupContent),
-		Range:    rng,
+		Contents: protocol.MarkupContent{
+			Kind:  protocol.Markdown,
+			Value: fmt.Sprintf("```protobuf\n%s\n```\n", text),
+		},
+		Range: rng,
 	}, nil
+}
+
+func makeTooltip(d protoreflect.Descriptor) *protocol.OrPTooltipPLabel {
+	str, err := format.PrintDescriptor(d)
+	if err != nil {
+		return nil
+	}
+	return &protocol.OrPTooltipPLabel{
+		Value: protocol.MarkupContent{
+			Kind:  protocol.Markdown,
+			Value: fmt.Sprintf("```protobuf\n%s\n```\n", str),
+		},
+	}
 }

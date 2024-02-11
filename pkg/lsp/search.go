@@ -655,6 +655,38 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 			}
 			return nil
 		},
+		DoVisitEnumNode: func(node *ast.EnumNode) error {
+			if intersectsLocationExclusive(node, node.CloseBrace) {
+				paths = append(paths, slices.Clone(tracker.Path()))
+			}
+			return nil
+		},
+		DoVisitEnumValueNode: func(node *ast.EnumValueNode) error {
+			if intersectsLocationExclusive(node, node.Semicolon) {
+				paths = append(paths, slices.Clone(tracker.Path()))
+			}
+			return nil
+		},
+		DoVisitServiceNode: func(node *ast.ServiceNode) error {
+			if intersectsLocationExclusive(node, node.CloseBrace) {
+				paths = append(paths, slices.Clone(tracker.Path()))
+			}
+			return nil
+		},
+		DoVisitRPCNode: func(node *ast.RPCNode) error {
+			var end ast.Node
+			if node.Semicolon != nil {
+				end = node.Semicolon
+			} else if node.CloseBrace != nil {
+				end = node.CloseBrace
+			} else {
+				return nil
+			}
+			if node.Semicolon != nil && intersectsLocationExclusive(node, end) {
+				paths = append(paths, slices.Clone(tracker.Path()))
+			}
+			return nil
+		},
 		DoVisitExtendNode: func(node *ast.ExtendNode) error {
 			if node.IsIncomplete() {
 				if intersectsLocation(node) {

@@ -149,14 +149,14 @@ func (s *Server) ExecuteCommand(ctx context.Context, params *protocol.ExecuteCom
 		}
 		slog.Info("reindexing workspaces")
 		for path := range s.caches {
-			s.cacheDestroy(path, errors.New("reindexing workspaces"))
+			s.cacheDestroyLocked(path, errors.New("reindexing workspaces"))
 		}
 		clear(s.caches)
 		runtime.GC()
 		for _, folder := range allWorkspaces {
 			path := protocol.DocumentURI(folder.URI).Path()
 			c := NewCache(folder)
-			s.cacheInit(c, path)
+			s.cacheInitLocked(c, path)
 			if changes, ok := openOverlays[folder]; ok {
 				c.DidModifyFiles(ctx, changes)
 			}

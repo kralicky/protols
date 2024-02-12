@@ -100,13 +100,13 @@ type semanticItems struct {
 	// the generated data
 	items []semanticItem
 
-	parseRes parser.Result // cannot be nil
-	linkRes  linker.Result // can be nil if there are no linker results available
+	parseRes     parser.Result // cannot be nil
+	maybeLinkRes linker.Result // can be nil if there are no linker results available
 }
 
 func (s *semanticItems) AST() *ast.FileNode {
-	if s.linkRes != nil {
-		return s.linkRes.AST()
+	if s.maybeLinkRes != nil {
+		return s.maybeLinkRes.AST()
 	}
 	return s.parseRes.AST()
 }
@@ -151,8 +151,8 @@ func semanticTokensFull(cache *Cache, doc protocol.TextDocumentIdentifier) (*pro
 	maybeLinkRes, _ := cache.FindResultOrPartialResultByURI(doc.URI)
 
 	enc := semanticItems{
-		parseRes: parseRes,
-		linkRes:  maybeLinkRes,
+		parseRes:     parseRes,
+		maybeLinkRes: maybeLinkRes,
 	}
 	computeSemanticTokens(cache, &enc)
 	ret := &protocol.SemanticTokens{
@@ -174,8 +174,8 @@ func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng 
 	}
 
 	enc := semanticItems{
-		parseRes: parseRes,
-		linkRes:  maybeLinkRes,
+		parseRes:     parseRes,
+		maybeLinkRes: maybeLinkRes,
 	}
 	a := enc.AST()
 	startOff, endOff, _ := mapper.RangeOffsets(rng)
@@ -640,12 +640,15 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 }
 
 func (s *semanticItems) inspectFieldLiteral(node ast.Node, val ast.IdentValueNode, tracker *ast.AncestorTracker) {
+	if s.maybeLinkRes == nil {
+		return
+	}
 	var fd protoreflect.FieldDescriptor
 	switch node := node.(type) {
 	case *ast.FieldReferenceNode:
-		fd = s.linkRes.FindFieldDescriptorByFieldReferenceNode(node)
+		fd = s.maybeLinkRes.FindFieldDescriptorByFieldReferenceNode(node)
 	case *ast.MessageFieldNode:
-		fd = s.linkRes.FindFieldDescriptorByMessageFieldNode(node)
+		fd = s.maybeLinkRes.FindFieldDescriptorByMessageFieldNode(node)
 	}
 
 	if fd == nil {
@@ -672,12 +675,15 @@ func (s *semanticItems) inspectFieldLiteral(node ast.Node, val ast.IdentValueNod
 }
 
 func (s *semanticItems) inspectArrayLiteral(node ast.Node, val *ast.ArrayLiteralNode, tracker *ast.AncestorTracker) {
+	if s.maybeLinkRes == nil {
+		return
+	}
 	var fd protoreflect.FieldDescriptor
 	switch node := node.(type) {
 	case *ast.FieldReferenceNode:
-		fd = s.linkRes.FindFieldDescriptorByFieldReferenceNode(node)
+		fd = s.maybeLinkRes.FindFieldDescriptorByFieldReferenceNode(node)
 	case *ast.MessageFieldNode:
-		fd = s.linkRes.FindFieldDescriptorByMessageFieldNode(node)
+		fd = s.maybeLinkRes.FindFieldDescriptorByMessageFieldNode(node)
 	}
 	if fd == nil {
 		return

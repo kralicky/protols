@@ -101,8 +101,17 @@ func (c *Cache) Rename(params *protocol.RenameParams) (*protocol.WorkspaceEdit, 
 		return nil, fmt.Errorf("a type already exists with name %q", newFqn)
 	}
 
+	parentFile := desc.ParentFile()
+	if parentFile == nil {
+		return nil, fmt.Errorf("no parent file found for descriptor")
+	}
+	linkRes, err := c.findResultOrPartialResultByPathLocked(parentFile.Path())
+	if err != nil {
+		return nil, fmt.Errorf("failed to find result for %q: %w", parentFile.Path(), err)
+	}
+
 	// find the definition
-	definition, err := findDefinition(desc, c.results)
+	definition, err := findDefinition(desc, linkRes)
 	if err != nil {
 		return nil, err
 	}

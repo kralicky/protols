@@ -103,9 +103,10 @@ func (c *Cache) LoadFiles(files []string) {
 	created := make([]file.Modification, len(files))
 	for i, f := range files {
 		created[i] = file.Modification{
-			Action: file.Create,
-			OnDisk: true,
-			URI:    protocol.URIFromPath(f),
+			Action:  file.Create,
+			OnDisk:  true,
+			URI:     protocol.URIFromPath(f),
+			Version: -1,
 		}
 	}
 
@@ -139,6 +140,9 @@ func (c *Cache) FindExtensionsByMessage(message protoreflect.FullName) []protore
 	defer c.resultsMu.RUnlock()
 	var extensions []protoreflect.ExtensionDescriptor
 	for _, res := range c.results {
+		if res.IsPlaceholder() {
+			continue
+		}
 		extensions = append(extensions, res.(linker.Result).FindExtensionsByMessage(message)...)
 	}
 	return extensions
@@ -265,8 +269,8 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 		options: semanticItemsOptions{
 			skipComments: true,
 		},
-		parseRes: parseRes,
-		linkRes:  linkRes,
+		parseRes:     parseRes,
+		maybeLinkRes: linkRes,
 	}
 	offset, err := mapper.PositionOffset(params.Position)
 	if err != nil {
@@ -292,7 +296,16 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) (protocol.Location, error) {
 	c.resultsMu.RLock()
 	defer c.resultsMu.RUnlock()
-	ref, err := findDefinition(desc, c.results)
+	parentFile := desc.ParentFile()
+	if parentFile == nil {
+		return protocol.Location{}, fmt.Errorf("no parent file found for descriptor")
+	}
+	linkRes, err := c.findResultOrPartialResultByPathLocked(parentFile.Path())
+	if err != nil {
+		return protocol.Location{}, err
+	}
+
+	ref, err := findDefinition(desc, linkRes)
 	if err != nil {
 		return protocol.Location{}, err
 	}
@@ -348,6 +361,9 @@ func (c *Cache) findAllDescriptorsByPrefixLocked(ctx context.Context, prefix str
 	descriptorsByFile := make([][]protoreflect.Descriptor, len(c.results))
 	pathIndex := make([]string, len(c.results))
 	for i, res := range c.results {
+		if res.IsPlaceholder() {
+			continue
+		}
 		pathIndex[i] = res.Path()
 		pkg := res.Package()
 		if pkg == "" {
@@ -389,6 +405,9 @@ func (c *Cache) findAllDescriptorsByQualifiedPrefixLocked(ctx context.Context, p
 		prefix = prefix[1:]
 	}
 	for i, res := range c.results {
+		if res.IsPlaceholder() {
+			continue
+		}
 		pathIndex[i] = res.Path()
 		pkg := res.Package()
 		if pkg == "" {
@@ -428,6 +447,9 @@ func (c *Cache) rangeAllDescriptorsLocked(ctx context.Context, fn func(protorefl
 	eg, ctx := errgroup.WithContext(ctx)
 	eg.SetLimit(runtime.NumCPU())
 	for _, res := range c.results {
+		if res.IsPlaceholder() {
+			continue
+		}
 		eg.Go(func() (err error) {
 			return res.(linker.Result).RangeDescriptors(ctx, fn)
 		})

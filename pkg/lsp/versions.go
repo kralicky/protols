@@ -21,6 +21,12 @@ func newDocumentVersionQueue() *documentVersionQueue {
 	}
 }
 
+func (t *documentVersionQueue) Get(uri protocol.DocumentURI) int32 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.versions[uri]
+}
+
 func (t *documentVersionQueue) Wait(ctx context.Context, uri protocol.DocumentURI, version int32) error {
 	t.mu.Lock()
 	if currentVersion, ok := t.versions[uri]; ok && (currentVersion >= version || currentVersion == -1) {

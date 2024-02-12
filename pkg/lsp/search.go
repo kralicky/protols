@@ -281,6 +281,9 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 				} else if name.IsExtension() {
 					// formatted inside square brackets, e.g. {[path.to.extension.name]: value}
 					fqn := linkRes.ResolveMessageLiteralExtensionName(wantNode.Name.Name)
+					if fqn == "" {
+						return nil, protocol.Range{}, fmt.Errorf("failed to resolve extension name %q", wantNode.Name.Name)
+					}
 					want.desc = linkRes.FindDescriptorByName(protoreflect.FullName(fqn[1:])).(protoreflect.ExtensionDescriptor)
 				} else {
 					want.desc = haveDesc.Fields().ByName(protoreflect.Name(wantNode.Name.Value()))
@@ -775,16 +778,7 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 	return paths[0], true
 }
 
-func findDefinition(desc protoreflect.Descriptor, files linker.Files) (ast.NodeReference, error) {
-	parentFile := desc.ParentFile()
-	if parentFile == nil {
-		return ast.NodeReference{}, fmt.Errorf("no parent file found for descriptor")
-	}
-	linkRes, ok := files.FindFileByPath(parentFile.Path()).(linker.Result)
-	if !ok {
-		return ast.NodeReference{}, fmt.Errorf("failed to find containing file for %q", parentFile.Path())
-	}
-
+func findDefinition(desc protoreflect.Descriptor, linkRes linker.Result) (ast.NodeReference, error) {
 	var node ast.Node
 	switch desc := desc.(type) {
 	case protoreflect.MessageDescriptor:
@@ -836,8 +830,11 @@ func findNodeReferences(desc protoreflect.Descriptor, files linker.Files) <-chan
 	var wg sync.WaitGroup
 	refs := make(chan ast.NodeReference, len(files))
 	seen := sync.Map{}
-	wg.Add(len(files))
 	for _, res := range files {
+		if res.IsPlaceholder() {
+			continue
+		}
+		wg.Add(1)
 		res := res.(linker.Result)
 		go func() {
 			defer wg.Done()

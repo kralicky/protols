@@ -19,40 +19,47 @@ import (
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 )
 
-func (c *Cache) ComputeDiagnosticReports(uri protocol.DocumentURI, prevResultId string) ([]protocol.Diagnostic, protocol.DocumentDiagnosticReportKind, string, error) {
-	c.resultsMu.RLock()
-	defer c.resultsMu.RUnlock()
-	var maybePrevResultId []string
-	if prevResultId != "" {
-		maybePrevResultId = append(maybePrevResultId, prevResultId)
-	}
-	path, err := c.resolver.URIToPath(uri)
-	if err != nil {
-		slog.With(
-			"error", err,
-			"uri", string(uri),
-		).Error("failed to resolve uri to path")
-		return nil, protocol.DiagnosticUnchanged, "", nil
-	}
-	rawReports, resultId, unchanged := c.diagHandler.GetDiagnosticsForPath(path, maybePrevResultId...)
-	if unchanged {
-		return nil, protocol.DiagnosticUnchanged, resultId, nil
-	}
-	protocolReports := c.toProtocolDiagnostics(rawReports)
-	if protocolReports == nil {
-		protocolReports = []protocol.Diagnostic{}
-	}
+// func (c *Cache) ComputeDiagnosticReports(uri protocol.DocumentURI, prevResultId string) ([]protocol.Diagnostic, protocol.DocumentDiagnosticReportKind, string, error) {
+// 	c.resultsMu.RLock()
+// 	defer c.resultsMu.RUnlock()
+// 	var maybePrevResultId []string
+// 	if prevResultId != "" {
+// 		maybePrevResultId = append(maybePrevResultId, prevResultId)
+// 	}
+// 	path, err := c.resolver.URIToPath(uri)
+// 	if err != nil {
+// 		slog.With(
+// 			"error", err,
+// 			"uri", string(uri),
+// 		).Error("failed to resolve uri to path")
+// 		return nil, protocol.DiagnosticUnchanged, "", nil
+// 	}
+// 	rawReports, resultId, unchanged := c.diagHandler.GetDiagnosticsForPath(path, maybePrevResultId...)
+// 	if unchanged {
+// 		return nil, protocol.DiagnosticUnchanged, resultId, nil
+// 	}
+// 	protocolReports := c.toProtocolDiagnostics(rawReports)
+// 	if protocolReports == nil {
+// 		protocolReports = []protocol.Diagnostic{}
+// 	}
 
-	return protocolReports, protocol.DiagnosticFull, resultId, nil
-}
+// 	return protocolReports, protocol.DiagnosticFull, resultId, nil
+// }
 
 func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.Diagnostic {
-	var reports []protocol.Diagnostic
+	reports := make([]protocol.Diagnostic, 0)
 	for _, rawReport := range rawReports {
-		for i, info := range rawReport.RelatedInformation {
-			u, err := c.resolver.PathToURI(string(info.Location.URI))
+		var relatedInformation []protocol.DiagnosticRelatedInformation
+		for _, info := range rawReport.RelatedInformation {
+			u, err := c.resolver.PathToURI(string(info.Range.Start().Filename))
 			if err == nil {
-				rawReport.RelatedInformation[i].Location.URI = u
+				relatedInformation = append(relatedInformation, protocol.DiagnosticRelatedInformation{
+					Location: protocol.Location{
+						URI:   u,
+						Range: toRange(info.Range),
+					},
+					Message: info.Message,
+				})
 			}
 		}
 		if rawReport.Severity == protocol.SeverityWarning && rawReport.WerrorCategory != "" {
@@ -75,11 +82,11 @@ func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.
 			}
 		}
 		report := protocol.Diagnostic{
-			Range:              rawReport.Range,
+			Range:              toRange(rawReport.Range),
 			Severity:           rawReport.Severity,
 			Message:            rawReport.Error.Error(),
 			Tags:               rawReport.Tags,
-			RelatedInformation: rawReport.RelatedInformation,
+			RelatedInformation: relatedInformation,
 			Source:             "protols",
 		}
 		if rawReport.WerrorCategory != "" {
@@ -102,48 +109,20 @@ func (c *Cache) toProtocolDiagnostics(rawReports []*ProtoDiagnostic) []protocol.
 
 type workspaceDiagnosticCallbackFunc = func(uri protocol.DocumentURI, reports []protocol.Diagnostic, kind protocol.DocumentDiagnosticReportKind, resultId string)
 
-func (c *Cache) StreamWorkspaceDiagnostics(ctx context.Context, ch chan<- protocol.WorkspaceDiagnosticReportPartialResult) {
-	currentDiagnostics := make(map[protocol.DocumentURI][]protocol.Diagnostic)
-	c.diagHandler.Stream(ctx, func(event DiagnosticEvent, path string, version int32, diagnostics ...*ProtoDiagnostic) {
+func (c *Cache) StreamWorkspaceDiagnostics(ctx context.Context, ch chan<- protocol.WorkspaceFullDocumentDiagnosticReport) {
+	c.diagHandler.Stream(ctx, func(path string, resultId string, diagnostics []*ProtoDiagnostic) {
 		uri, err := c.resolver.PathToURI(path)
 		if err != nil {
 			return
 		}
-
-		switch event {
-		case DiagnosticEventAdd:
-			protocolDiagnostics := c.toProtocolDiagnostics(diagnostics)
-			currentDiagnostics[uri] = append(currentDiagnostics[uri], protocolDiagnostics...)
-			ch <- protocol.WorkspaceDiagnosticReportPartialResult{
-				Items: []protocol.Or_WorkspaceDocumentDiagnosticReport{
-					{
-						Value: protocol.WorkspaceFullDocumentDiagnosticReport{
-							Version: version,
-							URI:     uri,
-							FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
-								Kind:  string(protocol.DiagnosticFull),
-								Items: currentDiagnostics[uri],
-							},
-						},
-					},
-				},
-			}
-		case DiagnosticEventClear:
-			delete(currentDiagnostics, uri)
-			ch <- protocol.WorkspaceDiagnosticReportPartialResult{
-				Items: []protocol.Or_WorkspaceDocumentDiagnosticReport{
-					{
-						Value: protocol.WorkspaceFullDocumentDiagnosticReport{
-							Version: version,
-							URI:     uri,
-							FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
-								Kind:  string(protocol.DiagnosticFull),
-								Items: []protocol.Diagnostic{},
-							},
-						},
-					},
-				},
-			}
+		ch <- protocol.WorkspaceFullDocumentDiagnosticReport{
+			URI:     uri,
+			Version: c.documentVersions.Get(uri),
+			FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
+				Kind:     string(protocol.DiagnosticFull),
+				ResultID: resultId,
+				Items:    c.toProtocolDiagnostics(diagnostics),
+			},
 		}
 	})
 }
@@ -151,17 +130,22 @@ func (c *Cache) StreamWorkspaceDiagnostics(ctx context.Context, ch chan<- protoc
 type ProtoDiagnostic struct {
 	Path               string
 	Version            int32
-	Range              protocol.Range
+	Range              ast.SourceSpan
 	Severity           protocol.DiagnosticSeverity
 	Error              error
 	Tags               []protocol.DiagnosticTag
-	RelatedInformation []protocol.DiagnosticRelatedInformation
+	RelatedInformation []RelatedInformation
 	CodeActions        []CodeAction
 	Metadata           map[string]string
 
 	// If this is a warning being treated as an error, WerrorCategory will be set to
 	// a category that can be named in a debug pragma to disable it.
 	WerrorCategory string
+}
+
+type RelatedInformation struct {
+	Range   ast.SourceSpan
+	Message string
 }
 
 const (
@@ -192,8 +176,9 @@ func NewDiagnosticHandler() *DiagnosticHandler {
 
 type DiagnosticList struct {
 	lock        sync.RWMutex
-	Diagnostics []*ProtoDiagnostic
-	ResultId    string
+	diagnostics []*ProtoDiagnostic
+	resultId    string
+	dirty       bool
 }
 
 func (dl *DiagnosticList) Add(d *ProtoDiagnostic) {
@@ -202,7 +187,7 @@ func (dl *DiagnosticList) Add(d *ProtoDiagnostic) {
 	}
 	dl.lock.Lock()
 	defer dl.lock.Unlock()
-	dl.Diagnostics = append(dl.Diagnostics, d)
+	dl.diagnostics = append(dl.diagnostics, d)
 	dl.resetResultId()
 }
 
@@ -213,33 +198,52 @@ func (dl *DiagnosticList) Get(prevResultId ...string) (diagnostics []*ProtoDiagn
 }
 
 func (dl *DiagnosticList) getLocked(prevResultId ...string) (diagnostics []*ProtoDiagnostic, resultId string, unchanged bool) {
-	if len(prevResultId) == 1 && dl.ResultId == prevResultId[0] {
-		return []*ProtoDiagnostic{}, dl.ResultId, true
+	if len(prevResultId) == 1 && dl.resultId == prevResultId[0] {
+		return []*ProtoDiagnostic{}, dl.resultId, true
 	}
-	return slices.Clone(dl.Diagnostics), dl.ResultId, false
+	return slices.Clone(dl.diagnostics), dl.resultId, false
 }
 
 func (dl *DiagnosticList) Clear() []*ProtoDiagnostic {
 	dl.lock.Lock()
 	defer dl.lock.Unlock()
-	dl.Diagnostics = []*ProtoDiagnostic{}
+	prev := dl.diagnostics
+	dl.diagnostics = []*ProtoDiagnostic{}
 	dl.resetResultId()
-	return dl.Diagnostics
+	return prev
+}
+
+func (dl *DiagnosticList) DeleteRelated(related RelatedInformation) {
+	dl.lock.Lock()
+	defer dl.lock.Unlock()
+	for i, diag := range dl.diagnostics {
+		if diag.Range == related.Range {
+			dl.diagnostics = slices.Delete(dl.diagnostics, i, i+1)
+			dl.resetResultId()
+			return
+		}
+	}
+}
+
+func (dl *DiagnosticList) Flush() ([]*ProtoDiagnostic, string, bool) {
+	dl.lock.Lock()
+	defer dl.lock.Unlock()
+	if !dl.dirty {
+		return []*ProtoDiagnostic{}, "", false
+	}
+	dl.dirty = false
+	return slices.Clone(dl.diagnostics), dl.resultId, true
 }
 
 // requires lock to be held in write mode
 func (dl *DiagnosticList) resetResultId() {
-	dl.ResultId = time.Now().Format(time.RFC3339Nano)
+	dl.resultId = time.Now().Format(time.RFC3339Nano)
+	dl.dirty = true
 }
 
 type (
 	DiagnosticEvent int
-	ListenerFunc    = func(event DiagnosticEvent, path string, version int32, diagnostics ...*ProtoDiagnostic)
-)
-
-const (
-	DiagnosticEventAdd DiagnosticEvent = iota
-	DiagnosticEventClear
+	ListenerFunc    = func(path string, resultId string, diagnostics []*ProtoDiagnostic)
 )
 
 type DiagnosticHandler struct {
@@ -390,16 +394,13 @@ func werrorCategoryForError(err error) string {
 	return ""
 }
 
-func relatedInformationForError(err error) []protocol.DiagnosticRelatedInformation {
-	var alreadyDefined reporter.AlreadyDefinedError
-	if ok := errors.As(err, &alreadyDefined); ok {
-		return []protocol.DiagnosticRelatedInformation{
+func relatedInformationForError(err error) []RelatedInformation {
+	var redeclared reporter.SymbolRedeclaredError
+	if ok := errors.As(err, &redeclared); ok {
+		return []RelatedInformation{
 			{
-				Location: protocol.Location{
-					URI:   protocol.DocumentURI(alreadyDefined.PreviousDefinition.Start().Filename),
-					Range: toRange(alreadyDefined.PreviousDefinition),
-				},
-				Message: "previous definition",
+				Range:   redeclared.OtherDeclaration,
+				Message: "other declaration",
 			},
 		}
 	}
@@ -436,7 +437,7 @@ func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
 	newDiagnostic := &ProtoDiagnostic{
 		Path:               filename,
 		Version:            version,
-		Range:              toRange(span),
+		Range:              span,
 		Severity:           protocol.SeverityError,
 		Error:              err.Unwrap(),
 		Tags:               tagsForError(err),
@@ -447,11 +448,11 @@ func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
 
 	dl.Add(newDiagnostic)
 
-	dr.listenerMu.RLock()
-	if dr.listener != nil {
-		dr.listener(DiagnosticEventAdd, filename, version, newDiagnostic)
-	}
-	dr.listenerMu.RUnlock()
+	// dr.listenerMu.RLock()
+	// if dr.listener != nil {
+	// 	dr.listener(DiagnosticEventAdd, filename, version, newDiagnostic)
+	// }
+	// dr.listenerMu.RUnlock()
 
 	return nil // allow the compiler to continue
 }
@@ -477,7 +478,7 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 	newDiagnostic := &ProtoDiagnostic{
 		Path:               filename,
 		Version:            version,
-		Range:              toRange(span),
+		Range:              span,
 		Severity:           severityForError(protocol.SeverityWarning, err),
 		Error:              err.Unwrap(),
 		Tags:               tagsForError(err),
@@ -488,11 +489,11 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 	}
 	dl.Add(newDiagnostic)
 
-	dr.listenerMu.RLock()
-	if dr.listener != nil {
-		dr.listener(DiagnosticEventAdd, filename, version, newDiagnostic)
-	}
-	dr.listenerMu.RUnlock()
+	// dr.listenerMu.RLock()
+	// if dr.listener != nil {
+	// 	dr.listener(DiagnosticEventAdd, filename, version, newDiagnostic)
+	// }
+	// dr.listenerMu.RUnlock()
 }
 
 func (dr *DiagnosticHandler) GetDiagnosticsForPath(path string, prevResultId ...string) ([]*ProtoDiagnostic, string, bool) {
@@ -513,8 +514,8 @@ func (dr *DiagnosticHandler) FullDiagnosticSnapshot() map[string][]*ProtoDiagnos
 	defer dr.diagnosticsMu.RUnlock()
 	res := make(map[string][]*ProtoDiagnostic, len(dr.diagnostics))
 	for path, dl := range dr.diagnostics {
-		list := make([]*ProtoDiagnostic, 0, len(dl.Diagnostics))
-		for _, d := range dl.Diagnostics {
+		list := make([]*ProtoDiagnostic, 0, len(dl.diagnostics))
+		for _, d := range dl.diagnostics {
 			list = append(list, &ProtoDiagnostic{
 				Path:               d.Path,
 				Version:            d.Version,
@@ -543,39 +544,65 @@ func (dr *DiagnosticHandler) ClearDiagnosticsForPath(path string) {
 
 	slog.Debug(fmt.Sprintf("[diagnostic] clearing %d diagnostics for %s\n", len(prev), path))
 
-	var version int32
-	if len(prev) > 0 {
-		version = prev[len(prev)-1].Version
+	// var version int32
+	// if len(prev) > 0 {
+	// 	version = prev[len(prev)-1].Version
+	// }
+
+	// dr.listenerMu.RLock()
+	// if dr.listener != nil {
+	// 	dr.listener(DiagnosticEventClear, path, version, prev...)
+	// }
+
+	// also clear any diagnostics that may be linked as related information
+	for _, d := range prev {
+		for _, rel := range d.RelatedInformation {
+			other, ok := dr.diagnostics[rel.Range.Start().Filename]
+			if !ok {
+				continue
+			}
+			other.DeleteRelated(rel)
+		}
 	}
-	dr.listenerMu.RLock()
-	if dr.listener != nil {
-		dr.listener(DiagnosticEventClear, path, version, prev...)
-	}
-	dr.listenerMu.RUnlock()
+
+	// dr.listenerMu.RUnlock()
 }
 
 func (dr *DiagnosticHandler) Stream(ctx context.Context, callback ListenerFunc) {
-	dr.diagnosticsMu.RLock()
+	// dr.diagnosticsMu.RLock()
 
 	dr.listenerMu.Lock()
 	dr.listener = callback
 	dr.listenerMu.Unlock()
 
-	dr.listenerMu.RLock()
-	for path, dl := range dr.diagnostics {
-		var version int32 = 1
-		if len(dl.Diagnostics) > 0 {
-			version = max(version, dl.Diagnostics[len(dl.Diagnostics)-1].Version)
-		}
-		callback(DiagnosticEventAdd, path, version, dl.Diagnostics...)
-	}
-	dr.listenerMu.RUnlock()
+	// dr.listenerMu.RLock()
+	// for path, dl := range dr.diagnostics {
+	// 	callback(path, dl.resultId, dl.diagnostics)
+	// }
+	// dr.listenerMu.RUnlock()
 
-	dr.diagnosticsMu.RUnlock()
+	// dr.diagnosticsMu.RUnlock()
 
 	<-ctx.Done()
 
 	dr.listenerMu.Lock()
 	dr.listener = nil
 	dr.listenerMu.Unlock()
+}
+
+func (dr *DiagnosticHandler) Flush() {
+	dr.diagnosticsMu.Lock()
+	defer dr.diagnosticsMu.Unlock()
+
+	for path, dl := range dr.diagnostics {
+		diagnostics, resultId, wasDirty := dl.Flush()
+		if wasDirty {
+			slog.Debug(fmt.Sprintf("[diagnostic] flushing %d diagnostics for %s\n", len(diagnostics), path))
+			dr.listenerMu.RLock()
+			if dr.listener != nil {
+				dr.listener(path, resultId, diagnostics)
+			}
+			dr.listenerMu.RUnlock()
+		}
+	}
 }

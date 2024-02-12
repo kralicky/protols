@@ -31,6 +31,9 @@ func (c *Cache) XGetLinkerResults() []linker.Result {
 	defer c.resultsMu.RUnlock()
 	results := make([]linker.Result, 0, len(c.results))
 	for _, result := range c.results {
+		if result.IsPlaceholder() {
+			continue
+		}
 		if result.Syntax() == protoreflect.Editions {
 			continue
 		}

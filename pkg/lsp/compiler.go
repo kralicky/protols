@@ -60,10 +60,10 @@ func (c *Cache) postCompile(path protocompile.ResolvedPath) {
 func (c *Cache) Compile(protos []string, after ...func()) {
 	c.resultsMu.Lock()
 	defer c.resultsMu.Unlock()
-	for _, f := range after {
-		defer f()
-	}
 	c.compileLocked(protos...)
+	for _, f := range after {
+		f()
+	}
 }
 
 func (c *Cache) compileLocked(protos ...string) {
@@ -112,11 +112,23 @@ func (c *Cache) compileLocked(protos ...string) {
 		partial := partial
 		slog.With("path", path).Debug("adding new partial linker result")
 		c.partiallyLinkedResults[path] = partial
+		for i, f := range c.results {
+			if f.Path() == string(path) {
+				c.results[i] = linker.NewPlaceholderFile(partial.Path())
+				break
+			}
+		}
 	}
 	for path, partial := range res.UnlinkedParserResults {
 		partial := partial
 		slog.With("path", path).Debug("adding new partial linker result")
 		c.unlinkedResults[path] = partial
+		for i, f := range c.results {
+			if f.Path() == string(path) {
+				c.results[i] = linker.NewPlaceholderFile(f.Path())
+				break
+			}
+		}
 	}
 	c.partialResultsMu.Unlock()
 

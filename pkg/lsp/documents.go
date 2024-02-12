@@ -49,9 +49,18 @@ func contentChangeEventsToDiffEdits(mapper *protocol.Mapper, changes []protocol.
 }
 
 func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modification) {
+	slog.Debug("DidModifyFiles", "modifications", modifications)
+	var toRecompile []string
+	for _, m := range modifications {
+		if m.Action == file.Delete {
+			path, err := c.resolver.URIToPath(m.URI)
+			if err == nil {
+				toRecompile = append(toRecompile, path)
+			}
+		}
+	}
 	c.resolver.UpdateURIPathMappings(modifications)
 
-	var toRecompile []string
 	for _, m := range modifications {
 		path, err := c.resolver.URIToPath(m.URI)
 		if err != nil {
@@ -62,15 +71,13 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modific
 			continue
 		}
 		switch m.Action {
-		case file.Open:
 		case file.Close:
-		case file.Save:
-			toRecompile = append(toRecompile, path)
-		case file.Change:
-			toRecompile = append(toRecompile, path)
-		case file.Create:
-			toRecompile = append(toRecompile, path)
-		case file.Delete:
+		case file.Open, file.Save:
+			fh, err := c.compiler.fs.ReadFile(ctx, m.URI)
+			if err == nil || fh.Version() != m.Version {
+				toRecompile = append(toRecompile, path)
+			}
+		case file.Change, file.Create, file.Delete:
 			toRecompile = append(toRecompile, path)
 		}
 	}
@@ -78,9 +85,12 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modific
 		panic(fmt.Errorf("internal protocol error: %w", err))
 	}
 	if len(toRecompile) > 0 {
-		c.Compile(toRecompile, func() {
-			c.documentVersions.Update(modifications...)
-		})
+		c.Compile(toRecompile,
+			func() {
+				c.documentVersions.Update(modifications...)
+			},
+			c.diagHandler.Flush,
+		)
 	}
 }
 

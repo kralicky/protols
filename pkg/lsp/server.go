@@ -15,7 +15,6 @@ import (
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/progress"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
 	"github.com/kralicky/tools-lite/pkg/jsonrpc2"
-	"golang.org/x/sync/errgroup"
 )
 
 type Server struct {
@@ -77,17 +76,15 @@ func NewServer(client protocol.Client, opts ...ServerOption) *Server {
 	}
 }
 
-func (s *Server) cacheInit(cache *Cache, path string) {
-	s.cachesMu.Lock()
-	defer s.cachesMu.Unlock()
-
+// requires s.cachesMu held for writing
+func (s *Server) cacheInitLocked(cache *Cache, path string) {
 	ctx, ca := context.WithCancelCause(context.Background())
 	s.cacheCancels[path] = ca
 
 	cache.LoadFiles(sources.SearchDirs(path))
 	s.caches[path] = cache
 
-	diagnostics := make(chan protocol.WorkspaceDiagnosticReportPartialResult, 1)
+	diagnostics := make(chan protocol.WorkspaceFullDocumentDiagnosticReport, 1)
 	go cache.StreamWorkspaceDiagnostics(ctx, diagnostics)
 	go func() {
 		for {
@@ -95,25 +92,21 @@ func (s *Server) cacheInit(cache *Cache, path string) {
 			case <-ctx.Done():
 				return
 			case report := <-diagnostics:
-				for _, item := range report.Items {
-					switch item := item.Value.(type) {
-					case protocol.WorkspaceFullDocumentDiagnosticReport:
-						s.client.PublishDiagnostics(ctx, &protocol.PublishDiagnosticsParams{
-							URI:         item.URI,
-							Version:     item.Version,
-							Diagnostics: item.Items,
-						})
-					}
+				slog.Debug("publishing diagnostics", "uri", report.URI, "version", report.Version, "items", len(report.Items))
+				if err := s.client.PublishDiagnostics(ctx, &protocol.PublishDiagnosticsParams{
+					URI:         report.URI,
+					Version:     report.Version,
+					Diagnostics: report.Items,
+				}); err != nil {
+					slog.Error("failed to publish diagnostics", "error", err)
 				}
 			}
 		}
 	}()
 }
 
-func (s *Server) cacheDestroy(path string, err error) {
-	s.cachesMu.Lock()
-	defer s.cachesMu.Unlock()
-
+// requires s.cachesMu held for writing
+func (s *Server) cacheDestroyLocked(path string, err error) {
 	if _, ok := s.caches[path]; ok {
 		delete(s.caches, path)
 		ca := s.cacheCancels[path]
@@ -126,12 +119,14 @@ func (s *Server) cacheDestroy(path string, err error) {
 func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitialize) (result *protocol.InitializeResult, err error) {
 	folders := params.WorkspaceFolders
 	s.tracker.SetSupportsWorkDoneProgress(params.Capabilities.Window.WorkDoneProgress)
+	s.cachesMu.Lock()
 	for _, folder := range folders {
 		path := protocol.DocumentURI(folder.URI).Path()
 		slog.Info("adding workspace folder", "path", path)
 		cache := NewCache(folder)
-		s.cacheInit(cache, path)
+		s.cacheInitLocked(cache, path)
 	}
+	s.cachesMu.Unlock()
 	filters := []protocol.FileOperationFilter{
 		{
 			Scheme: "file",
@@ -615,91 +610,93 @@ var semanticTokenModifiers = []string{
 
 // Diagnostic implements protocol.Server.
 func (s *Server) Diagnostic(ctx context.Context, params *protocol.DocumentDiagnosticParams) (*protocol.Or_DocumentDiagnosticReport, error) {
-	c, err := s.CacheForURI(params.TextDocument.URI)
-	if err != nil {
-		return nil, err
-	}
+	return nil, notImplemented("Diagnostic")
+	// c, err := s.CacheForURI(params.TextDocument.URI)
+	// if err != nil {
+	// 	return nil, err
+	// }
 
-	reports, kind, resultId, err := c.ComputeDiagnosticReports(params.TextDocument.URI, params.PreviousResultID)
-	if err != nil {
-		slog.Error("failed to compute diagnostic reports", "error", err)
-		return nil, err
-	}
-	switch kind {
-	case protocol.DiagnosticFull:
-		return &protocol.Or_DocumentDiagnosticReport{
-			Value: protocol.RelatedFullDocumentDiagnosticReport{
-				FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
-					Kind:     string(protocol.DiagnosticFull),
-					ResultID: resultId,
-					Items:    reports,
-				},
-			},
-		}, nil
-	case protocol.DiagnosticUnchanged:
-		return &protocol.Or_DocumentDiagnosticReport{
-			Value: protocol.RelatedUnchangedDocumentDiagnosticReport{
-				UnchangedDocumentDiagnosticReport: protocol.UnchangedDocumentDiagnosticReport{
-					Kind:     string(protocol.DiagnosticUnchanged),
-					ResultID: resultId,
-				},
-			},
-		}, nil
-	default:
-		panic("bug: unknown diagnostic kind: " + kind)
-	}
+	// reports, kind, resultId, err := c.ComputeDiagnosticReports(params.TextDocument.URI, params.PreviousResultID)
+	// if err != nil {
+	// 	slog.Error("failed to compute diagnostic reports", "error", err)
+	// 	return nil, err
+	// }
+	// switch kind {
+	// case protocol.DiagnosticFull:
+	// 	return &protocol.Or_DocumentDiagnosticReport{
+	// 		Value: protocol.RelatedFullDocumentDiagnosticReport{
+	// 			FullDocumentDiagnosticReport: protocol.FullDocumentDiagnosticReport{
+	// 				Kind:     string(protocol.DiagnosticFull),
+	// 				ResultID: resultId,
+	// 				Items:    reports,
+	// 			},
+	// 		},
+	// 	}, nil
+	// case protocol.DiagnosticUnchanged:
+	// 	return &protocol.Or_DocumentDiagnosticReport{
+	// 		Value: protocol.RelatedUnchangedDocumentDiagnosticReport{
+	// 			UnchangedDocumentDiagnosticReport: protocol.UnchangedDocumentDiagnosticReport{
+	// 				Kind:     string(protocol.DiagnosticUnchanged),
+	// 				ResultID: resultId,
+	// 			},
+	// 		},
+	// 	}, nil
+	// default:
+	// 	panic("bug: unknown diagnostic kind: " + kind)
+	// }
 }
 
 // DiagnosticWorkspace implements protocol.Server.
 func (s *Server) DiagnosticWorkspace(ctx context.Context, params *protocol.WorkspaceDiagnosticParams) (*protocol.WorkspaceDiagnosticReport, error) {
-	if params.PartialResultToken == nil {
-		return nil, jsonrpc2.ErrInvalidRequest
-	}
+	return nil, notImplemented("DiagnosticWorkspace")
+	// if params.PartialResultToken == nil {
+	// 	return nil, jsonrpc2.ErrInvalidRequest
+	// }
 
-	s.diagnosticStreamMu.RLock()
-	if s.diagnosticStreamCancel != nil {
-		s.diagnosticStreamCancel()
-	}
-	s.diagnosticStreamMu.RUnlock()
+	// s.diagnosticStreamMu.RLock()
+	// if s.diagnosticStreamCancel != nil {
+	// 	s.diagnosticStreamCancel()
+	// }
+	// s.diagnosticStreamMu.RUnlock()
 
-	s.diagnosticStreamMu.Lock()
-	ctx, s.diagnosticStreamCancel = context.WithCancel(context.Background())
-	s.diagnosticStreamMu.Unlock()
+	// s.diagnosticStreamMu.Lock()
+	// ctx, s.diagnosticStreamCancel = context.WithCancel(context.Background())
+	// s.diagnosticStreamMu.Unlock()
 
-	s.cachesMu.RLock()
-	caches := maps.Clone(s.caches)
-	s.cachesMu.RUnlock()
+	// s.cachesMu.RLock()
+	// caches := maps.Clone(s.caches)
+	// s.cachesMu.RUnlock()
 
-	s.diagnosticStreamMu.RLock()
-	defer s.diagnosticStreamMu.RUnlock()
+	// s.diagnosticStreamMu.RLock()
+	// defer s.diagnosticStreamMu.RUnlock()
 
-	eg, ctx := errgroup.WithContext(ctx)
-	reportsC := make(chan protocol.WorkspaceDiagnosticReportPartialResult, 100)
-	for _, c := range caches {
-		c := c
-		eg.Go(func() error {
-			c.StreamWorkspaceDiagnostics(ctx, reportsC)
-			return nil
-		})
-	}
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case report := <-reportsC:
-				s.client.Progress(ctx, &protocol.ProgressParams{
-					Token: params.PartialResultToken,
-					Value: report,
-				})
-			}
-		}
-	}()
-	eg.Wait()
+	// eg, ctx := errgroup.WithContext(ctx)
+	// reportsC := make(chan protocol.WorkspaceDiagnosticReportPartialResult, 100)
+	// for _, c := range caches {
+	// 	c := c
+	// 	eg.Go(func() error {
+	// 		c.StreamWorkspaceDiagnostics(ctx, reportsC)
+	// 		return nil
+	// 	})
+	// }
+	// go func() {
+	// 	for {
+	// 		select {
+	// 		case <-ctx.Done():
+	// 			return
+	// 		case report := <-reportsC:
+	// 			s.client.Progress(ctx, &protocol.ProgressParams{
+	// 				Token: params.PartialResultToken,
+	// 				Value: report,
+	// 			})
+	// 		}
+	// 	}
+	// }()
+	// eg.Wait()
 
-	return &protocol.WorkspaceDiagnosticReport{
-		Items: []protocol.Or_WorkspaceDocumentDiagnosticReport{},
-	}, nil
+	// return &protocol.WorkspaceDiagnosticReport{
+	// 	Items: []protocol.Or_WorkspaceDocumentDiagnosticReport{},
+	// }, nil
 }
 
 // DocumentColor implements protocol.Server.
@@ -762,12 +759,12 @@ func (s *Server) DidChangeWorkspaceFolders(ctx context.Context, params *protocol
 		path := protocol.DocumentURI(folder.URI).Path()
 		slog.Info("adding workspace folder", "path", path)
 		c := NewCache(folder)
-		s.cacheInit(c, path)
+		s.cacheInitLocked(c, path)
 	}
 	for _, folder := range removed {
 		path := protocol.DocumentURI(folder.URI).Path()
 		slog.Info("removing workspace folder", "path", path)
-		s.cacheDestroy(path, fmt.Errorf("workspace folder removed: %s", path))
+		s.cacheDestroyLocked(path, fmt.Errorf("workspace folder removed: %s", path))
 	}
 	s.cachesMu.Unlock()
 	return nil

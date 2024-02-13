@@ -972,7 +972,11 @@ GROUPS:
 							if elem.Val != nil {
 								fclone.writeNode(elem.Val)
 							}
-							fclone.writeLineEnd(compactOptionsNode.Options[elemIdx].Semicolon)
+							semi := compactOptionsNode.Options[elemIdx].Semicolon
+							if semi.Rune != ',' {
+								semi.Rune = ','
+							}
+							fclone.writeLineEnd(semi)
 						}
 					} else {
 						if elem.Val != nil {
@@ -1797,6 +1801,9 @@ func (f *formatter) writeCompactOptions(compactOptionsNode *ast.CompactOptionsNo
 				f.writeInline(optionNode.Val)
 
 				if optionNode.Semicolon != nil && i < len(compactOptionsNode.Options)-1 {
+					if optionNode.Semicolon.Rune != ',' {
+						optionNode.Semicolon.Rune = ','
+					}
 					f.writeInline(optionNode.Semicolon)
 					f.Space()
 				}

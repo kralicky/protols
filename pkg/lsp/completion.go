@@ -250,7 +250,8 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				completions = append(completions,
 					c.completeFieldLiteralValues(fd, node.Val, searchTarget.AST(), mapper, posOffset, params.Position)...)
 			}
-		default:
+		case node.Name == nil && tokenAtOffset > node.Keyword.Token() && (node.Equals == nil || tokenAtOffset <= node.Equals.Token()):
+			// complete new option names
 			completions = append(completions,
 				c.completeOptionOrExtensionName(scope.Options().ProtoReflect().Descriptor(), path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
 		}
@@ -289,28 +290,63 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		completions = append(completions,
 			c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), node, nodeIdx, maybeCurrentLinkRes, existingFields, mapper, posOffset, params.Position)...)
 	case *ast.OptionNameNode:
-		// this can be the closest node in a few cases, such as after a trailing dot
+		// this can be the closest node in a few cases, such as on or after a trailing dot
 		nodeChildren := node.Children()
-		var lastPart *ast.FieldReferenceNode
+		var partialName string
+		var part *ast.FieldReferenceNode
+		var prevDesc protoreflect.Descriptor
 		for i := 0; i < len(nodeChildren); i++ {
 			if nodeChildren[i].Start() != tokenAtOffset {
 				continue
 			}
-			for j := i; j >= 0; j-- {
-				if frn, ok := nodeChildren[j].(*ast.FieldReferenceNode); ok {
-					lastPart = frn
-					break
+			switch node := nodeChildren[i].(type) {
+			case *ast.RuneNode: // dot
+				// if the cursor is to the left of the dot, we are still completing the previous part
+				info := searchTarget.AST().NodeInfo(node)
+				if info.IsValid() && i > 0 {
+					if info.Start().Offset == posOffset {
+						if lp, ok := nodeChildren[i-1].(*ast.FieldReferenceNode); ok {
+							// e.g. '(a).b.(c)<cursor>.d'
+							// partial name is the whole previous ident
+							partialName = string(lp.Name.AsIdentifier())
+						}
+						// before the dot
+						i -= 3
+					} else {
+						// after the dot
+						i++
+					}
+				}
+			case *ast.FieldReferenceNode:
+				i--
+			}
+
+			switch {
+			case i < 0:
+				// e.g. '(foo)<cursor>.bar'
+				prevDesc = scope.Options().ProtoReflect().Descriptor()
+				if len(nodeChildren) > 0 {
+					if frn, ok := nodeChildren[0].(*ast.FieldReferenceNode); ok {
+						part = frn
+					}
+				}
+			case i > len(nodeChildren)-1:
+				// after the last part (e.g. 'foo.bar.<cursor>')
+				for j := len(nodeChildren) - 1; j >= 0; j-- {
+					if frn, ok := nodeChildren[j].(*ast.FieldReferenceNode); ok {
+						prevDesc = maybeCurrentLinkRes.FindFieldDescriptorByFieldReferenceNode(frn)
+						break
+					}
+				}
+			default:
+				if frn, ok := nodeChildren[i].(*ast.FieldReferenceNode); ok {
+					part = frn
+					prevDesc = maybeCurrentLinkRes.FindFieldDescriptorByFieldReferenceNode(part)
 				}
 			}
-		}
-		if lastPart == nil {
 			break
 		}
-		prevFd := maybeCurrentLinkRes.FindFieldDescriptorByFieldReferenceNode(lastPart)
-		if prevFd == nil {
-			break
-		}
-		items, err := c.deepCompleteOptionNames(prevFd, "", "", maybeCurrentLinkRes, nil, lastPart, params.Position)
+		items, err := c.deepCompleteOptionNames(prevDesc, partialName, "", searchTarget.AST(), maybeCurrentLinkRes, nil, part, params.Position)
 		if err != nil {
 			return nil, err
 		}
@@ -512,7 +548,7 @@ func (c *Cache) completeOptionOrExtensionName(
 				}
 			}
 		}
-		items, err := c.deepCompleteOptionNames(scope, partialName, partialNameSuffix, linkRes, existingOpts, node, pos)
+		items, err := c.deepCompleteOptionNames(scope, partialName, partialNameSuffix, fileNode, linkRes, existingOpts, node, pos)
 		if err != nil {
 			return nil
 		}
@@ -533,7 +569,7 @@ func (c *Cache) completeOptionOrExtensionName(
 		if prevFd == nil {
 			break
 		}
-		items, err := c.deepCompleteOptionNames(prevFd, partialName, partialNameSuffix, linkRes, existingOpts, node, pos)
+		items, err := c.deepCompleteOptionNames(prevFd, partialName, partialNameSuffix, fileNode, linkRes, existingOpts, node, pos)
 		if err != nil {
 			return nil
 		}
@@ -832,6 +868,7 @@ const (
 func (c *Cache) deepCompleteOptionNames(
 	prev protoreflect.Descriptor,
 	partialName, partialNameSuffix string,
+	fileNode *ast.FileNode,
 	linkRes linker.Result,
 	existingOpts map[string]struct{},
 	existingFieldRef *ast.FieldReferenceNode,
@@ -855,6 +892,9 @@ func (c *Cache) deepCompleteOptionNames(
 		default:
 			return nil, nil
 		}
+	}
+	if prevMsg == nil || prevMsg.IsMapEntry() {
+		return nil, nil
 	}
 	if existingFieldRef != nil && shouldCompleteExtensions && existingFieldRef.IsExtension() {
 		shouldCompleteNonExtensions = false
@@ -903,21 +943,36 @@ func (c *Cache) deepCompleteOptionNames(
 				continue
 			}
 			item := newExtensionFieldCompletionItem(x, linkRes, partialName, partialNameSuffix, pos)
-			open, close := "(", ")"
+			prevEdit := item.TextEdit.Value.(protocol.InsertReplaceEdit)
+			var open, close string
 			if existingFieldRef != nil {
 				if existingFieldRef.Open != nil {
-					open = ""
+					open = "("
+					// adjust the replace range to include the open paren, either on the left or right
+					if fileNode.NodeInfo(existingFieldRef.Open).Start().Col-1 < int(pos.Character) {
+						prevEdit.Replace.Start = adjustColumn(prevEdit.Replace.Start, -1)
+					} else {
+						prevEdit.Replace.End = adjustColumn(prevEdit.Replace.End, 1)
+					}
 				}
 				if existingFieldRef.Close != nil {
-					close = ""
+					close = ")"
+					// adjust the replace range to include the close paren, either on the left or right
+					if fileNode.NodeInfo(existingFieldRef.Close).Start().Col-1 < int(pos.Character) {
+						prevEdit.Replace.Start = adjustColumn(prevEdit.Replace.Start, -1)
+					} else {
+						prevEdit.Replace.End = adjustColumn(prevEdit.Replace.End, 1)
+					}
 				}
+			} else {
+				open = "("
+				close = ")"
 			}
 			item.Label = fmt.Sprintf("(%s)", item.Label)
-			prevEdit := item.TextEdit.Value.(protocol.InsertReplaceEdit)
 			item.TextEdit = &protocol.Or_CompletionItem_textEdit{
 				Value: protocol.InsertReplaceEdit{
 					NewText: fmt.Sprintf("%s%s%s", open, prevEdit.NewText, close),
-					Insert:  prevEdit.Insert,
+					Insert:  prevEdit.Replace, // this is intentionally not prevEdit.Insert
 					Replace: prevEdit.Replace,
 				},
 			}
@@ -1465,16 +1520,13 @@ func findPartialNames(fileNode *ast.FileNode, node ast.Node, mapper *protocol.Ma
 	if err != nil {
 		return "", "", err
 	}
-	if posOffset > endOffset {
-		return "", "", errOutOfRange
-	}
 
 	var partialName, partialNameSuffix string
 	if startOffset < posOffset {
-		partialName = string(mapper.Content[startOffset:posOffset])
+		partialName = string(mapper.Content[startOffset:min(posOffset, endOffset)])
 	}
 	if posOffset < endOffset {
-		partialNameSuffix = string(mapper.Content[posOffset:endOffset])
+		partialNameSuffix = string(mapper.Content[max(startOffset, posOffset):endOffset])
 	}
 	return partialName, partialNameSuffix, nil
 }

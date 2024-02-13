@@ -559,7 +559,9 @@ func findNarrowestSemanticToken(parseRes parser.Result, tokens []semanticItem, p
 			// Skip tokens with no length
 			continue
 		}
-		if token.start+token.len-1 < pos.Character {
+		// Note: this allows the cursor to be at the end of a token, which is
+		// consistent with observed gopls behavior.
+		if token.start+token.len < pos.Character {
 			// Skip tokens that end before the position
 			continue
 		}

@@ -14,8 +14,9 @@ func (c *Cache) ComputeHover(params protocol.TextDocumentPositionParams) (*proto
 	if err != nil {
 		return nil, err
 	} else if desc == nil {
-		return nil, nil
+		return c.tryHoverPackageNode(params), nil
 	}
+
 	location, err := c.FindDefinitionForTypeDescriptor(desc)
 	if err != nil {
 		return nil, err

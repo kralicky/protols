@@ -291,6 +291,9 @@ func (s *Server) Definition(ctx context.Context, params *protocol.DefinitionPara
 	if err != nil {
 		return nil, err
 	} else if desc == nil {
+		if locations := c.TryFindPackageReferences(params.TextDocumentPositionParams); locations != nil {
+			return locations, nil
+		}
 		return nil, nil
 	}
 	loc, err := c.FindDefinitionForTypeDescriptor(desc)

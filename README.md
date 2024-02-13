@@ -17,10 +17,12 @@ Features in progress:
     - [x] Imports
     - [x] Options, extensions, and field references
     - [x] Inlay Hints
+    - [x] Package names and prefixes
   - [x] Hover
     - [x] Types and enums
     - [x] Options, extensions, and field references
     - [x] Inlay Hints
+    - [x] Package names and prefixes
     - [ ] CEL tokens
   - [ ] Code Actions & Refactors
     - [x] Identify and remove unused imports

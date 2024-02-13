@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"slices"
 
 	"github.com/kralicky/protocompile/ast"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
@@ -42,6 +43,14 @@ func (c *Cache) FindReferences(ctx context.Context, params protocol.TextDocument
 		return nil, err
 	}
 	if desc == nil {
+		if locations := c.TryFindPackageReferences(params); locations != nil {
+			if !refCtx.IncludeDeclaration {
+				locations = slices.DeleteFunc(locations, func(loc protocol.Location) bool {
+					return loc.URI == params.TextDocument.URI
+				})
+			}
+			return locations, nil
+		}
 		return nil, nil
 	}
 

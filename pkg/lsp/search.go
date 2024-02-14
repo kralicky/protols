@@ -615,7 +615,7 @@ func findNarrowestSemanticToken(parseRes parser.Result, tokens []semanticItem, p
 //	    __ <- [(file)→(message Foo)→(field bar)→(compact options)]
 //	  ];
 //	}
-func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token, location protocol.Position) ([]ast.Node, bool) {
+func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, location protocol.Position) ([]ast.Node, bool) {
 	tracker := &ast.AncestorTracker{}
 	paths := [][]ast.Node{}
 	fileNode := parseRes.AST()
@@ -778,6 +778,68 @@ func findNarrowestEnclosingScope(parseRes parser.Result, tokenAtOffset ast.Token
 		return -cmp.Compare(len(i), len(j))
 	})
 	return paths[0], true
+}
+
+func visitEnclosingRange[T ast.Node](tracker *ast.AncestorTracker, paths *[][]ast.Node) func(T) error {
+	return func(node T) error {
+		p := slices.Clone(tracker.Path())
+		if len(*paths) == 0 {
+			*paths = append(*paths, p)
+		} else if len(p) >= len((*paths)[len(*paths)-1]) {
+			*paths = append(*paths, p)
+		}
+		return nil
+	}
+}
+
+func DefaultEnclosingRangeVisitor(tracker *ast.AncestorTracker, paths *[][]ast.Node) ast.Visitor {
+	return &ast.SimpleVisitor{
+		DoVisitImportNode:         visitEnclosingRange[*ast.ImportNode](tracker, paths),
+		DoVisitSyntaxNode:         visitEnclosingRange[*ast.SyntaxNode](tracker, paths),
+		DoVisitMessageNode:        visitEnclosingRange[*ast.MessageNode](tracker, paths),
+		DoVisitEnumNode:           visitEnclosingRange[*ast.EnumNode](tracker, paths),
+		DoVisitEnumValueNode:      visitEnclosingRange[*ast.EnumValueNode](tracker, paths),
+		DoVisitServiceNode:        visitEnclosingRange[*ast.ServiceNode](tracker, paths),
+		DoVisitRPCNode:            visitEnclosingRange[*ast.RPCNode](tracker, paths),
+		DoVisitExtendNode:         visitEnclosingRange[*ast.ExtendNode](tracker, paths),
+		DoVisitOptionNode:         visitEnclosingRange[*ast.OptionNode](tracker, paths),
+		DoVisitMessageLiteralNode: visitEnclosingRange[*ast.MessageLiteralNode](tracker, paths),
+		DoVisitOptionNameNode:     visitEnclosingRange[*ast.OptionNameNode](tracker, paths),
+		DoVisitMessageFieldNode:   visitEnclosingRange[*ast.MessageFieldNode](tracker, paths),
+		DoVisitCompactOptionsNode: visitEnclosingRange[*ast.CompactOptionsNode](tracker, paths),
+		DoVisitFieldNode:          visitEnclosingRange[*ast.FieldNode](tracker, paths),
+		DoVisitFieldReferenceNode: visitEnclosingRange[*ast.FieldReferenceNode](tracker, paths),
+		DoVisitRPCTypeNode:        visitEnclosingRange[*ast.RPCTypeNode](tracker, paths),
+		DoVisitPackageNode:        visitEnclosingRange[*ast.PackageNode](tracker, paths),
+		DoVisitErrorNode:          visitEnclosingRange[*ast.ErrorNode](tracker, paths),
+	}
+}
+
+func findPathsEnclosingRange(parseRes parser.Result, start, end ast.Token, visitor ...func(tracker *ast.AncestorTracker, paths *[][]ast.Node) ast.Visitor) ([][]ast.Node, bool) {
+	tracker := &ast.AncestorTracker{}
+	opts := tracker.AsWalkOptions()
+	opts = append(opts, ast.WithRange(start, end))
+	var paths [][]ast.Node
+
+	if len(visitor) == 0 {
+		visitor = append(visitor, DefaultEnclosingRangeVisitor)
+	}
+	if err := ast.Walk(parseRes.AST(), visitor[0](tracker, &paths), opts...); err != nil {
+		return nil, false
+	}
+
+	if len(paths) == 0 {
+		return nil, false
+	}
+
+	lowerBound := len(paths) - 1
+	for i := len(paths) - 2; i >= 0; i-- {
+		if len(paths[i]) < len(paths[lowerBound]) {
+			break
+		}
+		lowerBound = i
+	}
+	return paths[lowerBound:], true
 }
 
 func findDefinition(desc protoreflect.Descriptor, linkRes linker.Result) (ast.NodeReference, error) {

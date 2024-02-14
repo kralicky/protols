@@ -7,8 +7,9 @@ require (
 	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/bufbuild/protovalidate-go v0.5.1
 	github.com/google/cel-go v0.19.0
+	github.com/google/uuid v1.4.0
 	github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f
-	github.com/kralicky/protocompile v0.0.0-20240213214941-c634d1d5c8f6
+	github.com/kralicky/protocompile v0.0.0-20240214223154-11d0a995ee01
 	github.com/kralicky/tools-lite v0.0.0-20240209234032-93b7eedbea2e
 	github.com/mattn/go-tty v0.0.5
 	github.com/spf13/cobra v1.8.0

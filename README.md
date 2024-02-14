@@ -31,7 +31,7 @@ Features in progress:
     - [x] Simplify repeated option declarations
     - [x] Simplify repeated message literal fields
     - [ ] Simplify map literal fields
-    - [ ] Extract fields to new message
+    - [x] Extract fields to new message
     - [ ] Inline fields from message
   - [x] Code Lens
     - [x] Generate file/package/workspace

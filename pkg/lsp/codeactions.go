@@ -59,12 +59,14 @@ func (c *Cache) GetCodeActions(ctx context.Context, params *protocol.CodeActionP
 			}
 		}
 	}
-	if linkRes, err := c.FindResultByURI(params.TextDocument.URI); err == nil {
-		mapper, err := c.GetMapper(params.TextDocument.URI)
-		if err != nil {
-			return nil, err
+	if want[protocol.RefactorExtract] || want[protocol.RefactorInline] || want[protocol.RefactorRewrite] {
+		if linkRes, err := c.FindResultByURI(params.TextDocument.URI); err == nil {
+			mapper, err := c.GetMapper(params.TextDocument.URI)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, FindRefactorActions(ctx, params, linkRes, mapper, want)...)
 		}
-		result = append(result, FindRefactorActions(ctx, linkRes, mapper, params.Range)...)
 	}
 
 	if want[protocol.SourceOrganizeImports] {

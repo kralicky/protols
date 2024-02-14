@@ -144,12 +144,6 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 				Save:      &protocol.SaveOptions{IncludeText: false},
 			},
 			HoverProvider: &protocol.Or_ServerCapabilities_hoverProvider{Value: true},
-			// DiagnosticProvider: &protocol.Or_ServerCapabilities_diagnosticProvider{
-			// 	Value: protocol.DiagnosticOptions{
-			// 		WorkspaceDiagnostics:  true,
-			// 		InterFileDependencies: true,
-			// 	},
-			// },
 			Workspace: &protocol.WorkspaceOptions{
 				WorkspaceFolders: &protocol.WorkspaceFolders5Gn{
 					Supported:           true,
@@ -176,32 +170,25 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 				TriggerCharacters: []string{".", "(", "["},
 			},
 			CodeActionProvider: &protocol.CodeActionOptions{
+				ResolveProvider: true,
 				CodeActionKinds: []protocol.CodeActionKind{
-					protocol.QuickFix,
-					protocol.Refactor,
-					protocol.RefactorExtract,
-					protocol.RefactorInline,
-					protocol.RefactorRewrite,
-					protocol.Source,
 					protocol.SourceFixAll,
 					protocol.SourceOrganizeImports,
+					protocol.QuickFix,
+					protocol.RefactorRewrite,
+					protocol.RefactorInline,
+					protocol.RefactorExtract,
 				},
 			},
 			RenameProvider: &protocol.RenameOptions{
 				PrepareProvider: true,
 			},
-			// ImplementationProvider: &protocol.Or_ServerCapabilities_implementationProvider{
-			// 	Value: true,
-			// },
 			CodeLensProvider: &protocol.CodeLensOptions{
 				ResolveProvider: false,
 			},
-			// DeclarationProvider: &protocol.Or_ServerCapabilities_declarationProvider{Value: true},
-			// TypeDefinitionProvider: true,
 			ReferencesProvider:      &protocol.Or_ServerCapabilities_referencesProvider{Value: true},
 			WorkspaceSymbolProvider: &protocol.Or_ServerCapabilities_workspaceSymbolProvider{Value: true},
 			DefinitionProvider:      &protocol.Or_ServerCapabilities_definitionProvider{Value: true},
-
 			SemanticTokensProvider: &protocol.SemanticTokensOptions{
 				Legend: protocol.SemanticTokensLegend{
 					TokenTypes:     semanticTokenTypes,
@@ -818,6 +805,15 @@ func (s *Server) Symbol(ctx context.Context, params *protocol.WorkspaceSymbolPar
 	return symbolInfos, nil
 }
 
+// ResolveCodeAction implements protocol.Server.
+func (s *Server) ResolveCodeAction(ctx context.Context, codeAction *protocol.CodeAction) (*protocol.CodeAction, error) {
+	err := resolveCodeAction(codeAction)
+	if err != nil {
+		return nil, err
+	}
+	return codeAction, nil
+}
+
 // =====================
 // Unimplemented Methods
 // =====================
@@ -904,11 +900,6 @@ func (s *Server) CompletionResolve(ctx context.Context, params *protocol.Complet
 // Resolve implements protocol.Server.
 func (*Server) Resolve(context.Context, *protocol.InlayHint) (*protocol.InlayHint, error) {
 	return nil, notImplemented("Resolve")
-}
-
-// ResolveCodeAction implements protocol.Server.
-func (*Server) ResolveCodeAction(context.Context, *protocol.CodeAction) (*protocol.CodeAction, error) {
-	return nil, notImplemented("ResolveCodeAction")
 }
 
 // ResolveCodeLens implements protocol.Server.

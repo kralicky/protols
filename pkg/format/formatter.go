@@ -21,6 +21,7 @@ import (
 	"io"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -28,10 +29,19 @@ import (
 	"github.com/kralicky/protocompile/ast"
 )
 
+type FileNodeInterface interface {
+	GetSyntaxNode() *ast.SyntaxNode
+	GetEditionNode() *ast.EditionNode
+	GetDecls() []ast.FileElement
+	GetEOF() *ast.RuneNode
+
+	NodeInfo(node ast.Node) ast.NodeInfo
+}
+
 // formatter writes an *ast.FileNode as a .proto file.
 type formatter struct {
 	writer   io.Writer
-	fileNode *ast.FileNode
+	fileNode FileNodeInterface
 
 	// Current level of indentation.
 	indent int
@@ -95,7 +105,7 @@ func (f *formatter) mergeState(other *formatter, reader io.Reader) {
 // NewFormatter returns a new formatter for the given file.
 func NewFormatter(
 	writer io.Writer,
-	fileNode *ast.FileNode,
+	fileNode FileNodeInterface,
 ) *formatter {
 	return &formatter{
 		writer:   writer,
@@ -223,8 +233,8 @@ func (f *formatter) SetPreviousNode(node ast.Node) {
 func (f *formatter) writeFile() {
 	f.writeFileHeader()
 	f.writeFileTypes()
-	if f.fileNode.EOF != nil {
-		info := f.fileNode.NodeInfo(f.fileNode.EOF)
+	if f.fileNode.GetEOF() != nil {
+		info := f.fileNode.NodeInfo(f.fileNode.GetEOF())
 		f.writeMultilineComments(info.LeadingComments())
 	}
 	if f.lastWritten != 0 && f.lastWritten != '\n' {
@@ -255,7 +265,7 @@ func (f *formatter) writeFileHeader() {
 		importNodes []*ast.ImportNode
 		optionNodes []*ast.OptionNode
 	)
-	for _, fileElement := range f.fileNode.Decls {
+	for _, fileElement := range f.fileNode.GetDecls() {
 		switch node := fileElement.(type) {
 		case *ast.PackageNode:
 			packageNode = node
@@ -267,13 +277,13 @@ func (f *formatter) writeFileHeader() {
 			continue
 		}
 	}
-	if f.fileNode.Syntax == nil && f.fileNode.Edition == nil && packageNode == nil && importNodes == nil && optionNodes == nil {
+	if f.fileNode.GetSyntaxNode() == nil && f.fileNode.GetEditionNode() == nil && packageNode == nil && importNodes == nil && optionNodes == nil {
 		// There aren't any header values, so we can return early.
 		return
 	}
-	if syntaxNode := f.fileNode.Syntax; syntaxNode != nil {
+	if syntaxNode := f.fileNode.GetSyntaxNode(); syntaxNode != nil {
 		f.writeSyntax(syntaxNode)
-	} else if editionNode := f.fileNode.Edition; editionNode != nil {
+	} else if editionNode := f.fileNode.GetEditionNode(); editionNode != nil {
 		f.writeEdition(editionNode)
 	}
 	if packageNode != nil {
@@ -343,7 +353,7 @@ func (f *formatter) writeFileHeader() {
 // writeFileTypes writes the types defined in a .proto file. This includes the messages, enums,
 // services, etc. All other elements are ignored since they are handled by f.writeFileHeader.
 func (f *formatter) writeFileTypes() {
-	for _, fileElement := range f.fileNode.Decls {
+	for _, fileElement := range f.fileNode.GetDecls() {
 		switch node := fileElement.(type) {
 		case *ast.PackageNode, *ast.OptionNode, *ast.ImportNode, *ast.EmptyDeclNode:
 			// These elements have already been written by f.writeFileHeader.
@@ -2162,7 +2172,7 @@ func (f *formatter) writeCompoundStringLiteralForArray(
 
 // writeFloatLiteral writes a float literal value (e.g. '42.2').
 func (f *formatter) writeFloatLiteral(floatLiteralNode *ast.FloatLiteralNode) {
-	f.writeRaw(floatLiteralNode)
+	f.WriteString(floatLiteralNode.Raw)
 }
 
 // writeSignedFloatLiteral writes a signed float literal value (e.g. '-42.2').
@@ -2211,18 +2221,17 @@ func (f *formatter) writeStringLiteral(stringLiteralNode *ast.StringLiteralNode)
 
 // writeUintLiteral writes a uint literal (e.g. '42').
 func (f *formatter) writeUintLiteral(uintLiteralNode *ast.UintLiteralNode) {
-	f.writeRaw(uintLiteralNode)
+	if uintLiteralNode.Raw != "" {
+		f.WriteString(uintLiteralNode.Raw)
+		return
+	}
+	f.WriteString(strconv.FormatUint(uint64(uintLiteralNode.Val), 10))
 }
 
 // writeNegativeIntLiteral writes a negative int literal (e.g. '-42').
 func (f *formatter) writeNegativeIntLiteral(negativeIntLiteralNode *ast.NegativeIntLiteralNode) {
 	f.writeInline(negativeIntLiteralNode.Minus)
 	f.writeInline(negativeIntLiteralNode.Uint)
-}
-
-func (f *formatter) writeRaw(n ast.Node) {
-	info := f.fileNode.NodeInfo(n)
-	f.WriteString(info.RawText())
 }
 
 // writeNegativeIntLiteralForArray writes a negative int literal value, but writes

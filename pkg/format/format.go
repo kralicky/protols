@@ -84,11 +84,9 @@ func PrintAndFormatFileDescriptor(fd protoreflect.FileDescriptor, out io.Writer)
 	return Format(&buf, out)
 }
 
-func PrintNode(fileNode *ast.FileNode, node ast.Node) (string, error) {
+func PrintNode(fileNode FileNodeInterface, node ast.Node) (string, error) {
 	if fileNode == nil {
-		info := ast.NewFileInfo("", nil, 0)
-		eof := info.AddToken(0, 0)
-		fileNode = ast.NewFileNode(info, nil, nil, eof)
+		fileNode = ast.NewEmptyFileNode("", 0)
 	}
 	if reflect.ValueOf(node).IsNil() {
 		return "", nil
@@ -116,4 +114,35 @@ func PrintNode(fileNode *ast.FileNode, node ast.Node) (string, error) {
 		str = str[lower:upper]
 	}
 	return str, nil
+}
+
+func NodeInfoOverlay(fileNode FileNodeInterface, infos map[ast.Node]ast.NodeInfo) FileNodeInterface {
+	for node := range infos {
+		if compositeNode, ok := node.(ast.CompositeNode); ok {
+			for _, child := range compositeNode.Children() {
+				if terminalNode, ok := child.(ast.TerminalNode); ok && terminalNode.Token() == 0 {
+					if _, ok := infos[child]; !ok {
+						infos[child] = ast.NodeInfo{}
+					}
+				}
+			}
+		}
+	}
+	return &fileNodeInfoOverlay{
+		FileNodeInterface: fileNode,
+		infos:             infos,
+	}
+}
+
+type fileNodeInfoOverlay struct {
+	FileNodeInterface
+
+	infos map[ast.Node]ast.NodeInfo
+}
+
+func (f *fileNodeInfoOverlay) NodeInfo(node ast.Node) ast.NodeInfo {
+	if info, ok := f.infos[node]; ok {
+		return info
+	}
+	return f.FileNodeInterface.NodeInfo(node)
 }

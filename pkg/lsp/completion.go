@@ -98,7 +98,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		return nil, nil
 	}
 
-	path, found := findNarrowestEnclosingScope(searchTarget, tokenAtOffset, params.Position)
+	path, found := findPathIntersectingToken(searchTarget, tokenAtOffset, params.Position)
 	if !found {
 		var completions []protocol.CompletionItem
 		if len(searchTarget.AST().Children()) == 1 { // only EOF

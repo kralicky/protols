@@ -30,7 +30,7 @@ func (c *Cache) TryFindPackageReferences(params protocol.TextDocumentPositionPar
 	fileNode := parseRes.AST()
 
 	tokenAtOffset, comment := fileNode.ItemAtOffset(offset)
-	if tokenAtOffset == ast.TokenError && comment.IsValid() {
+	if tokenAtOffset == ast.TokenError || comment.IsValid() {
 		return nil
 	}
 
@@ -148,7 +148,7 @@ func (c *Cache) tryHoverPackageNode(params protocol.TextDocumentPositionParams) 
 	fileNode := parseRes.AST()
 
 	tokenAtOffset, comment := fileNode.ItemAtOffset(offset)
-	if tokenAtOffset == ast.TokenError && comment.IsValid() {
+	if tokenAtOffset == ast.TokenError || comment.IsValid() {
 		return nil
 	}
 

@@ -32,7 +32,8 @@ Features in progress:
     - [x] Simplify repeated message literal fields
     - [ ] Simplify map literal fields
     - [x] Extract fields to new message
-    - [ ] Inline fields from message
+    - [x] Inline fields from message
+    - [x] Renumber message fields
   - [x] Code Lens
     - [x] Generate file/package/workspace
   - [x] Inlay hints

@@ -93,7 +93,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		searchTarget = currentParseRes
 	}
 	tokenAtOffset, comment := searchTarget.AST().ItemAtOffset(posOffset)
-	if tokenAtOffset == ast.TokenError && comment.IsValid() {
+	if comment.IsValid() {
 		// don't complete within comments
 		return nil, nil
 	}

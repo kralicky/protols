@@ -38,7 +38,7 @@ func (c *Cache) ComputeHover(params protocol.TextDocumentPositionParams) (*proto
 	}
 
 	tokenAtOffset, comment := parseRes.AST().ItemAtOffset(offset)
-	if tokenAtOffset == ast.TokenError && comment.IsValid() {
+	if tokenAtOffset == ast.TokenError || comment.IsValid() {
 		return nil, nil
 	}
 

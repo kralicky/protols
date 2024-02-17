@@ -6,7 +6,7 @@ require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.32.0-20231115204500-e097f827e652.1
 	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/bufbuild/protovalidate-go v0.5.1
-	github.com/google/cel-go v0.19.0
+	github.com/google/cel-go v0.20.0
 	github.com/google/uuid v1.4.0
 	github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f
 	github.com/kralicky/protocompile v0.0.0-20240214223154-11d0a995ee01

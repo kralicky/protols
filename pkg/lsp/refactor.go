@@ -193,112 +193,188 @@ type Analyzer func(ctx context.Context, request *protocol.CodeActionParams, link
 //	  string_list: ["foo", "bar"];
 //	};
 func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionParams, linkRes linker.Result, mapper *protocol.Mapper, results chan<- protocol.CodeAction) {
-	var tracker ast.AncestorTracker
-	parentsToSearch := map[ast.Node][]ast.Node{}
-	targetOptionNames := map[string]struct{}{}
-	optionNodePathsByParent := make(map[ast.Node]map[string][][]ast.Node)
+	var existingContainer *ast.OptionNode
+	var parentToSearch ast.Node
 
-	walkOpts := tracker.AsWalkOptions()
-	if request.Range != (protocol.Range{}) {
-		a := linkRes.AST()
-		startOff, endOff, _ := mapper.RangeOffsets(request.Range)
-		startToken := a.TokenAtOffset(startOff)
-		endToken := a.TokenAtOffset(endOff)
-		walkOpts = append(walkOpts, ast.WithRange(startToken, endToken))
+	if request.Range == (protocol.Range{}) || request.Range.Start != request.Range.End {
+		return
 	}
 
-	ast.Walk(linkRes.AST(), &ast.SimpleVisitor{
-		DoVisitOptionNode: func(node *ast.OptionNode) error {
-			if node.IsIncomplete() {
-				return nil
-			}
-			name := format.StringForOptionName(node.Name)
-			if _, ok := targetOptionNames[name]; ok {
-				return nil
-			}
-			targetOptionNames[name] = struct{}{}
-			parent := tracker.Parent()
-			parentPath := slices.Clone(tracker.Path())
-			parentsToSearch[parent] = parentPath[:len(parentPath)-2]
-			optionNodePathsByParent[parent] = make(map[string][][]ast.Node)
-			return nil
-		},
-	}, walkOpts...)
-
-	for parent, path := range parentsToSearch {
-		tracker := ast.AncestorTrackerFromPath(path)
-		ast.Walk(parent, &ast.SimpleVisitor{
-			DoVisitOptionNode: func(node *ast.OptionNode) error {
-				if node.IsIncomplete() {
-					return nil
-				}
-				parent := tracker.Parent()
-				if _, ok := optionNodePathsByParent[parent]; !ok {
-					return nil
-				}
-				name := format.StringForOptionName(node.Name)
-
-				optionNodePathsByParent[parent][name] = append(optionNodePathsByParent[parent][name], slices.Clone(tracker.Path()))
-				return nil
-			},
-		}, tracker.AsWalkOptions()...)
+	offset, err := mapper.PositionOffset(request.Range.Start)
+	if err != nil {
+		return
+	}
+	token, comment := linkRes.AST().ItemAtOffset(offset)
+	if token == ast.TokenError || comment.IsValid() {
+		return
 	}
 
-	for parent, optionNodePathsByName := range optionNodePathsByParent {
-		for targetOptionName := range targetOptionNames {
-			optionNodePaths, ok := optionNodePathsByName[targetOptionName]
-			if !ok || len(optionNodePaths) < 2 {
-				continue
-			}
-			fileNode := linkRes.AST()
+	path, ok := findPathIntersectingToken(linkRes, token, request.Range.Start)
+	if !ok {
+		return
+	}
+	fieldRefNode, ok := path[len(path)-1].(*ast.FieldReferenceNode)
+	if !ok {
+		return
+	}
+	optNameNode, ok := path[len(path)-2].(*ast.OptionNameNode)
+	if !ok {
+		return
+	}
 
-			var insert *ast.OptionNode
-			var insertPos protocol.Position
-			var remove []ast.Node
+	indexIntoName := slices.Index(optNameNode.Parts, fieldRefNode)
+	var targetExtension protoreflect.ExtensionDescriptor
+	targetField := linkRes.FindFieldDescriptorByFieldReferenceNode(fieldRefNode)
+	if targetField == nil {
+		return
+	}
+	var targetExtensionNameNode *ast.FieldReferenceNode
+	for i := indexIntoName; i >= 0; i-- {
+		namePart := optNameNode.Parts[i]
+		if !namePart.IsExtension() {
+			continue
+		}
+		namePartDesc := linkRes.OptionNamePartDescriptor(namePart)
+		extDesc := linkRes.FindOptionNameFieldDescriptor(namePartDesc)
+		if extDesc == nil || !extDesc.IsExtension() {
+			return
+		}
+		targetExtension = extDesc
+		targetExtensionNameNode = namePart
+		break
+	}
 
-			switch parent := parent.(type) {
-			case *ast.MessageNode:
-				var insertIdx int
-				insert, insertIdx, remove = buildSimplifyOptionsASTChanges(optionNodePathsByName, targetOptionName, parent.Decls)
-				if insertIdx == -1 {
-					continue
-				}
-				insertPos, _ = mapper.OffsetPosition(fileNode.NodeInfo(parent.Decls[insertIdx]).Start().Offset)
-			case *ast.FileNode:
-				var insertIdx int
-				insert, insertIdx, remove = buildSimplifyOptionsASTChanges(optionNodePathsByName, targetOptionName, parent.Decls)
-				if insertIdx == -1 {
-					continue
-				}
-				insertPos, _ = mapper.OffsetPosition(fileNode.NodeInfo(parent.Decls[insertIdx]).Start().Offset)
-			default:
-				continue
+	if targetField.Cardinality() != protoreflect.Repeated {
+		return
+	}
+	for i := len(path) - 2; i >= 0; i-- {
+		if opt, ok := path[i].(*ast.OptionNode); ok {
+			if opt.Name.Parts[len(opt.Name.Parts)-1] == path[len(path)-1] {
+				// 'option (parent).frn = ...'
+			} else if len(opt.Name.Parts) == 1 {
+				// 'option (parent) = ...'
+				existingContainer = opt
 			}
-
-			insertEdit, err := formatNodeInsertEdit(fileNode, insert, insertPos)
-			if err != nil {
-				continue
-			}
-			removalEdits := formatNodeRemovalEdits(fileNode, remove, insertPos)
-
-			action := protocol.CodeAction{
-				Title: "Simplify repeated options",
-				Kind:  protocol.RefactorRewrite,
-				Edit: &protocol.WorkspaceEdit{
-					Changes: map[protocol.DocumentURI][]protocol.TextEdit{
-						mapper.URI: append(removalEdits, insertEdit),
-					},
-				},
-			}
-			results <- action
+			parentToSearch = path[i-1]
+			break
 		}
 	}
+	if parentToSearch == nil {
+		return
+	}
+	if existingContainer == nil {
+		ast.Inspect(parentToSearch, func(node ast.Node) bool {
+			switch node := node.(type) {
+			case *ast.OptionNode:
+				if node.IsIncomplete() {
+					return false
+				}
+				if existingContainer != nil {
+					return false
+				}
+				for i, part := range node.Name.Parts {
+					if part.IsExtension() {
+						namePartDesc := linkRes.OptionNamePartDescriptor(part)
+						extDesc := linkRes.FindOptionNameFieldDescriptor(namePartDesc)
+						if extDesc == targetExtension {
+							if i == len(node.Name.Parts)-1 {
+								existingContainer = node
+								return false
+							}
+						}
+					}
+				}
+				return false
+			}
+			return true
+		})
+	}
+	paths := [][3]ast.Node{} // [parent, option, field]
+	var tracker ast.AncestorTracker
+	ast.Inspect(parentToSearch, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.OptionNode:
+			if node.IsIncomplete() {
+				return false
+			}
+			for i, part := range node.Name.Parts {
+				if part.IsExtension() {
+					namePartDesc := linkRes.OptionNamePartDescriptor(part)
+					extDesc := linkRes.FindOptionNameFieldDescriptor(namePartDesc)
+					if extDesc == targetExtension {
+						if i == len(node.Name.Parts)-2 {
+							last := node.Name.Parts[len(node.Name.Parts)-1]
+							namePartDesc := linkRes.OptionNamePartDescriptor(last)
+							fldDesc := linkRes.FindOptionNameFieldDescriptor(namePartDesc)
+							if fldDesc == targetField {
+								// 'option (parent).frn = ...'
+								paths = append(paths, [3]ast.Node{parentToSearch, node, last})
+								return false
+							}
+						} else if i == len(node.Name.Parts)-1 {
+							// 'option (parent) = { ... }'
+							return true // allow the visitor to continue to message field nodes
+						}
+					}
+				}
+			}
+			return false
+		case *ast.MessageFieldNode:
+			if node.IsIncomplete() {
+				return false
+			}
+
+			fd := linkRes.FindFieldDescriptorByMessageFieldNode(node)
+			if fd != targetField {
+				return true
+			}
+
+			path := slices.Clone(tracker.Path())
+			var containingOption *ast.OptionNode
+			for i := len(path) - 1; i >= 0; i-- {
+				if opt, ok := path[i].(*ast.OptionNode); ok {
+					containingOption = opt
+					break
+				}
+			}
+
+			paths = append(paths, [3]ast.Node{parentToSearch, containingOption, node})
+		}
+		return true
+	}, tracker.AsWalkOptions()...)
+
+	fileNode := linkRes.AST()
+
+	var edits []protocol.TextEdit
+
+	switch parent := parentToSearch.(type) {
+	case *ast.MessageNode:
+		edits = calcSimplifyRepeatedOptionsEdits(fileNode, existingContainer, targetExtensionNameNode, parent.Decls, paths)
+	case *ast.FileNode:
+		edits = calcSimplifyRepeatedOptionsEdits(fileNode, existingContainer, targetExtensionNameNode, parent.Decls, paths)
+	default:
+		return
+	}
+
+	action := protocol.CodeAction{
+		Title: "Simplify repeated options",
+		Kind:  protocol.RefactorRewrite,
+		Edit: &protocol.WorkspaceEdit{
+			Changes: map[protocol.DocumentURI][]protocol.TextEdit{
+				mapper.URI: edits,
+			},
+		},
+	}
+	results <- action
 }
 
-func newFieldVisitor(tracker *ast.AncestorTracker, paths *[][]ast.Node) ast.Visitor {
-	return &ast.SimpleVisitor{
-		DoVisitMessageDeclNode: visitEnclosingRange[ast.MessageDeclNode](tracker, paths),
-		DoVisitFieldDeclNode:   visitEnclosingRange[ast.FieldDeclNode](tracker, paths),
+func newFieldVisitor(tracker *ast.AncestorTracker, paths *[][]ast.Node) func(ast.Node) bool {
+	return func(node ast.Node) bool {
+		switch node.(type) {
+		case ast.MessageDeclNode, ast.FieldDeclNode:
+			return visitEnclosingRange(tracker, paths)
+		}
+		return false
 	}
 }
 
@@ -428,27 +504,54 @@ func extractFields(ctx context.Context, request *protocol.CodeActionParams, link
 						}
 					}
 				}
-				newFld := ast.NewFieldNode(fld.Label.KeywordNode, newFldType, fld.Name, fld.Equals, &ast.UintLiteralNode{Val: uint64(i + 1)}, fld.Options)
-				newFld.AddSemicolon(fld.Semicolon)
+				newFld := &ast.FieldNode{
+					Label:     fld.Label,
+					FldType:   newFldType,
+					Name:      fld.Name,
+					Equals:    fld.Equals,
+					Tag:       &ast.UintLiteralNode{Val: uint64(i + 1)},
+					Options:   fld.Options,
+					Semicolon: fld.Semicolon,
+				}
 				newMsgFields = append(newMsgFields, newFld)
 			}
 			newMsgName := findNewUnusedMessageName(desc)
 			newFieldName := findNewUnusedFieldName(desc, "newField")
-			newMessage := ast.NewMessageNode(&ast.KeywordNode{Val: "message"}, &ast.IdentNode{Val: newMsgName}, &ast.RuneNode{Rune: '{'}, newMsgFields, &ast.RuneNode{Rune: '}'})
+			newMessage := &ast.MessageNode{
+				Keyword:    &ast.KeywordNode{Val: "message"},
+				Name:       &ast.IdentNode{Val: newMsgName},
+				OpenBrace:  &ast.RuneNode{Rune: '{'},
+				Decls:      newMsgFields,
+				CloseBrace: &ast.RuneNode{Rune: '}'},
+				Semicolon:  &ast.RuneNode{Rune: ';'},
+			}
 
 			var label *ast.KeywordNode
 			if isProto2(fileNode) {
 				label = &ast.KeywordNode{Val: "optional"}
 			}
-			newParentMessageField := ast.NewFieldNode(label, &ast.IdentNode{Val: newMsgName}, &ast.IdentNode{Val: newFieldName}, &ast.RuneNode{Rune: '='}, &ast.UintLiteralNode{Val: enclosedFields[0].Tag.Val}, nil)
-			newParentMessageField.AddSemicolon(&ast.RuneNode{Rune: ';'})
+			newParentMessageField := &ast.FieldNode{
+				Label:     label,
+				FldType:   &ast.IdentNode{Val: newMsgName},
+				Name:      &ast.IdentNode{Val: newFieldName},
+				Equals:    &ast.RuneNode{Rune: '='},
+				Tag:       &ast.UintLiteralNode{Val: enclosedFields[0].Tag.Val},
+				Semicolon: &ast.RuneNode{Rune: ';'},
+			}
 			for i, v := range updatedParentFields {
 				if v == nil {
 					updatedParentFields[i] = newParentMessageField
 					break
 				}
 			}
-			updatedParent := ast.NewMessageNode(msgNode.Keyword, msgNode.Name, msgNode.OpenBrace, updatedParentFields, msgNode.CloseBrace)
+			updatedParent := &ast.MessageNode{
+				Keyword:    msgNode.Keyword,
+				Name:       msgNode.Name,
+				OpenBrace:  msgNode.OpenBrace,
+				Decls:      updatedParentFields,
+				CloseBrace: msgNode.CloseBrace,
+				Semicolon:  msgNode.Semicolon,
+			}
 
 			updatedParentText, err := format.PrintNode(format.NodeInfoOverlay(fileNode, map[ast.Node]ast.NodeInfo{
 				newMessage:            {},
@@ -584,8 +687,14 @@ func inlineMessageFields(ctx context.Context, request *protocol.CodeActionParams
 					fldName = protoreflect.Name(findNewUnusedFieldName(containingMessageDesc, string(fldName)))
 				}
 				fldNumber := startNumber + uint64(j)
-				newField := ast.NewFieldNode(label, &ast.IdentNode{Val: fieldType}, &ast.IdentNode{Val: string(fldName)}, &ast.RuneNode{Rune: '='}, &ast.UintLiteralNode{Val: fldNumber}, nil)
-				newField.AddSemicolon(&ast.RuneNode{Rune: ';'})
+				newField := &ast.FieldNode{
+					Label:     label,
+					FldType:   &ast.IdentNode{Val: fieldType},
+					Name:      &ast.IdentNode{Val: string(fldName)},
+					Equals:    &ast.RuneNode{Rune: '='},
+					Tag:       &ast.UintLiteralNode{Val: fldNumber},
+					Semicolon: &ast.RuneNode{Rune: ';'},
+				}
 				toInsert = append(toInsert, newField)
 				mask[newField] = ast.NodeInfo{}
 			}
@@ -597,13 +706,14 @@ func inlineMessageFields(ctx context.Context, request *protocol.CodeActionParams
 			break
 		}
 
-		updatedMessage := ast.NewMessageNode(
-			containingMessage.Keyword,
-			containingMessage.Name,
-			containingMessage.OpenBrace,
-			updatedMsgFields,
-			containingMessage.CloseBrace,
-		)
+		updatedMessage := &ast.MessageNode{
+			Keyword:    containingMessage.Keyword,
+			Name:       containingMessage.Name,
+			OpenBrace:  containingMessage.OpenBrace,
+			Decls:      updatedMsgFields,
+			CloseBrace: containingMessage.CloseBrace,
+			Semicolon:  containingMessage.Semicolon,
+		}
 
 		updatedMessageText, err := format.PrintNode(format.NodeInfoOverlay(fileNode, mask), updatedMessage)
 		if err != nil {
@@ -680,29 +790,30 @@ func renumberFields(ctx context.Context, request *protocol.CodeActionParams, lin
 		}
 		for i, decl := range msgNode.Decls {
 			if fld, ok := decl.(*ast.FieldNode); ok {
-				newFld := ast.NewFieldNode(
-					fld.Label.KeywordNode,
-					fld.FldType,
-					fld.Name,
-					fld.Equals,
-					&ast.UintLiteralNode{Val: uint64(number)},
-					fld.Options,
-				)
+				newFld := &ast.FieldNode{
+					Label:     fld.Label,
+					FldType:   fld.FldType,
+					Name:      fld.Name,
+					Equals:    fld.Equals,
+					Tag:       &ast.UintLiteralNode{Val: uint64(number)},
+					Options:   fld.Options,
+					Semicolon: fld.Semicolon,
+				}
 				mask[fld.Tag] = fileNode.NodeInfo(fld.Tag)
-				newFld.AddSemicolon(fld.Semicolon)
 				updatedMsgFields[i] = newFld
 				number++
 			} else {
 				updatedMsgFields[i] = decl
 			}
 		}
-		updatedMessage := ast.NewMessageNode(
-			msgNode.Keyword,
-			msgNode.Name,
-			msgNode.OpenBrace,
-			updatedMsgFields,
-			msgNode.CloseBrace,
-		)
+		updatedMessage := &ast.MessageNode{
+			Keyword:    msgNode.Keyword,
+			Name:       msgNode.Name,
+			OpenBrace:  msgNode.OpenBrace,
+			Decls:      updatedMsgFields,
+			CloseBrace: msgNode.CloseBrace,
+			Semicolon:  msgNode.Semicolon,
+		}
 
 		updatedMessageText, err := format.PrintNode(format.NodeInfoOverlay(fileNode, mask), updatedMessage)
 		if err != nil {
@@ -762,19 +873,191 @@ func indentText(text string, indentation int) string {
 	return strings.Repeat(" ", indentation) + indentTextHanging(text, indentation)
 }
 
-func formatNodeInsertEdit(fileNode *ast.FileNode, node ast.Node, insertPos protocol.Position) (protocol.TextEdit, error) {
-	newText, err := format.PrintNode(fileNode, node)
-	if err != nil {
-		return protocol.TextEdit{}, err
+func calcSimplifyRepeatedOptionsEdits[E interface {
+	comparable
+	ast.Node
+}, S ~[]E](
+	fileNode *ast.FileNode,
+	existingContainer *ast.OptionNode,
+	extName *ast.FieldReferenceNode,
+	decls S,
+	paths [][3]ast.Node,
+) (
+	edits []protocol.TextEdit,
+) {
+	if len(paths) == 0 {
+		return nil
+	}
+	const (
+		parentIdx     = 0
+		optionNodeIdx = 1
+		fieldIndex    = 2
+	)
+	firstOptNode := paths[0][optionNodeIdx].(*ast.OptionNode)
+	if firstOptNode.IsIncomplete() {
+		return nil
+	}
+	parentNode := paths[0][parentIdx].(ast.Node)
+	firstFieldNode := paths[0][fieldIndex].(*ast.MessageFieldNode)
+
+	var containerArrayNode *ast.ArrayLiteralNode
+
+	var removeWithinExisting []*ast.MessageFieldNode
+	var removeWithinParent []E
+
+	var pathsWithinContainer [][3]ast.Node
+	var pathsOutsideContainer [][3]ast.Node
+	if existingContainer == nil {
+		pathsOutsideContainer = paths
+	} else {
+		for _, path := range paths {
+			if path[optionNodeIdx] == existingContainer {
+				pathsWithinContainer = append(pathsWithinContainer, path)
+			} else {
+				pathsOutsideContainer = append(pathsOutsideContainer, path)
+			}
+		}
 	}
 
+	if len(pathsWithinContainer) > 0 {
+		for _, path := range pathsWithinContainer {
+			fld := path[fieldIndex].(*ast.MessageFieldNode)
+			if val, ok := fld.Val.(*ast.ArrayLiteralNode); ok {
+				containerArrayNode = &ast.ArrayLiteralNode{
+					OpenBracket:  val.OpenBracket,
+					Elements:     val.Elements,
+					Commas:       val.Commas,
+					CloseBracket: val.CloseBracket,
+					Semicolon:    val.Semicolon,
+				}
+				removeWithinExisting = append(removeWithinExisting, fld)
+				break
+			}
+		}
+	}
+	var newOptionNode *ast.OptionNode
+	if containerArrayNode == nil {
+		containerArrayNode = &ast.ArrayLiteralNode{
+			OpenBracket:  &ast.RuneNode{Rune: '['},
+			CloseBracket: &ast.RuneNode{Rune: ']'},
+			Semicolon:    &ast.RuneNode{Rune: ';'},
+		}
+		msgField := &ast.MessageFieldNode{
+			Name:      firstFieldNode.Name,
+			Sep:       &ast.RuneNode{Rune: ':'},
+			Val:       containerArrayNode,
+			Semicolon: &ast.RuneNode{Rune: ';'},
+		}
+		msgLit := &ast.MessageLiteralNode{
+			Open:      &ast.RuneNode{Rune: '{'},
+			Elements:  []*ast.MessageFieldNode{msgField},
+			Seps:      []*ast.RuneNode{nil},
+			Close:     &ast.RuneNode{Rune: '}'},
+			Semicolon: &ast.RuneNode{Rune: ';'},
+		}
+		newOptionNode = &ast.OptionNode{
+			Keyword:   firstOptNode.Keyword,
+			Name:      &ast.OptionNameNode{Parts: []*ast.FieldReferenceNode{extName}},
+			Equals:    firstOptNode.Equals,
+			Val:       msgLit,
+			Semicolon: firstOptNode.Semicolon,
+		}
+	}
+
+	for _, path := range pathsWithinContainer {
+		msgField := path[fieldIndex].(*ast.MessageFieldNode)
+		switch val := msgField.Val.(type) {
+		case *ast.ArrayLiteralNode:
+			for _, elem := range val.Elements {
+				if !slices.Contains(containerArrayNode.Elements, elem) {
+					containerArrayNode.Elements = append(containerArrayNode.Elements, elem)
+				}
+			}
+		default:
+			containerArrayNode.Elements = append(containerArrayNode.Elements, val)
+		}
+		removeWithinExisting = append(removeWithinExisting, msgField)
+	}
+	for _, path := range pathsOutsideContainer {
+		optionNode := path[optionNodeIdx].(*ast.OptionNode)
+		switch val := optionNode.Val.(type) {
+		case *ast.ArrayLiteralNode:
+			containerArrayNode.Elements = append(containerArrayNode.Elements, val.Elements...)
+		default:
+			containerArrayNode.Elements = append(containerArrayNode.Elements, val)
+		}
+		removeWithinParent = append(removeWithinParent, path[optionNodeIdx].(E))
+	}
+	commas := slices.Clone(containerArrayNode.Commas)
+	for i := len(commas); i < len(containerArrayNode.Elements)-1; i++ {
+		commas = append(commas, &ast.RuneNode{Rune: ','})
+	}
+	containerArrayNode.Commas = commas
+
+	if newOptionNode != nil {
+		// insert the new option node at the correct position into the parent
+		var insertPos protocol.Position
+		insertIdx := calcInsertIndex(parentNode, decls, removeWithinParent)
+		if insertIdx == len(decls) {
+			insertPos = toPosition(fileNode.NodeInfo(decls[len(decls)-1]).End())
+		} else {
+			insertPos = toPosition(fileNode.NodeInfo(decls[insertIdx]).Start())
+		}
+		edits = append(edits, formatNodeInsertEdit(fileNode, newOptionNode, insertPos))
+		edits = append(edits, formatNodeRemovalEdits(fileNode, removeWithinParent, insertPos)...)
+	} else {
+		var insertPos protocol.Position
+		existingLit := existingContainer.Val.(*ast.MessageLiteralNode)
+		existingElems := existingLit.Elements
+		insertIdx := calcInsertIndex(existingContainer, existingElems, removeWithinExisting)
+		if insertIdx == len(existingElems) {
+			insertPos = toPosition(fileNode.NodeInfo(existingElems[len(existingElems)-1]).End())
+		} else {
+			insertPos = toPosition(fileNode.NodeInfo(existingElems[insertIdx]).Start())
+		}
+		edits = append(edits, formatNodeRemovalEdits(fileNode, removeWithinExisting, insertPos)...)
+		edits = append(edits, formatNodeInsertEdit(fileNode, existingLit, insertPos))
+	}
+
+	return
+}
+
+func calcInsertIndex[E interface {
+	comparable
+	ast.Node
+}, S ~[]E](existing ast.Node, elems S, remove S) int {
+	for i, elem := range elems {
+		if reflect.ValueOf(elem).Equal(reflect.ValueOf(existing)) {
+			return i
+		} else {
+			for i, elem := range elems {
+				if slices.Contains(remove, elem) {
+					return i
+				}
+			}
+		}
+	}
+	return len(elems)
+}
+
+func formatNodeInsertEdit[E interface {
+	comparable
+	ast.Node
+}](fileNode *ast.FileNode, node E, insertPos protocol.Position) protocol.TextEdit {
+	newText, err := format.PrintNode(fileNode, node)
+	if err != nil {
+		panic(err)
+	}
 	return protocol.TextEdit{
 		Range:   protocol.Range{Start: insertPos, End: insertPos},
 		NewText: indentTextHanging(newText, int(insertPos.Character)),
-	}, nil
+	}
 }
 
-func formatNodeRemovalEdits(fileNode *ast.FileNode, nodes []ast.Node, insertPos protocol.Position) []protocol.TextEdit {
+func formatNodeRemovalEdits[E interface {
+	comparable
+	ast.Node
+}, S ~[]E](fileNode *ast.FileNode, nodes S, insertPos protocol.Position) []protocol.TextEdit {
 	removalEdits := make([]protocol.TextEdit, 0, len(nodes))
 	for _, node := range nodes {
 		info := fileNode.NodeInfo(node)
@@ -794,75 +1077,76 @@ func formatNodeRemovalEdits(fileNode *ast.FileNode, nodes []ast.Node, insertPos 
 	return removalEdits
 }
 
-func buildSimplifyOptionsASTChanges[E ast.Node, S ~[]E](
-	optionNodePathsByName map[string][][]ast.Node,
-	targetOptionName string,
-	currentElements S,
-) (insert *ast.OptionNode, insertIdx int, remove []ast.Node) {
-	optionNodePaths := optionNodePathsByName[targetOptionName]
+func buildSimplifyOptionsASTChanges[E interface {
+	comparable
+	ast.Node
+}](
+	existingContainer *ast.OptionNode,
+	extName *ast.FieldReferenceNode,
+	paths [][3]ast.Node,
+) (insert *ast.OptionNode, removeWithinParent []E, removeWithinExisting []ast.Node) {
+	// nodeMap := make(map[*ast.OptionNode]struct{})
+	// for _, optionNodePath := range paths {
+	// 	nodeMap[optionNodePath[optionNodeIdx].(*ast.OptionNode)] = struct{}{}
+	// }
+	// toCompact := make([]*ast.OptionNode, 0, len(paths))
+	// insertIdx = -1
+	// for i, elem := range currentElements {
+	// 	node := ast.Node(elem)
+	// 	if optNode, ok := node.(*ast.OptionNode); ok {
+	// 		if _, ok := nodeMap[optNode]; ok {
+	// 			if insertIdx == -1 {
+	// 				insertIdx = i
+	// 			}
+	// 			toCompact = append(toCompact, optNode)
+	// 			remove = append(remove, elem)
+	// 			continue
+	// 		}
+	// 	}
+	// }
+	// if insertIdx == -1 || len(toCompact) == 0 {
+	// 	return nil, -1, nil
+	// }
+	// if len(toCompact[0].Name.Parts) == 1 {
+	// 	// can't compact this syntax
+	// 	return nil, -1, nil
+	// }
+	// vals := make([]ast.ValueNode, 0, len(toCompact))
+	// commas := make([]*ast.RuneNode, 0, len(toCompact)-1)
+	// for i, optNode := range toCompact {
+	// 	vals = append(vals, optNode.Val)
+	// 	if i < len(toCompact)-1 {
+	// 		commas = append(commas, &ast.RuneNode{Rune: ','})
+	// 	}
+	// }
+	// newArray := ast.NewArrayLiteralNode(&ast.RuneNode{Rune: '['}, vals, commas, &ast.RuneNode{Rune: ']'})
+	// newOptName := ast.NewOptionNameNode(toCompact[0].Name.Parts[:len(toCompact[0].Name.Parts)-1], toCompact[0].Name.Dots[:len(toCompact[0].Name.Dots)-1])
+	// newMsgField := ast.NewMessageFieldNode(toCompact[0].Name.Parts[len(toCompact[0].Name.Parts)-1], &ast.RuneNode{Rune: ':'}, newArray)
 
-	nodeMap := make(map[*ast.OptionNode]struct{})
-	for _, optionNodePath := range optionNodePaths {
-		nodeMap[optionNodePath[len(optionNodePath)-1].(*ast.OptionNode)] = struct{}{}
-	}
-	toCompact := make([]*ast.OptionNode, 0, len(optionNodePaths))
-	insertIdx = -1
-	for i, elem := range currentElements {
-		node := ast.Node(elem)
-		if optNode, ok := node.(*ast.OptionNode); ok {
-			if _, ok := nodeMap[optNode]; ok {
-				if insertIdx == -1 {
-					insertIdx = i
-				}
-				toCompact = append(toCompact, optNode)
-				remove = append(remove, elem)
-				continue
-			}
-		}
-	}
-	if insertIdx == -1 || len(toCompact) == 0 {
-		return nil, -1, nil
-	}
-	if len(toCompact[0].Name.Parts) == 1 {
-		// can't compact this syntax
-		return nil, -1, nil
-	}
-	vals := make([]ast.ValueNode, 0, len(toCompact))
-	commas := make([]*ast.RuneNode, 0, len(toCompact)-1)
-	for i, optNode := range toCompact {
-		vals = append(vals, optNode.Val)
-		if i < len(toCompact)-1 {
-			commas = append(commas, &ast.RuneNode{Rune: ','})
-		}
-	}
-	newArray := ast.NewArrayLiteralNode(&ast.RuneNode{Rune: '['}, vals, commas, &ast.RuneNode{Rune: ']'})
-	newOptName := ast.NewOptionNameNode(toCompact[0].Name.Parts[:len(toCompact[0].Name.Parts)-1], toCompact[0].Name.Dots[:len(toCompact[0].Name.Dots)-1])
-	newMsgField := ast.NewMessageFieldNode(toCompact[0].Name.Parts[len(toCompact[0].Name.Parts)-1], &ast.RuneNode{Rune: ':'}, newArray)
+	// if existing, ok := optionNodePathsByName[format.StringForOptionName(newOptName)]; ok && len(existing) > 0 {
+	// 	prev := existing[0][len(existing[0])-1].(*ast.OptionNode)
+	// 	remove = append(remove, prev)
+	// 	for i, elem := range currentElements {
+	// 		if reflect.ValueOf(elem).Equal(reflect.ValueOf(prev)) {
+	// 			insertIdx = i
+	// 			break
+	// 		}
+	// 	}
 
-	if existing, ok := optionNodePathsByName[format.StringForOptionName(newOptName)]; ok && len(existing) > 0 {
-		prev := existing[0][len(existing[0])-1].(*ast.OptionNode)
-		remove = append(remove, prev)
-		for i, elem := range currentElements {
-			if reflect.ValueOf(elem).Equal(reflect.ValueOf(prev)) {
-				insertIdx = i
-				break
-			}
-		}
+	// 	prevVal := prev.Val.(*ast.MessageLiteralNode)
+	// 	var dupRuneNode *ast.RuneNode
+	// 	if len(prevVal.Seps) > 0 && prevVal.Seps[len(prevVal.Seps)-1] != nil {
+	// 		dupRuneNode = &ast.RuneNode{Rune: prevVal.Seps[len(prevVal.Seps)-1].Rune}
+	// 	}
 
-		prevVal := prev.Val.(*ast.MessageLiteralNode)
-		var dupRuneNode *ast.RuneNode
-		if len(prevVal.Seps) > 0 && prevVal.Seps[len(prevVal.Seps)-1] != nil {
-			dupRuneNode = &ast.RuneNode{Rune: prevVal.Seps[len(prevVal.Seps)-1].Rune}
-		}
-
-		msgLit := ast.NewMessageLiteralNode(prevVal.Open, append(prevVal.Elements, newMsgField), append(prevVal.Seps, dupRuneNode), prevVal.Close)
-		insert = ast.NewOptionNode(prev.Keyword, prev.Name, prev.Equals, msgLit)
-		insert.AddSemicolon(prev.Semicolon)
-	} else {
-		newMsgLit := ast.NewMessageLiteralNode(&ast.RuneNode{Rune: '{'}, []*ast.MessageFieldNode{newMsgField}, []*ast.RuneNode{nil}, &ast.RuneNode{Rune: '}'})
-		insert = ast.NewOptionNode(toCompact[0].Keyword, newOptName, toCompact[0].Equals, newMsgLit)
-		insert.AddSemicolon(toCompact[0].Semicolon)
-	}
+	// 	msgLit := ast.NewMessageLiteralNode(prevVal.Open, append(prevVal.Elements, newMsgField), append(prevVal.Seps, dupRuneNode), prevVal.Close)
+	// 	insert = ast.NewOptionNode(prev.Keyword, prev.Name, prev.Equals, msgLit)
+	// 	insert.AddSemicolon(prev.Semicolon)
+	// } else {
+	// 	newMsgLit := ast.NewMessageLiteralNode(&ast.RuneNode{Rune: '{'}, []*ast.MessageFieldNode{newMsgField}, []*ast.RuneNode{nil}, &ast.RuneNode{Rune: '}'})
+	// 	insert = ast.NewOptionNode(toCompact[0].Keyword, newOptName, toCompact[0].Equals, newMsgLit)
+	// 	insert.AddSemicolon(toCompact[0].Semicolon)
+	// }
 
 	return
 }
@@ -896,8 +1180,9 @@ func simplifyRepeatedFieldLiterals(ctx context.Context, request *protocol.CodeAc
 		startToken, _ = fileNode.Tokens().First()
 		endToken = fileNode.EOF.Token()
 	}
-	ast.Walk(fileNode, &ast.SimpleVisitor{
-		DoVisitMessageLiteralNode: func(node *ast.MessageLiteralNode) error {
+	ast.Inspect(fileNode, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.MessageLiteralNode:
 			var targetFieldName string
 			fieldsByName := map[string][]*ast.MessageFieldNode{}
 			for _, field := range node.Elements {
@@ -912,17 +1197,14 @@ func simplifyRepeatedFieldLiterals(ctx context.Context, request *protocol.CodeAc
 			}
 			targetFields := fieldsByName[targetFieldName]
 			if len(targetFields) < 2 {
-				return nil
+				return true
 			}
 			insertPos, _ := mapper.OffsetPosition(fileNode.NodeInfo(targetFields[0]).Start().Offset)
 
 			// found a duplicate field
 			insert, remove := buildSimplifyFieldLiteralsASTChanges(targetFields)
 
-			insertEdit, err := formatNodeInsertEdit(fileNode, insert, insertPos)
-			if err != nil {
-				return nil
-			}
+			insertEdit := formatNodeInsertEdit(fileNode, insert, insertPos)
 			removalEdits := formatNodeRemovalEdits(fileNode, remove, insertPos)
 
 			action := protocol.CodeAction{
@@ -935,8 +1217,9 @@ func simplifyRepeatedFieldLiterals(ctx context.Context, request *protocol.CodeAc
 				},
 			}
 			results <- action
-			return nil
-		},
+			return true
+		}
+		return true
 	}, walkOpts...)
 }
 
@@ -950,7 +1233,18 @@ func buildSimplifyFieldLiteralsASTChanges(fields []*ast.MessageFieldNode) (inser
 	for i := 0; i < len(fields)-1; i++ {
 		commas = append(commas, &ast.RuneNode{Rune: ','})
 	}
-	newArray := ast.NewArrayLiteralNode(&ast.RuneNode{Rune: '['}, vals, commas, &ast.RuneNode{Rune: ']'})
-	insert = ast.NewMessageFieldNode(fields[0].Name, fields[0].Sep, newArray)
+	newArray := &ast.ArrayLiteralNode{
+		OpenBracket:  &ast.RuneNode{Rune: '['},
+		Elements:     vals,
+		Commas:       commas,
+		CloseBracket: &ast.RuneNode{Rune: ']'},
+		Semicolon:    &ast.RuneNode{Rune: ';'},
+	}
+	insert = &ast.MessageFieldNode{
+		Name:      fields[0].Name,
+		Sep:       fields[0].Sep,
+		Val:       newArray,
+		Semicolon: &ast.RuneNode{Rune: ';'},
+	}
 	return
 }

@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"fmt"
 	"log/slog"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -301,8 +300,19 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 					if wantNode == containingField.Name {
 						want.desc = haveDesc.Descriptor()
 					} else {
-						composite, ok := containingField.FldType.(ast.CompositeNode)
-						if (ok && slices.Contains(composite.Children(), want.node)) || wantNode == containingField.FldType {
+						found := false
+						switch ident := containingField.FldType.(type) {
+						case *ast.IdentNode:
+							found = wantNode == ident
+						case *ast.CompoundIdentNode:
+							for _, comp := range ident.Components {
+								if wantNode == comp {
+									found = true
+									break
+								}
+							}
+						}
+						if found {
 							switch haveDesc.Kind() {
 							case protoreflect.MessageKind:
 								want.desc = haveDesc.Message()
@@ -624,7 +634,7 @@ func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, 
 		return protocol.Intersect(toRange(info), protocol.Range{Start: location, End: location})
 	}
 	intersectsLocationExclusive := func(node, end ast.Node) bool {
-		if reflect.ValueOf(end).IsNil() {
+		if ast.IsNil(end) {
 			return intersectsLocation(node)
 		}
 		if rn, ok := end.(*ast.RuneNode); ok && rn.Virtual {
@@ -641,58 +651,45 @@ func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, 
 	if tokenAtOffset != ast.TokenError {
 		opts = append(opts, ast.WithIntersection(tokenAtOffset))
 	}
-	ast.Walk(parseRes.AST(), &ast.SimpleVisitor{
-		DoVisitImportNode: func(node *ast.ImportNode) error {
+	ast.Inspect(parseRes.AST(), func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.ImportNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitSyntaxNode: func(node *ast.SyntaxNode) error {
+		case *ast.SyntaxNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitMessageNode: func(node *ast.MessageNode) error {
+		case *ast.MessageNode:
 			if intersectsLocationExclusive(node, node.CloseBrace) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitEnumNode: func(node *ast.EnumNode) error {
+		case *ast.EnumNode:
 			if intersectsLocationExclusive(node, node.CloseBrace) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitEnumValueNode: func(node *ast.EnumValueNode) error {
+		case *ast.EnumValueNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitServiceNode: func(node *ast.ServiceNode) error {
+		case *ast.ServiceNode:
 			if intersectsLocationExclusive(node, node.CloseBrace) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitRPCNode: func(node *ast.RPCNode) error {
+		case *ast.RPCNode:
 			var end ast.Node
 			if node.Semicolon != nil {
 				end = node.Semicolon
 			} else if node.CloseBrace != nil {
 				end = node.CloseBrace
 			} else {
-				return nil
+				break
 			}
 			if node.Semicolon != nil && intersectsLocationExclusive(node, end) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitExtendNode: func(node *ast.ExtendNode) error {
+		case *ast.ExtendNode:
 			if node.IsIncomplete() {
 				if intersectsLocation(node) {
 					paths = append(paths, slices.Clone(tracker.Path()))
@@ -700,27 +697,19 @@ func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, 
 			} else if intersectsLocationExclusive(node, node.CloseBrace) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitOptionNode: func(node *ast.OptionNode) error {
+		case *ast.OptionNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitMessageLiteralNode: func(node *ast.MessageLiteralNode) error {
+		case *ast.MessageLiteralNode:
 			if intersectsLocationExclusive(node, node.Close) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitOptionNameNode: func(node *ast.OptionNameNode) error {
+		case *ast.OptionNameNode:
 			if intersectsLocation(node) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitMessageFieldNode: func(node *ast.MessageFieldNode) error {
+		case *ast.MessageFieldNode:
 			if intersectsLocation(node) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
@@ -730,44 +719,32 @@ func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, 
 				// field name and the separator
 				paths = append(paths, append(slices.Clone(tracker.Path()), node.Name))
 			}
-			return nil
-		},
-		DoVisitCompactOptionsNode: func(node *ast.CompactOptionsNode) error {
+		case *ast.CompactOptionsNode:
 			if intersectsLocationExclusive(node, node.CloseBracket) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitFieldNode: func(node *ast.FieldNode) error {
+		case *ast.FieldNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitFieldReferenceNode: func(node *ast.FieldReferenceNode) error {
+		case *ast.FieldReferenceNode:
 			if intersectsLocation(node) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitRPCTypeNode: func(node *ast.RPCTypeNode) error {
+		case *ast.RPCTypeNode:
 			if intersectsLocationExclusive(node, node.CloseParen) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitPackageNode: func(node *ast.PackageNode) error {
+		case *ast.PackageNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
-		DoVisitErrorNode: func(en *ast.ErrorNode) error {
-			if intersectsLocation(en) {
+		case *ast.ErrorNode:
+			if intersectsLocation(node) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			return nil
-		},
+		}
+		return true
 	}, opts...)
 	if len(paths) == 0 {
 		return nil, false
@@ -780,42 +757,45 @@ func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, 
 	return paths[0], true
 }
 
-func visitEnclosingRange[T ast.Node](tracker *ast.AncestorTracker, paths *[][]ast.Node) func(T) error {
-	return func(node T) error {
-		p := slices.Clone(tracker.Path())
-		if len(*paths) == 0 {
-			*paths = append(*paths, p)
-		} else if len(p) >= len((*paths)[len(*paths)-1]) {
-			*paths = append(*paths, p)
+func visitEnclosingRange(tracker *ast.AncestorTracker, paths *[][]ast.Node) bool {
+	p := slices.Clone(tracker.Path())
+	if len(*paths) == 0 {
+		*paths = append(*paths, p)
+	} else if len(p) >= len((*paths)[len(*paths)-1]) {
+		*paths = append(*paths, p)
+	}
+	return true
+}
+
+func DefaultEnclosingRangeVisitor(tracker *ast.AncestorTracker, paths *[][]ast.Node) func(ast.Node) bool {
+	return func(node ast.Node) bool {
+		switch node.(type) {
+		case *ast.ImportNode,
+			*ast.SyntaxNode,
+			*ast.MessageNode,
+			*ast.EnumNode,
+			*ast.EnumValueNode,
+			*ast.ServiceNode,
+			*ast.RPCNode,
+			*ast.ExtendNode,
+			*ast.OptionNode,
+			*ast.MessageLiteralNode,
+			*ast.OptionNameNode,
+			*ast.MessageFieldNode,
+			*ast.CompactOptionsNode,
+			*ast.FieldNode,
+			*ast.FieldReferenceNode,
+			*ast.RPCTypeNode,
+			*ast.PackageNode,
+			*ast.ErrorNode:
+			return visitEnclosingRange(tracker, paths)
+		default:
+			return false
 		}
-		return nil
 	}
 }
 
-func DefaultEnclosingRangeVisitor(tracker *ast.AncestorTracker, paths *[][]ast.Node) ast.Visitor {
-	return &ast.SimpleVisitor{
-		DoVisitImportNode:         visitEnclosingRange[*ast.ImportNode](tracker, paths),
-		DoVisitSyntaxNode:         visitEnclosingRange[*ast.SyntaxNode](tracker, paths),
-		DoVisitMessageNode:        visitEnclosingRange[*ast.MessageNode](tracker, paths),
-		DoVisitEnumNode:           visitEnclosingRange[*ast.EnumNode](tracker, paths),
-		DoVisitEnumValueNode:      visitEnclosingRange[*ast.EnumValueNode](tracker, paths),
-		DoVisitServiceNode:        visitEnclosingRange[*ast.ServiceNode](tracker, paths),
-		DoVisitRPCNode:            visitEnclosingRange[*ast.RPCNode](tracker, paths),
-		DoVisitExtendNode:         visitEnclosingRange[*ast.ExtendNode](tracker, paths),
-		DoVisitOptionNode:         visitEnclosingRange[*ast.OptionNode](tracker, paths),
-		DoVisitMessageLiteralNode: visitEnclosingRange[*ast.MessageLiteralNode](tracker, paths),
-		DoVisitOptionNameNode:     visitEnclosingRange[*ast.OptionNameNode](tracker, paths),
-		DoVisitMessageFieldNode:   visitEnclosingRange[*ast.MessageFieldNode](tracker, paths),
-		DoVisitCompactOptionsNode: visitEnclosingRange[*ast.CompactOptionsNode](tracker, paths),
-		DoVisitFieldNode:          visitEnclosingRange[*ast.FieldNode](tracker, paths),
-		DoVisitFieldReferenceNode: visitEnclosingRange[*ast.FieldReferenceNode](tracker, paths),
-		DoVisitRPCTypeNode:        visitEnclosingRange[*ast.RPCTypeNode](tracker, paths),
-		DoVisitPackageNode:        visitEnclosingRange[*ast.PackageNode](tracker, paths),
-		DoVisitErrorNode:          visitEnclosingRange[*ast.ErrorNode](tracker, paths),
-	}
-}
-
-func findPathsEnclosingRange(parseRes parser.Result, start, end ast.Token, visitor ...func(tracker *ast.AncestorTracker, paths *[][]ast.Node) ast.Visitor) ([][]ast.Node, bool) {
+func findPathsEnclosingRange(parseRes parser.Result, start, end ast.Token, visitor ...func(tracker *ast.AncestorTracker, paths *[][]ast.Node) func(ast.Node) bool) ([][]ast.Node, bool) {
 	tracker := &ast.AncestorTracker{}
 	opts := tracker.AsWalkOptions()
 	opts = append(opts, ast.WithRange(start, end))
@@ -824,10 +804,7 @@ func findPathsEnclosingRange(parseRes parser.Result, start, end ast.Token, visit
 	if len(visitor) == 0 {
 		visitor = append(visitor, DefaultEnclosingRangeVisitor)
 	}
-	if err := ast.Walk(parseRes.AST(), visitor[0](tracker, &paths), opts...); err != nil {
-		return nil, false
-	}
-
+	ast.Inspect(parseRes.AST(), visitor[0](tracker, &paths), opts...)
 	if len(paths) == 0 {
 		return nil, false
 	}

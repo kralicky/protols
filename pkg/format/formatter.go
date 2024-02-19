@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -607,7 +606,7 @@ func (f *formatter) writeMessage(messageNode *ast.MessageNode) {
 	f.writeCompositeTypeBody(
 		messageNode.OpenBrace,
 		messageNode.CloseBrace,
-		ast.VirtualSemicolon(messageNode),
+		messageNode.Semicolon,
 		elementWriterFunc,
 	)
 }
@@ -700,18 +699,14 @@ func columnFormatElements[T ast.Node, C elementsContainer[T]](f *formatter, ctr 
 				//   }
 				// }
 				isMessageOrArrayLiteral := false
-			LOOP:
-				for _, c := range fieldNode.Children() {
-					switch c := c.(type) {
-					case *ast.MessageLiteralNode:
-						if f.compactMessageLiteralShouldBeExpanded(c) {
-							isMessageOrArrayLiteral = true
-						}
-						break LOOP
-					case *ast.ArrayLiteralNode:
-						if f.compactArrayLiteralShouldBeExpanded(c) {
-							isMessageOrArrayLiteral = true
-						}
+				switch val := fieldNode.Val.(type) {
+				case *ast.MessageLiteralNode:
+					if f.compactMessageLiteralShouldBeExpanded(val) {
+						isMessageOrArrayLiteral = true
+					}
+				case *ast.ArrayLiteralNode:
+					if f.compactArrayLiteralShouldBeExpanded(val) {
+						isMessageOrArrayLiteral = true
 					}
 				}
 				if isMessageOrArrayLiteral {
@@ -809,7 +804,7 @@ GROUPS:
 					fclone.writeField(elem)
 					continue
 				}
-				if elem.Label.KeywordNode != nil {
+				if elem.Label != nil {
 					fclone.writeStart(elem.Label, nodeWriter)
 					fclone.Space()
 					fclone.writeInline(elem.FldType)
@@ -849,7 +844,7 @@ GROUPS:
 				fclone.Space()
 				fclone.writeInline(elem.MapType.ValueType)
 				fclone.writeInline(elem.MapType.CloseAngle)
-				if vs := ast.VirtualSemicolon(elem.MapType); vs != nil {
+				if vs := elem.MapType.Semicolon; vs != nil {
 					info := f.fileNode.NodeInfo(vs)
 					if info.TrailingComments().Len() > 0 {
 						f.writeInlineComments(info.TrailingComments())
@@ -1081,7 +1076,7 @@ func (f *formatter) writeMessageLiteral(messageLiteralNode *ast.MessageLiteralNo
 	f.writeCompositeValueBody(
 		messageLiteralNode.Open,
 		messageLiteralNode.Close,
-		ast.VirtualSemicolon(messageLiteralNode),
+		messageLiteralNode.Semicolon,
 		elementWriterFunc,
 	)
 }
@@ -1111,7 +1106,7 @@ func (f *formatter) writeMessageLiteralForArray(
 	f.writeBody(
 		messageLiteralNode.Open,
 		messageLiteralNode.Close,
-		ast.VirtualSemicolon(messageLiteralNode),
+		messageLiteralNode.Semicolon,
 		elementWriterFunc,
 		f.writeOpenBracePrefixForArray,
 		closeWriter,
@@ -1127,7 +1122,7 @@ func (f *formatter) compactMessageLiteralShouldBeExpanded(messageLiteralNode *as
 		return true
 	}
 	// if len(messageLiteralNode.Elements) == 0 || len(messageLiteralNode.Elements) > 1 ||
-	// 	f.hasInteriorComments(messageLiteralNode.Children()...) ||
+	// 	f.hasInteriorComments(messageLiteralNode.GetChildren()...) ||
 	// 	messageLiteralHasNestedMessageOrArray(messageLiteralNode) {
 	// 	return false
 	// }
@@ -1338,7 +1333,7 @@ func (f *formatter) writeEnum(enumNode *ast.EnumNode) {
 	f.writeCompositeTypeBody(
 		enumNode.OpenBrace,
 		enumNode.CloseBrace,
-		ast.VirtualSemicolon(enumNode),
+		enumNode.Semicolon,
 		elementWriterFunc,
 	)
 }
@@ -1380,7 +1375,7 @@ func (f *formatter) writeField(fieldNode *ast.FieldNode) {
 	// We need to handle the comments for the field label specially since
 	// a label might not be defined, but it has the leading comments attached
 	// to it.
-	if fieldNode.Label.KeywordNode != nil {
+	if fieldNode.Label != nil {
 		f.writeStart(fieldNode.Label)
 		f.Space()
 		f.writeInline(fieldNode.FldType)
@@ -1437,7 +1432,7 @@ func (f *formatter) writeMapType(mapTypeNode *ast.MapTypeNode) {
 	f.Space()
 	f.writeInline(mapTypeNode.ValueType)
 	f.writeInline(mapTypeNode.CloseAngle)
-	if vs := ast.VirtualSemicolon(mapTypeNode); vs != nil {
+	if vs := mapTypeNode.Semicolon; vs != nil {
 		info := f.fileNode.NodeInfo(vs)
 		if info.TrailingComments().Len() > 0 {
 			f.writeInlineComments(info.TrailingComments())
@@ -1488,7 +1483,7 @@ func (f *formatter) writeExtend(extendNode *ast.ExtendNode) {
 	f.writeCompositeTypeBody(
 		extendNode.OpenBrace,
 		extendNode.CloseBrace,
-		ast.VirtualSemicolon(extendNode),
+		extendNode.Semicolon,
 		elementWriterFunc,
 	)
 }
@@ -1517,7 +1512,7 @@ func (f *formatter) writeService(serviceNode *ast.ServiceNode) {
 	f.writeCompositeTypeBody(
 		serviceNode.OpenBrace,
 		serviceNode.CloseBrace,
-		ast.VirtualSemicolon(serviceNode),
+		serviceNode.Semicolon,
 		elementWriterFunc,
 	)
 }
@@ -1560,7 +1555,7 @@ func (f *formatter) writeRPC(rpcNode *ast.RPCNode) {
 	f.writeCompositeTypeBody(
 		rpcNode.OpenBrace,
 		rpcNode.CloseBrace,
-		ast.VirtualSemicolon(rpcNode),
+		rpcNode.Semicolon,
 		elementWriterFunc,
 	)
 }
@@ -1600,7 +1595,7 @@ func (f *formatter) writeOneOf(oneOfNode *ast.OneofNode) {
 	f.writeCompositeTypeBody(
 		oneOfNode.OpenBrace,
 		oneOfNode.CloseBrace,
-		ast.VirtualSemicolon(oneOfNode),
+		oneOfNode.Semicolon,
 		elementWriterFunc,
 	)
 }
@@ -1628,7 +1623,7 @@ func (f *formatter) writeGroup(groupNode *ast.GroupNode) {
 	// We need to handle the comments for the group label specially since
 	// a label might not be defined, but it has the leading comments attached
 	// to it.
-	if groupNode.Label.KeywordNode != nil {
+	if groupNode.Label != nil {
 		f.writeStart(groupNode.Label)
 		f.Space()
 		f.writeInline(groupNode.Keyword)
@@ -1651,7 +1646,7 @@ func (f *formatter) writeGroup(groupNode *ast.GroupNode) {
 	f.writeCompositeTypeBody(
 		groupNode.OpenBrace,
 		groupNode.CloseBrace,
-		ast.VirtualSemicolon(groupNode),
+		groupNode.Semicolon,
 		elementWriterFunc,
 	)
 }
@@ -1738,7 +1733,7 @@ func (f *formatter) compactOptionsShouldBeExpanded(compactOptionsNode *ast.Compa
 	if strings.Contains(info.LeadingWhitespace(), "\n") {
 		return true
 	}
-	if f.hasInteriorComments(compactOptionsNode.Children()...) {
+	if hasInteriorComments(f, compactOptionsNode.Options...) {
 		return true
 	}
 
@@ -1777,7 +1772,7 @@ func (f *formatter) writeCompactOptions(compactOptionsNode *ast.CompactOptionsNo
 	defer func() {
 		f.inCompactOptions = false
 	}()
-	if !f.compactOptionsShouldBeExpanded(compactOptionsNode) && !f.hasInteriorComments(compactOptionsNode.Children()...) {
+	if !f.compactOptionsShouldBeExpanded(compactOptionsNode) && !hasInteriorComments(f, compactOptionsNode.Options...) {
 		// If there's only a single compact scalar option without comments, we can write it
 		// in-line. For example:
 		//
@@ -1840,12 +1835,12 @@ func (f *formatter) writeCompactOptions(compactOptionsNode *ast.CompactOptionsNo
 	f.writeCompositeValueBody(
 		compactOptionsNode.OpenBracket,
 		compactOptionsNode.CloseBracket,
-		ast.VirtualSemicolon(compactOptionsNode),
+		compactOptionsNode.Semicolon,
 		elementWriterFunc,
 	)
 }
 
-func (f *formatter) hasInteriorComments(nodes ...ast.Node) bool {
+func hasInteriorComments[T ast.Node](f *formatter, nodes ...T) bool {
 	for i, n := range nodes {
 		// interior comments mean we ignore leading comments on first
 		// token and trailing comments on the last one
@@ -1870,7 +1865,7 @@ func (f *formatter) hasInteriorComments(nodes ...ast.Node) bool {
 //	]
 func (f *formatter) writeArrayLiteral(arrayLiteralNode *ast.ArrayLiteralNode) {
 	if len(arrayLiteralNode.Elements) == 1 &&
-		!f.hasInteriorComments(arrayLiteralNode.Children()...) &&
+		!hasInteriorComments(f, arrayLiteralNode.Elements...) &&
 		!arrayLiteralHasNestedMessageOrArray(arrayLiteralNode) {
 		// arrays with a single scalar value and no comments can be
 		// printed all on one line
@@ -1886,8 +1881,8 @@ func (f *formatter) writeArrayLiteral(arrayLiteralNode *ast.ArrayLiteralNode) {
 		elementWriterFunc = func() {
 			for i := 0; i < len(arrayLiteralNode.Elements); i++ {
 				lastElement := i == len(arrayLiteralNode.Elements)-1
-				if compositeNode, ok := arrayLiteralNode.Elements[i].(ast.CompositeNode); ok {
-					f.writeCompositeValueForArrayLiteral(compositeNode, lastElement)
+				if _, ok := arrayLiteralNode.Elements[i].(ast.TerminalNodeInterface); !ok {
+					f.writeCompositeValueForArrayLiteral(arrayLiteralNode.Elements[i], lastElement)
 					if !lastElement {
 						f.writeLineEnd(arrayLiteralNode.Commas[i])
 					}
@@ -1906,7 +1901,7 @@ func (f *formatter) writeArrayLiteral(arrayLiteralNode *ast.ArrayLiteralNode) {
 	f.writeCompositeValueBody(
 		arrayLiteralNode.OpenBracket,
 		arrayLiteralNode.CloseBracket,
-		ast.VirtualSemicolon(arrayLiteralNode),
+		arrayLiteralNode.Semicolon,
 		elementWriterFunc,
 	)
 }
@@ -1932,7 +1927,7 @@ func (f *formatter) writeArrayLiteral(arrayLiteralNode *ast.ArrayLiteralNode) {
 // The lastElement boolean is used to signal whether or not the composite value
 // should be written as the last element (i.e. it doesn't have a trailing comma).
 func (f *formatter) writeCompositeValueForArrayLiteral(
-	compositeNode ast.CompositeNode,
+	compositeNode ast.Node,
 	lastElement bool,
 ) {
 	switch node := compositeNode.(type) {
@@ -1998,7 +1993,7 @@ func (f *formatter) writeBody(
 	closeBraceWriterFunc func(ast.Node, *ast.RuneNode, bool),
 ) {
 	if openBrace != nil && closeBrace != nil {
-		if elementWriterFunc == nil && !f.hasInteriorComments(openBrace, closeBrace) {
+		if elementWriterFunc == nil && !hasInteriorComments(f, openBrace, closeBrace) {
 			// completely empty body
 			f.writeInline(openBrace)
 			closeBraceWriterFunc(closeBrace, semicolon, true)
@@ -2056,15 +2051,8 @@ func (f *formatter) writeOpenBracePrefixForArray(openBrace ast.Node) {
 
 // writeCompoundIdent writes a compound identifier (e.g. '.com.foo.Bar').
 func (f *formatter) writeCompoundIdent(compoundIdentNode *ast.CompoundIdentNode) {
-	if compoundIdentNode.LeadingDot != nil {
-		f.writeInline(compoundIdentNode.LeadingDot)
-	}
-	for i := 0; i < len(compoundIdentNode.Components); i++ {
-		if i > 0 {
-			// The length of this slice must be exactly len(Components)-1.
-			f.writeInline(compoundIdentNode.Dots[i-1])
-		}
-		f.writeInline(compoundIdentNode.Components[i])
+	for _, node := range compoundIdentNode.OrderedNodes() {
+		f.writeInline(node)
 	}
 }
 
@@ -2078,31 +2066,18 @@ func (f *formatter) writeCompoundIdent(compoundIdentNode *ast.CompoundIdentNode)
 //	  bar.v1.Bar bar = 1;
 //	}
 func (f *formatter) writeCompountIdentForFieldName(compoundIdentNode *ast.CompoundIdentNode, maybeNodeWriter ...func(ast.Node)) {
-	if compoundIdentNode.LeadingDot != nil {
-		f.writeStart(compoundIdentNode.LeadingDot, maybeNodeWriter...)
+	leadingDot, ok := compoundIdentNode.LeadingDot()
+	if ok {
+		f.writeStart(leadingDot, maybeNodeWriter...)
 	}
-	for i := 0; i < len(compoundIdentNode.Components); i++ {
-		if i == 0 && compoundIdentNode.LeadingDot == nil {
-			f.writeStart(compoundIdentNode.Components[i], maybeNodeWriter...)
+	orderedNodes := compoundIdentNode.OrderedNodes()
+	for i, node := range orderedNodes {
+		if i == 0 && leadingDot == nil {
+			f.writeStart(node, maybeNodeWriter...)
 			continue
 		}
-		if i > 0 {
-			// The length of this slice must be exactly len(Components)-1.
-			f.writeInline(compoundIdentNode.Dots[i-1])
-		}
-		f.writeInline(compoundIdentNode.Components[i])
+		f.writeInline(node)
 	}
-}
-
-// writeFieldLabel writes the field label node.
-//
-// For example,
-//
-//	optional
-//	repeated
-//	required
-func (f *formatter) writeFieldLabel(fieldLabel ast.FieldLabel) {
-	f.WriteString(fieldLabel.Val)
 }
 
 // writeCompoundStringLiteral writes a compound string literal value.
@@ -2121,8 +2096,8 @@ func (f *formatter) writeCompoundStringLiteral(
 	if needsIndent {
 		f.In()
 	}
-	for i, child := range compoundStringLiteralNode.Children() {
-		if hasTrailingPunctuation && i == len(compoundStringLiteralNode.Children())-1 {
+	for i, child := range compoundStringLiteralNode.Elements {
+		if hasTrailingPunctuation && i == len(compoundStringLiteralNode.Elements)-1 {
 			// inline because there may be a subsequent comma or punctuation from enclosing element
 			f.writeStart(child)
 			break
@@ -2161,8 +2136,8 @@ func (f *formatter) writeCompoundStringLiteralForArray(
 	compoundStringLiteralNode *ast.CompoundStringLiteralNode,
 	lastElement bool,
 ) {
-	for i, child := range compoundStringLiteralNode.Children() {
-		if !lastElement && i == len(compoundStringLiteralNode.Children())-1 {
+	for i, child := range compoundStringLiteralNode.Elements {
+		if !lastElement && i == len(compoundStringLiteralNode.Elements)-1 {
 			f.writeStart(child)
 			return
 		}
@@ -2293,8 +2268,6 @@ func (f *formatter) writeNode(node ast.Node) {
 		f.writeExtend(element)
 	case *ast.ExtensionRangeNode:
 		f.writeExtensionRange(element)
-	case ast.FieldLabel:
-		f.writeFieldLabel(element)
 	case *ast.FieldNode:
 		f.writeField(element)
 	case *ast.FieldReferenceNode:
@@ -2465,7 +2438,7 @@ func (f *formatter) writeInline(node ast.Node) {
 	defer func() {
 		f.inline = false
 	}()
-	if _, ok := node.(ast.CompositeNode); ok {
+	if _, ok := node.(ast.TerminalNodeInterface); !ok {
 		// We only want to write comments for terminal nodes.
 		// Otherwise comments accessible from CompositeNodes
 		// will be written twice.
@@ -2503,7 +2476,7 @@ func (f *formatter) writeInline(node ast.Node) {
 //	  // Leading comment on '}'.
 //	} // Trailing comment on '}.
 func (f *formatter) writeBodyEnd(node ast.Node, semicolon *ast.RuneNode, leadingEndline bool) {
-	if _, ok := node.(ast.CompositeNode); ok {
+	if _, ok := node.(ast.TerminalNodeInterface); !ok {
 		// We only want to write comments for terminal nodes.
 		// Otherwise comments accessible from CompositeNodes
 		// will be written twice.
@@ -2569,7 +2542,7 @@ func (f *formatter) writeLineElement(node ast.Node) {
 //	  ] /* Trailing comment on ']' */ ;
 //	}
 func (f *formatter) writeBodyEndInline(node ast.Node, semicolon *ast.RuneNode, leadingInline bool) {
-	if _, ok := node.(ast.CompositeNode); ok {
+	if _, ok := node.(ast.TerminalNodeInterface); !ok {
 		// We only want to write comments for terminal nodes.
 		// Otherwise comments accessible from CompositeNodes
 		// will be written twice.
@@ -2614,7 +2587,7 @@ func (f *formatter) writeBodyEndInline(node ast.Node, semicolon *ast.RuneNode, l
 //	// This is a leading comment on the syntax keyword.
 //	syntax = " proto3" /* This is a leading comment on the ';'; // This is a trailing comment on the ';'.
 func (f *formatter) writeLineEnd(node ast.Node) {
-	if _, ok := node.(ast.CompositeNode); ok {
+	if _, ok := node.(ast.TerminalNodeInterface); !ok {
 		// We only want to write comments for terminal nodes.
 		// Otherwise comments accessible from CompositeNodes
 		// will be written twice.
@@ -2930,7 +2903,7 @@ func (f *formatter) importHasComment(importNode *ast.ImportNode) bool {
 
 func (f *formatter) nodeHasComment(node ast.Node) bool {
 	// when node != nil, node's value could be nil, see: https://go.dev/doc/faq#nil_error
-	if node == nil || reflect.ValueOf(node).IsNil() {
+	if ast.IsNil(node) {
 		return false
 	}
 

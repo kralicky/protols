@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 	"os"
-	"reflect"
 
 	"github.com/kralicky/protocompile/ast"
 	"github.com/kralicky/protocompile/parser"
@@ -88,7 +87,7 @@ func PrintNode(fileNode FileNodeInterface, node ast.Node) (string, error) {
 	if fileNode == nil {
 		fileNode = ast.NewEmptyFileNode("", 0)
 	}
-	if reflect.ValueOf(node).IsNil() {
+	if ast.IsNil(node) {
 		return "", nil
 	}
 	var writer bytes.Buffer
@@ -118,15 +117,17 @@ func PrintNode(fileNode FileNodeInterface, node ast.Node) (string, error) {
 
 func NodeInfoOverlay(fileNode FileNodeInterface, infos map[ast.Node]ast.NodeInfo) FileNodeInterface {
 	for node := range infos {
-		if compositeNode, ok := node.(ast.CompositeNode); ok {
-			for _, child := range compositeNode.Children() {
-				if terminalNode, ok := child.(ast.TerminalNode); ok && terminalNode.Token() == 0 {
-					if _, ok := infos[child]; !ok {
-						infos[child] = ast.NodeInfo{}
-					}
+		ast.Inspect(node, func(cn ast.Node) bool {
+			if cn == node {
+				return true
+			}
+			if terminalNode, ok := cn.(ast.TerminalNode); ok && terminalNode.Token() == 0 {
+				if _, ok := infos[cn]; !ok {
+					infos[cn] = ast.NodeInfo{}
 				}
 			}
-		}
+			return true
+		})
 	}
 	return &fileNodeInfoOverlay{
 		FileNodeInterface: fileNode,

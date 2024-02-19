@@ -213,17 +213,17 @@ func enumSymbols(fn *ast.FileNode, node *ast.EnumNode) []protocol.DocumentSymbol
 func extendSymbols(fn *ast.FileNode, node *ast.ExtendNode) []protocol.DocumentSymbol {
 	symbols := []protocol.DocumentSymbol{}
 	for _, decl := range node.Decls {
-		switch node := decl.(type) {
+		switch decl := decl.(type) {
 		case *ast.FieldNode:
-			if node.IsIncomplete() {
+			if decl.IsIncomplete() {
 				continue
 			}
 			symbols = append(symbols, protocol.DocumentSymbol{
-				Name:           string(node.Name.AsIdentifier()),
-				Detail:         fmt.Sprintf("[%s] %s", node.Extendee.Extendee.AsIdentifier(), string(node.FldType.AsIdentifier())),
+				Name:           string(decl.Name.AsIdentifier()),
+				Detail:         fmt.Sprintf("[%s] %s", node.Extendee.AsIdentifier(), string(decl.FldType.AsIdentifier())),
 				Kind:           protocol.Field,
-				Range:          toRange(fn.NodeInfo(node)),
-				SelectionRange: toRange(fn.NodeInfo(node.Name)),
+				Range:          toRange(fn.NodeInfo(decl)),
+				SelectionRange: toRange(fn.NodeInfo(decl.Name)),
 			})
 		}
 	}

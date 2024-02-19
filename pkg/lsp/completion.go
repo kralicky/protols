@@ -101,7 +101,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	path, found := findPathIntersectingToken(searchTarget, tokenAtOffset, params.Position)
 	if !found {
 		var completions []protocol.CompletionItem
-		if len(searchTarget.AST().Children()) == 1 { // only EOF
+		if searchTarget.AST().EndExclusive() == ast.TokenError { // only EOF
 			// empty file
 			completions = append(completions, syntaxSnippets()...)
 		} else {
@@ -291,7 +291,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), node, nodeIdx, maybeCurrentLinkRes, existingFields, mapper, posOffset, params.Position)...)
 	case *ast.OptionNameNode:
 		// this can be the closest node in a few cases, such as on or after a trailing dot
-		nodeChildren := node.Children()
+		nodeChildren := node.OrderedNodes()
 		var partialName string
 		var part *ast.FieldReferenceNode
 		var prevDesc protoreflect.Descriptor
@@ -366,12 +366,6 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			case node.FldType.End():
 				// complete the field name
 				switch fldType := node.FldType.(type) {
-				case *ast.IncompleteIdentNode:
-					if fldType.IncompleteVal != nil {
-						completeType = string(fldType.IncompleteVal.AsIdentifier())
-					} else {
-						completeType = ""
-					}
 				case *ast.CompoundIdentNode:
 					completeType = string(fldType.AsIdentifier())
 				case *ast.IdentNode:
@@ -397,7 +391,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				completeType = completeType[:cursorIndexIntoType]
 				shouldCompleteType = true
 			}
-			if node.Label.IsPresent() && node.Label.Start() == node.FldType.Start() {
+			if node.Label != nil && node.Label.Start() == node.FldType.Start() {
 				// handle empty *ast.IncompleteIdentNodes, such as in 'optional <cursor>'
 				completeType = ""
 				shouldCompleteType = true
@@ -501,16 +495,15 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		switch prev := path[len(path)-2].(type) {
 		case *ast.FileNode:
 			var partialName, partialNameSuffix string
-			if len(node.Children()) == 1 {
-				if ident, ok := node.Children()[0].(*ast.IdentNode); ok {
-					// complete partial top-level keywords
-					var err error
-					partialName, partialNameSuffix, err = findPartialNames(prev, ident, mapper, posOffset)
-					if err != nil {
-						return nil, err
-					}
+			if ident, ok := node.E.(*ast.IdentNode); ok {
+				// complete partial top-level keywords
+				var err error
+				partialName, partialNameSuffix, err = findPartialNames(prev, ident, mapper, posOffset)
+				if err != nil {
+					return nil, err
 				}
 			}
+
 			completions = append(completions, fileKeywordCompletions(prev, partialName, partialNameSuffix, params.Position)...)
 		}
 	}
@@ -1028,7 +1021,7 @@ func completeTypeNames(cache *Cache, partialName, partialNameSuffix string, link
 }
 
 func completeExtendeeTypeNames(cache *Cache, partialName, partialNameSuffix string, linkRes linker.Result, scope protoreflect.FullName, pos protocol.Position) []protocol.CompletionItem {
-	candidates := allowedProto3Extendees
+	var candidates []protoreflect.Descriptor
 	if isProto2(linkRes.AST()) {
 		filter := func(d protoreflect.Descriptor) bool {
 			switch d := d.(type) {
@@ -1042,6 +1035,8 @@ func completeExtendeeTypeNames(cache *Cache, partialName, partialNameSuffix stri
 		} else {
 			candidates = append(candidates, cache.FindAllDescriptorsByPrefix(context.TODO(), partialName, filter).All()...)
 		}
+	} else {
+		candidates = allowedProto3Extendees
 	}
 	return completeTypeNamesFromList(candidates, partialName, partialNameSuffix, linkRes, scope, pos)
 }

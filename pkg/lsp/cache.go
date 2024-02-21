@@ -362,7 +362,11 @@ func (c *Cache) findAllDescriptorsByPrefixLocked(ctx context.Context, prefix str
 	pathIndex := make([]string, len(c.results))
 	for i, res := range c.results {
 		if res.IsPlaceholder() {
-			continue
+			if partial, ok := c.partiallyLinkedResults[protocompile.ResolvedPath(res.Path())]; ok {
+				res = partial
+			} else {
+				continue
+			}
 		}
 		pathIndex[i] = res.Path()
 		pkg := res.Package()
@@ -406,7 +410,11 @@ func (c *Cache) findAllDescriptorsByQualifiedPrefixLocked(ctx context.Context, p
 	}
 	for i, res := range c.results {
 		if res.IsPlaceholder() {
-			continue
+			if partial, ok := c.partiallyLinkedResults[protocompile.ResolvedPath(res.Path())]; ok {
+				res = partial
+			} else {
+				continue
+			}
 		}
 		pathIndex[i] = res.Path()
 		pkg := res.Package()

@@ -275,9 +275,10 @@ func computeSemanticTokens(cache *Cache, e *semanticItems, walkOptions ...ast.Wa
 }
 
 func (s *semanticItems) mktokens(node ast.Node, path []ast.Node, tt tokenType, mods tokenModifier) {
-	if node == (ast.NoSourceNode{}) {
+	if node == nil {
 		return
 	}
+	node = ast.Unwrap(node)
 
 	info := s.AST().NodeInfo(node)
 	if !info.IsValid() {
@@ -336,8 +337,8 @@ func (s *semanticItems) mkcomments(node ast.Node) {
 			key := strings.SplitN(text, " ", 2)[0]
 			if len(key) > 0 {
 				switch node := node.(type) {
-				case *ast.KeywordNode:
-					if node.Val == "syntax" || node.Val == "edition" {
+				case *ast.IdentNode:
+					if node.IsKeyword && (node.Val == "syntax" || node.Val == "edition") {
 						// pragmas are 3 semantic tokens:
 						// 1. '//' (comment)
 						// 2. 'protols:key' (macro)
@@ -463,8 +464,10 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			s.mktokens(node, tracker.Path(), semanticTypeNumber, 0)
 		case *ast.SpecialFloatLiteralNode:
 			s.mktokens(node, tracker.Path(), semanticTypeNumber, 0)
-		case *ast.KeywordNode:
-			s.mktokens(node, tracker.Path(), semanticTypeKeyword, 0)
+		case *ast.IdentNode:
+			if node.IsKeyword {
+				s.mktokens(node, tracker.Path(), semanticTypeKeyword, 0)
+			}
 		case *ast.RuneNode:
 			switch node.Rune {
 			case '}', '{', '.', ',', '<', '>', '(', ')', '[', ']', ';', ':':
@@ -473,7 +476,7 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 				s.mktokens(node, tracker.Path(), semanticTypeOperator, 0)
 			}
 		case *ast.ExtendNode:
-			switch extendee := node.Extendee.(type) {
+			switch extendee := node.Extendee.Unwrap().(type) {
 			case *ast.IdentNode:
 				s.mktokens(extendee, append(tracker.Path(), extendee), semanticTypeType, 0)
 			case *ast.CompoundIdentNode:
@@ -493,17 +496,17 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeType, semanticModifierDefinition)
 		case *ast.FieldNode:
 			var modifier tokenModifier
-			if !ast.IsNil(node.FldType) {
-				if id := string(node.FldType.AsIdentifier()); protocompile.IsScalarType(id) || protocompile.IsWellKnownType(protoreflect.FullName(id)) {
+			if !ast.IsNil(node.FieldType) {
+				if id := string(node.FieldType.AsIdentifier()); protocompile.IsScalarType(id) || protocompile.IsWellKnownType(protoreflect.FullName(id)) {
 					modifier = semanticModifierDefaultLibrary
 				}
 
-				if node.Label == nil || node.Label.Start() != node.FldType.Start() {
+				if node.Label == nil || node.Label.Start() != node.FieldType.Start() {
 					// for incomplete nodes, the field type might be the same as the label
 					// if the type is missing
-					switch fldType := node.FldType.(type) {
+					switch fldType := node.FieldType.Unwrap().(type) {
 					case *ast.IdentNode:
-						s.mktokens(node.FldType, append(tracker.Path(), node.FldType), semanticTypeType, modifier)
+						s.mktokens(fldType, append(tracker.Path(), fldType), semanticTypeType, modifier)
 					case *ast.CompoundIdentNode:
 						for _, node := range fldType.OrderedNodes() {
 							s.mktokens(node, append(tracker.Path(), node), semanticTypeType, modifier)
@@ -519,29 +522,33 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 				return true
 			}
 			if node.IsAnyTypeReference() {
-				s.mktokens(node.URLPrefix, append(tracker.Path(), node.URLPrefix), semanticTypeType, semanticModifierDefaultLibrary)
+				urlPrefix := node.GetUrlPrefix().Unwrap()
+				name := node.GetName().Unwrap()
+				s.mktokens(urlPrefix, append(tracker.Path(), urlPrefix), semanticTypeType, semanticModifierDefaultLibrary)
 				s.mktokens(node.Slash, append(tracker.Path(), node.Slash), semanticTypeType, semanticModifierDefaultLibrary)
-				s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeType, 0)
+				s.mktokens(name, append(tracker.Path(), name), semanticTypeType, 0)
 			} else if node.IsExtension() {
+				name := node.GetName().Unwrap()
 				s.mktokens(node.Open, append(tracker.Path(), node.Open), semanticTypeOperator, 0)
-				s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeVariable, semanticModifierStatic)
+				s.mktokens(name, append(tracker.Path(), name), semanticTypeVariable, semanticModifierStatic)
 				s.mktokens(node.Close, append(tracker.Path(), node.Close), semanticTypeOperator, 0)
 			} else {
 				// handle "default" and "json_name" pseudo-options
-				if node.Name.AsIdentifier() == "default" || node.Name.AsIdentifier() == "json_name" {
+				name := node.Name.Unwrap()
+				if name.AsIdentifier() == "default" || name.AsIdentifier() == "json_name" {
 					// treat it as a keyword
-					s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeKeyword, 0)
+					s.mktokens(name, append(tracker.Path(), name), semanticTypeKeyword, 0)
 				} else {
-					s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeProperty, 0)
+					s.mktokens(name, append(tracker.Path(), name), semanticTypeProperty, 0)
 				}
 			}
 		case *ast.OptionNode:
 			if node.Name != nil && len(node.Name.Parts) > 0 {
-				switch val := node.Val.(type) {
-				case ast.IdentValueNode:
-					s.inspectFieldLiteral(node.Name.Parts[len(node.Name.Parts)-1], val, tracker)
+				switch val := node.Val.Unwrap().(type) {
 				case *ast.ArrayLiteralNode:
 					s.inspectArrayLiteral(node.Name.Parts[len(node.Name.Parts)-1], val, tracker)
+				default:
+					s.inspectFieldLiteral(node.Name.Parts[len(node.Name.Parts)-1], node.Val, tracker)
 				}
 			}
 		case *ast.MessageLiteralNode:
@@ -569,21 +576,23 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 				}
 			}
 		case *ast.MessageFieldNode:
-			switch val := node.Val.(type) {
-			case ast.IdentValueNode:
-				s.inspectFieldLiteral(node, val, tracker)
+			switch val := node.Val.Unwrap().(type) {
 			case *ast.ArrayLiteralNode:
 				s.inspectArrayLiteral(node, val, tracker)
+			default:
+				s.inspectFieldLiteral(node, node.Val, tracker)
 			}
 		case *ast.MapFieldNode:
+			vt := node.MapType.ValueType.Unwrap()
 			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeProperty, 0)
 			s.mktokens(node.MapType.KeyType, append(tracker.Path(), node.MapType, node.MapType.KeyType), semanticTypeType, 0)
-			s.mktokens(node.MapType.ValueType, append(tracker.Path(), node.MapType, node.MapType.ValueType), semanticTypeType, 0)
+			s.mktokens(vt, append(tracker.Path(), node.MapType, vt), semanticTypeType, 0)
 		case *ast.RPCTypeNode:
 			if node.IsIncomplete() {
 				return true
 			}
-			s.mktokens(node.MessageType, append(tracker.Path(), node.MessageType), semanticTypeType, 0)
+			mt := node.MessageType.Unwrap()
+			s.mktokens(mt, append(tracker.Path(), mt), semanticTypeType, 0)
 		case *ast.RPCNode:
 			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeFunction, 0)
 		case *ast.ServiceNode:
@@ -592,7 +601,8 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			if node.IsIncomplete() {
 				return true
 			}
-			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeNamespace, 0)
+			name := node.Name.Unwrap()
+			s.mktokens(name, append(tracker.Path(), name), semanticTypeNamespace, 0)
 		case *ast.EnumNode:
 			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeClass, 0)
 		case *ast.EnumValueNode:
@@ -602,7 +612,7 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 	}, walkOptions...)
 }
 
-func (s *semanticItems) inspectFieldLiteral(node ast.Node, val ast.IdentValueNode, tracker *ast.AncestorTracker) {
+func (s *semanticItems) inspectFieldLiteral(node ast.Node, val *ast.ValueNode, tracker *ast.AncestorTracker) {
 	if s.maybeLinkRes == nil {
 		return
 	}
@@ -619,19 +629,22 @@ func (s *semanticItems) inspectFieldLiteral(node ast.Node, val ast.IdentValueNod
 	}
 	switch fd.Kind() {
 	case protoreflect.FloatKind, protoreflect.DoubleKind:
-		switch val.AsIdentifier() {
-		case "inf", "infinity", "nan", "-inf", "-infinity", "-nan":
-			s.mktokens(val, append(tracker.Path(), val), semanticTypeNumber, 0)
+		if sfl := val.GetSpecialFloatLiteral(); sfl != nil && sfl.Keyword != nil {
+			s.mktokens(val, append(tracker.Path(), sfl.Keyword), semanticTypeNumber, 0)
 		}
 	case protoreflect.BoolKind:
-		switch val.AsIdentifier() {
-		case "true", "false":
-			s.mktokens(val, append(tracker.Path(), val), semanticTypeKeyword, 0)
+		if id := val.GetIdent(); id != nil {
+			switch id.AsIdentifier() {
+			case "true", "false":
+				s.mktokens(id, append(tracker.Path(), id), semanticTypeKeyword, 0)
+			}
 		}
 	case protoreflect.EnumKind:
 		if enum := fd.Enum(); enum != nil {
-			if enum.Values().ByName(protoreflect.Name(val.AsIdentifier())) != nil {
-				s.mktokens(val, append(tracker.Path(), val), semanticTypeEnumMember, 0)
+			if val := val.GetIdent(); val != nil {
+				if enum.Values().ByName(protoreflect.Name(val.AsIdentifier())) != nil {
+					s.mktokens(val, append(tracker.Path(), val), semanticTypeEnumMember, 0)
+				}
 			}
 		}
 	}
@@ -654,31 +667,23 @@ func (s *semanticItems) inspectArrayLiteral(node ast.Node, val *ast.ArrayLiteral
 	switch fd.Kind() {
 	case protoreflect.FloatKind, protoreflect.DoubleKind:
 		for _, elem := range val.Elements {
-			switch val := elem.Value().(type) {
-			case ast.Identifier:
-				switch val {
-				case "inf", "infinity", "nan", "-inf", "-infinity", "-nan":
-					s.mktokens(elem, append(tracker.Path(), elem), semanticTypeNumber, 0)
-				}
+			if sfl := elem.GetSpecialFloatLiteral(); sfl != nil && sfl.Keyword != nil {
+				s.mktokens(sfl, append(tracker.Path(), sfl), semanticTypeNumber, 0)
 			}
 		}
 	case protoreflect.BoolKind:
 		for _, elem := range val.Elements {
-			switch val := elem.Value().(type) {
-			case ast.Identifier:
-				switch val {
-				case "true", "false":
-					s.mktokens(elem, append(tracker.Path(), elem), semanticTypeKeyword, 0)
-				}
+			if id := elem.GetIdent(); id != nil && id.IsKeyword && (id.AsIdentifier() == "true" || id.AsIdentifier() == "false") {
+				s.mktokens(elem, append(tracker.Path(), elem), semanticTypeKeyword, 0)
 			}
 		}
 	case protoreflect.EnumKind:
 		if enum := fd.Enum(); enum != nil {
 			for _, elem := range val.Elements {
-				switch val := elem.Value().(type) {
-				case ast.Identifier:
-					if enum.Values().ByName(protoreflect.Name(val)) != nil {
-						s.mktokens(elem, append(tracker.Path(), elem), semanticTypeEnumMember, 0)
+				if id := elem.GetIdent(); id != nil {
+					name := id.AsIdentifier()
+					if enum.Values().ByName(name) != nil {
+						s.mktokens(id, append(tracker.Path(), id), semanticTypeEnumMember, 0)
 					}
 				}
 			}
@@ -692,14 +697,14 @@ func (s *semanticItems) inspectCelExpr(messageLit *ast.MessageLiteralNode) ([]*a
 			diagnostics := []ProtoDiagnostic{}
 			stringNodes := []*ast.StringLiteralNode{}
 			var celExpr string
-			switch val := elem.Val.(type) {
+			switch val := elem.Val.Unwrap().(type) {
 			case *ast.StringLiteralNode:
 				stringNodes = append(stringNodes, val)
 				celExpr = val.AsString()
 			case *ast.CompoundStringLiteralNode:
 				lines := []string{}
 				for _, part := range val.Elements {
-					if str, ok := part.(*ast.StringLiteralNode); ok {
+					if str := part.GetStringLiteral(); str != nil {
 						stringNodes = append(stringNodes, str)
 						strVal := strings.TrimSpace(str.AsString())
 						lines = append(lines, strVal)

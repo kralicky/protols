@@ -61,10 +61,7 @@ func maybe[T any](t *T) (_ T) {
 	return *t
 }
 
-func maybeValue(val ast.ValueNode) any {
-	if _, ok := val.(ast.NoSourceNode); ok {
-		return "(invalid)"
-	}
+func maybeValue(val *ast.ValueNode) any {
 	vi := val.Value()
 	if vi == nil {
 		return "(nil)"
@@ -116,7 +113,7 @@ func (v *dumpVisitor) Visit(node ast.Node) bool {
 		v.buf.WriteString(fmt.Sprintf("#ranges=%d\n", len(node.Ranges)))
 
 	case *ast.FieldNode:
-		v.buf.WriteString(fmt.Sprintf("label=%q type=%q name=%q tag=%d", maybe(node.Label).Val, node.FldType.AsIdentifier(), maybe(node.Name).Val, maybe(node.Tag).Val))
+		v.buf.WriteString(fmt.Sprintf("label=%q type=%q name=%q tag=%d", maybe(node.Label).Val, node.FieldType.AsIdentifier(), maybe(node.Name).Val, maybe(node.Tag).Val))
 		if node.Options != nil {
 			v.buf.WriteString(fmt.Sprintf(" #options=%d", len(node.Options.Options)))
 		}
@@ -139,7 +136,11 @@ func (v *dumpVisitor) Visit(node ast.Node) bool {
 		v.buf.WriteString(fmt.Sprintf("label=%q name=%q tag=%d #decls=%d\n", maybe(node.Label).Val, maybe(node.Name).Val, maybe(node.Tag).Val, len(node.Decls)))
 
 	case *ast.IdentNode:
-		v.buf.WriteString(fmt.Sprintf("val=%q\n", node.Val))
+		if node.IsKeyword {
+			v.buf.WriteString(fmt.Sprintf("keyword=%q\n", node.Val))
+		} else {
+			v.buf.WriteString(fmt.Sprintf("val=%q\n", node.Val))
+		}
 
 	case *ast.ImportNode:
 		if node.IsIncomplete() {
@@ -154,9 +155,6 @@ func (v *dumpVisitor) Visit(node ast.Node) bool {
 			v.buf.WriteString(fmt.Sprintf("name=%q\n", node.Name.AsString()))
 		}
 
-	case *ast.KeywordNode:
-		v.buf.WriteString(fmt.Sprintf("val=%q\n", node.Val))
-
 	case *ast.MapFieldNode:
 		v.buf.WriteString(fmt.Sprintf("keytype=%q valuetype=%q name=%q tag=%d", node.MapType.KeyType.AsIdentifier(), node.MapType.ValueType.AsIdentifier(), maybe(node.Name).Val, maybe(node.Tag).Val))
 		if node.Options != nil {
@@ -168,7 +166,7 @@ func (v *dumpVisitor) Visit(node ast.Node) bool {
 		v.buf.WriteString(fmt.Sprintf("keytype=%q valuetype=%q\n", maybe(node.KeyType).Val, node.ValueType.AsIdentifier()))
 
 	case *ast.MessageFieldNode:
-		v.buf.WriteString(fmt.Sprintf("name=%q val=%T\n", maybe(node.Name).Name.Value(), maybeValue(node.Val)))
+		v.buf.WriteString(fmt.Sprintf("name=%q val=%T\n", maybe(node.Name).Name.AsIdentifier(), maybeValue(node.Val)))
 
 	case *ast.MessageLiteralNode:
 		v.buf.WriteString(fmt.Sprintf("#elements=%d\n", len(node.Elements)))

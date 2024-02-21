@@ -29,9 +29,9 @@ import (
 )
 
 type FileNodeInterface interface {
-	GetSyntaxNode() *ast.SyntaxNode
-	GetEditionNode() *ast.EditionNode
-	GetDecls() []ast.FileElement
+	GetSyntax() *ast.SyntaxNode
+	GetEdition() *ast.EditionNode
+	GetDecls() []*ast.FileElement
 	GetEOF() *ast.RuneNode
 
 	NodeInfo(node ast.Node) ast.NodeInfo
@@ -265,7 +265,7 @@ func (f *formatter) writeFileHeader() {
 		optionNodes []*ast.OptionNode
 	)
 	for _, fileElement := range f.fileNode.GetDecls() {
-		switch node := fileElement.(type) {
+		switch node := fileElement.Unwrap().(type) {
 		case *ast.PackageNode:
 			packageNode = node
 		case *ast.ImportNode:
@@ -276,13 +276,13 @@ func (f *formatter) writeFileHeader() {
 			continue
 		}
 	}
-	if f.fileNode.GetSyntaxNode() == nil && f.fileNode.GetEditionNode() == nil && packageNode == nil && importNodes == nil && optionNodes == nil {
+	if f.fileNode.GetSyntax() == nil && f.fileNode.GetEdition() == nil && packageNode == nil && importNodes == nil && optionNodes == nil {
 		// There aren't any header values, so we can return early.
 		return
 	}
-	if syntaxNode := f.fileNode.GetSyntaxNode(); syntaxNode != nil {
+	if syntaxNode := f.fileNode.GetSyntax(); syntaxNode != nil {
 		f.writeSyntax(syntaxNode)
-	} else if editionNode := f.fileNode.GetEditionNode(); editionNode != nil {
+	} else if editionNode := f.fileNode.GetEdition(); editionNode != nil {
 		f.writeEdition(editionNode)
 	}
 	if packageNode != nil {
@@ -353,7 +353,7 @@ func (f *formatter) writeFileHeader() {
 // services, etc. All other elements are ignored since they are handled by f.writeFileHeader.
 func (f *formatter) writeFileTypes() {
 	for _, fileElement := range f.fileNode.GetDecls() {
-		switch node := fileElement.(type) {
+		switch node := fileElement.Unwrap().(type) {
 		case *ast.PackageNode, *ast.OptionNode, *ast.ImportNode, *ast.EmptyDeclNode:
 			// These elements have already been written by f.writeFileHeader.
 			continue
@@ -449,7 +449,7 @@ func (f *formatter) writeFileOption(optionNode *ast.OptionNode, forceCompact boo
 	f.writeNode(optionNode.Name)
 	f.Space()
 	f.writeInline(optionNode.Equals)
-	if node, ok := optionNode.Val.(*ast.CompoundStringLiteralNode); ok {
+	if node := optionNode.Val.GetCompoundStringLiteral(); node != nil {
 		// Compound string literals are written across multiple lines
 		// immediately after the '=', so we don't need a trailing
 		// space in the option prefix.
@@ -470,7 +470,7 @@ func (f *formatter) writeFileOption(optionNode *ast.OptionNode, forceCompact boo
 func (f *formatter) writeOption(optionNode *ast.OptionNode) {
 	f.writeOptionPrefix(optionNode)
 	if optionNode.Semicolon != nil {
-		if node, ok := optionNode.Val.(*ast.CompoundStringLiteralNode); ok {
+		if node := optionNode.Val.GetCompoundStringLiteral(); node != nil {
 			// Compound string literals are written across multiple lines
 			// immediately after the '=', so we don't need a trailing
 			// space in the option prefix.
@@ -483,7 +483,7 @@ func (f *formatter) writeOption(optionNode *ast.OptionNode) {
 		return
 	}
 
-	if node, ok := optionNode.Val.(*ast.CompoundStringLiteralNode); ok {
+	if node := optionNode.Val.GetCompoundStringLiteral(); node != nil {
 		f.writeCompoundStringLiteralIndent(node)
 		return
 	}
@@ -699,7 +699,7 @@ func columnFormatElements[T ast.Node, C elementsContainer[T]](f *formatter, ctr 
 				//   }
 				// }
 				isMessageOrArrayLiteral := false
-				switch val := fieldNode.Val.(type) {
+				switch val := fieldNode.Val.Unwrap().(type) {
 				case *ast.MessageLiteralNode:
 					if f.compactMessageLiteralShouldBeExpanded(val) {
 						isMessageOrArrayLiteral = true
@@ -740,7 +740,7 @@ func columnFormatElements[T ast.Node, C elementsContainer[T]](f *formatter, ctr 
 				if line == prevFieldInfo.End().Line+1 {
 					switch prevNode := ast.Node(currentGroup[len(currentGroup)-1]).(type) {
 					case *ast.OptionNode:
-						switch prevVal := prevNode.Val.(type) {
+						switch prevVal := prevNode.Val.Unwrap().(type) {
 						case *ast.ArrayLiteralNode:
 							if !f.compactArrayLiteralShouldBeExpanded(prevVal) {
 								shouldStartNewGroup = false
@@ -807,14 +807,14 @@ GROUPS:
 				if elem.Label != nil {
 					fclone.writeStart(elem.Label, nodeWriter)
 					fclone.Space()
-					fclone.writeInline(elem.FldType)
+					fclone.writeInline(elem.FieldType)
 				} else {
 					// If a label was not written, the multiline comments will be
 					// attached to the type.
-					if compoundIdentNode, ok := elem.FldType.(*ast.CompoundIdentNode); ok {
+					if compoundIdentNode := elem.FieldType.GetCompoundIdent(); compoundIdentNode != nil {
 						fclone.writeCompountIdentForFieldName(compoundIdentNode, nodeWriter)
 					} else {
-						fclone.writeStart(elem.FldType, nodeWriter)
+						fclone.writeStart(elem.FieldType, nodeWriter)
 					}
 				}
 				// flush the buffer to save the type name
@@ -893,8 +893,8 @@ GROUPS:
 			case *ast.MessageFieldNode:
 				if elem.Name.Open != nil {
 					fclone.writeStart(elem.Name.Open, nodeWriter)
-					if elem.Name.URLPrefix != nil {
-						fclone.writeInline(elem.Name.URLPrefix)
+					if elem.Name.UrlPrefix != nil {
+						fclone.writeInline(elem.Name.UrlPrefix)
 					}
 					if elem.Name.Slash != nil {
 						fclone.writeInline(elem.Name.Slash)
@@ -959,7 +959,7 @@ GROUPS:
 				}
 
 				// Write the option value
-				if node, ok := elem.Val.(*ast.CompoundStringLiteralNode); ok {
+				if node := elem.Val.GetCompoundStringLiteral(); node != nil {
 					// Compound string literals are written across multiple lines
 					// immediately after the '=', so we don't need a trailing
 					// space in the option prefix.
@@ -1178,7 +1178,7 @@ func (f *formatter) maybeWriteCompactMessageLiteral(
 
 func messageLiteralHasNestedMessageOrArray(messageLiteralNode *ast.MessageLiteralNode) bool {
 	for _, elem := range messageLiteralNode.Elements {
-		switch elem.Val.(type) {
+		switch elem.Val.Unwrap().(type) {
 		case *ast.ArrayLiteralNode, *ast.MessageLiteralNode:
 			return true
 		}
@@ -1188,8 +1188,7 @@ func messageLiteralHasNestedMessageOrArray(messageLiteralNode *ast.MessageLitera
 
 func messageLiteralHasNestedArray(messageLiteralNode *ast.MessageLiteralNode) bool {
 	for _, elem := range messageLiteralNode.Elements {
-		switch v := elem.Val.(type) {
-		case *ast.ArrayLiteralNode:
+		if v := elem.Val.GetArrayLiteral(); v != nil {
 			if len(v.Elements) == 0 {
 				// (extended syntax rule) empty array literals don't need to be expanded
 				continue
@@ -1202,7 +1201,7 @@ func messageLiteralHasNestedArray(messageLiteralNode *ast.MessageLiteralNode) bo
 
 func arrayLiteralHasNestedMessageOrArray(arrayLiteralNode *ast.ArrayLiteralNode) bool {
 	for _, elem := range arrayLiteralNode.Elements {
-		switch elem.(type) {
+		switch elem.Unwrap().(type) {
 		case *ast.ArrayLiteralNode, *ast.MessageLiteralNode:
 			return true
 		}
@@ -1254,7 +1253,7 @@ func (f *formatter) writeMessageLiteralElements(messageLiteralNode *ast.MessageL
 func (f *formatter) writeMessageField(messageFieldNode *ast.MessageFieldNode) {
 	f.writeMessageFieldPrefix(messageFieldNode)
 	f.Space()
-	if compoundStringLiteral, ok := messageFieldNode.Val.(*ast.CompoundStringLiteralNode); ok {
+	if compoundStringLiteral := messageFieldNode.Val.GetCompoundStringLiteral(); compoundStringLiteral != nil {
 		f.writeCompoundStringLiteralIndent(compoundStringLiteral)
 		return
 	}
@@ -1267,7 +1266,7 @@ func (f *formatter) writeMessageField(messageFieldNode *ast.MessageFieldNode) {
 func (f *formatter) writeMessageFieldWithSeparator(messageFieldNode *ast.MessageFieldNode) {
 	f.writeMessageFieldPrefix(messageFieldNode)
 	f.Space()
-	if compoundStringLiteral, ok := messageFieldNode.Val.(*ast.CompoundStringLiteralNode); ok {
+	if compoundStringLiteral := messageFieldNode.Val.GetCompoundStringLiteral(); compoundStringLiteral != nil {
 		f.writeCompoundStringLiteralIndentEndInline(compoundStringLiteral)
 		return
 	}
@@ -1288,8 +1287,8 @@ func (f *formatter) writeMessageFieldPrefix(messageFieldNode *ast.MessageFieldNo
 	fieldReferenceNode := messageFieldNode.Name
 	if fieldReferenceNode.Open != nil {
 		f.writeStart(fieldReferenceNode.Open, maybeNodeWriter...)
-		if fieldReferenceNode.URLPrefix != nil {
-			f.writeInline(fieldReferenceNode.URLPrefix)
+		if fieldReferenceNode.UrlPrefix != nil {
+			f.writeInline(fieldReferenceNode.UrlPrefix)
 		}
 		if fieldReferenceNode.Slash != nil {
 			f.writeInline(fieldReferenceNode.Slash)
@@ -1378,14 +1377,14 @@ func (f *formatter) writeField(fieldNode *ast.FieldNode) {
 	if fieldNode.Label != nil {
 		f.writeStart(fieldNode.Label)
 		f.Space()
-		f.writeInline(fieldNode.FldType)
+		f.writeInline(fieldNode.FieldType)
 	} else {
 		// If a label was not written, the multiline comments will be
 		// attached to the type.
-		if compoundIdentNode, ok := fieldNode.FldType.(*ast.CompoundIdentNode); ok {
+		if compoundIdentNode := fieldNode.GetFieldType().GetCompoundIdent(); compoundIdentNode != nil {
 			f.writeCompountIdentForFieldName(compoundIdentNode)
 		} else {
-			f.writeStart(fieldNode.FldType)
+			f.writeStart(fieldNode.FieldType)
 		}
 	}
 	if fieldNode.Name != nil {
@@ -1445,8 +1444,8 @@ func (f *formatter) writeFieldReference(fieldReferenceNode *ast.FieldReferenceNo
 	if fieldReferenceNode.Open != nil {
 		f.writeInline(fieldReferenceNode.Open)
 	}
-	if fieldReferenceNode.URLPrefix != nil {
-		f.writeInline(fieldReferenceNode.URLPrefix)
+	if fieldReferenceNode.UrlPrefix != nil {
+		f.writeInline(fieldReferenceNode.UrlPrefix)
 	}
 	if fieldReferenceNode.Slash != nil {
 		f.writeInline(fieldReferenceNode.Slash)
@@ -1795,7 +1794,7 @@ func (f *formatter) writeCompactOptions(compactOptionsNode *ast.CompactOptionsNo
 				if optionNode.Equals != nil {
 					f.writeInline(optionNode.Equals)
 				}
-				if node, ok := optionNode.Val.(*ast.CompoundStringLiteralNode); ok {
+				if node := optionNode.Val.GetCompoundStringLiteral(); node != nil {
 					// If there's only a single compact option, the value needs to
 					// write its comments (if any) in a way that preserves the closing ']'.
 					f.writeCompoundStringLiteralNoIndentEndInline(node)
@@ -1881,7 +1880,7 @@ func (f *formatter) writeArrayLiteral(arrayLiteralNode *ast.ArrayLiteralNode) {
 		elementWriterFunc = func() {
 			for i := 0; i < len(arrayLiteralNode.Elements); i++ {
 				lastElement := i == len(arrayLiteralNode.Elements)-1
-				if _, ok := arrayLiteralNode.Elements[i].(ast.TerminalNodeInterface); !ok {
+				if _, ok := arrayLiteralNode.Elements[i].Unwrap().(ast.TerminalNodeInterface); !ok {
 					f.writeCompositeValueForArrayLiteral(arrayLiteralNode.Elements[i], lastElement)
 					if !lastElement {
 						f.writeLineEnd(arrayLiteralNode.Commas[i])
@@ -2175,7 +2174,7 @@ func (f *formatter) writeSignedFloatLiteralForArray(
 
 // writeSpecialFloatLiteral writes a special float literal value (e.g. "nan" or "inf").
 func (f *formatter) writeSpecialFloatLiteral(specialFloatLiteralNode *ast.SpecialFloatLiteralNode) {
-	f.WriteString(specialFloatLiteralNode.KeywordNode.Val)
+	f.WriteString(specialFloatLiteralNode.GetKeyword().GetVal())
 }
 
 // writeStringLiteral writes a string literal value (e.g. "foo").
@@ -2232,7 +2231,7 @@ func (f *formatter) writeIdent(identNode *ast.IdentNode) {
 }
 
 // writeKeyword writes a keyword (e.g. 'syntax').
-func (f *formatter) writeKeyword(keywordNode *ast.KeywordNode) {
+func (f *formatter) writeKeyword(keywordNode *ast.IdentNode) {
 	f.WriteString(keywordNode.Val)
 }
 
@@ -2251,6 +2250,8 @@ func (f *formatter) writeRune(runeNode *ast.RuneNode) {
 // Comments are handled in each respective write function so that it can determine whether
 // to write the comments in-line or not.
 func (f *formatter) writeNode(node ast.Node) {
+	node = ast.Unwrap(node)
+
 	switch element := node.(type) {
 	case *ast.ArrayLiteralNode:
 		f.writeArrayLiteral(element)
@@ -2280,8 +2281,6 @@ func (f *formatter) writeNode(node ast.Node) {
 		f.writeIdent(element)
 	case *ast.ImportNode:
 		f.writeImport(element, false)
-	case *ast.KeywordNode:
-		f.writeKeyword(element)
 	case *ast.MapFieldNode:
 		f.writeMapField(element)
 	case *ast.MapTypeNode:

@@ -118,6 +118,7 @@ func (c *Cache) compileLocked(protos ...string) {
 				break
 			}
 		}
+		c.pragmas.Store(path, &pragmaMap{m: partial.AST().Pragmas})
 	}
 	for path, partial := range res.UnlinkedParserResults {
 		partial := partial
@@ -129,6 +130,7 @@ func (c *Cache) compileLocked(protos ...string) {
 				break
 			}
 		}
+		c.pragmas.Store(path, &pragmaMap{m: partial.AST().Pragmas})
 	}
 	c.partialResultsMu.Unlock()
 

@@ -60,7 +60,7 @@ func (c *Cache) GetCodeActions(ctx context.Context, params *protocol.CodeActionP
 		}
 	}
 	if want[protocol.RefactorExtract] || want[protocol.RefactorInline] || want[protocol.RefactorRewrite] {
-		if linkRes, err := c.FindResultByURI(params.TextDocument.URI); err == nil {
+		if linkRes, err := c.FindResultOrPartialResultByURI(params.TextDocument.URI); err == nil {
 			mapper, err := c.GetMapper(params.TextDocument.URI)
 			if err != nil {
 				return nil, err

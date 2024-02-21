@@ -46,8 +46,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 		switch currentNode.(type) {
 		// short-circuit for some nodes that we know don't map to descriptors -
 		// keywords and numbers
-		case *ast.KeywordNode,
-			*ast.SyntaxNode,
+		case *ast.SyntaxNode,
 			*ast.PackageNode,
 			*ast.EmptyDeclNode,
 			*ast.RuneNode,
@@ -80,7 +79,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 					// look ahead two path entries to check which token we're in
 					if len(path) > i+2 {
 						if mapTypeNode, ok := path[i+1].(*ast.MapTypeNode); ok {
-							if identNode, ok := path[i+2].(ast.IdentValueNode); ok {
+							if identNode, ok := path[i+2].(ast.AnyIdentValueNode); ok {
 								if identNode == mapTypeNode.KeyType {
 									return nil, protocol.Range{}, nil
 								}
@@ -177,7 +176,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 		switch haveDesc := have.desc.(type) {
 		case protoreflect.FileDescriptor:
 			switch wantNode := want.node.(type) {
-			case ast.FileElement:
+			case ast.AnyFileElement:
 				switch wantNode := wantNode.(type) {
 				case *ast.OptionNode:
 					want.desc = haveDesc.Options().(*descriptorpb.FileOptions).ProtoReflect().Descriptor()
@@ -195,16 +194,16 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 						}
 					}
 				case *ast.MessageNode:
-					want.desc = haveDesc.Messages().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+					want.desc = haveDesc.Messages().ByName(wantNode.Name.AsIdentifier())
 				case *ast.EnumNode:
-					want.desc = haveDesc.Enums().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+					want.desc = haveDesc.Enums().ByName(wantNode.Name.AsIdentifier())
 				case *ast.ExtendNode:
 					want.desc = haveDesc
 				case *ast.ServiceNode:
-					want.desc = haveDesc.Services().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+					want.desc = haveDesc.Services().ByName(wantNode.Name.AsIdentifier())
 				}
 			case *ast.FieldNode:
-				want.desc = haveDesc.Extensions().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+				want.desc = haveDesc.Extensions().ByName(wantNode.Name.AsIdentifier())
 			case *ast.CompoundIdentNode:
 				switch prevNode := want.prev.node.(type) {
 				case *ast.ExtendNode:
@@ -217,7 +216,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 				switch prevNode := want.prev.node.(type) {
 				case *ast.ExtendNode:
 					// looking for one segment of a compound ident in the extendee in "extend <extendee> {"
-					if wantNode.Token() >= prevNode.Extendee.Start() && wantNode.Token() <= prevNode.Extendee.End() {
+					if wantNode.GetToken() >= prevNode.Extendee.Start() && wantNode.GetToken() <= prevNode.Extendee.End() {
 						want.desc = linkRes.FindExtendeeDescriptorByName(protoreflect.FullName(strings.TrimPrefix(string(prevNode.Extendee.AsIdentifier()), ".")))
 						if want.desc == nil && len(prevNode.Decls) == 0 {
 							// this extend node is not technically valid yet, and is not
@@ -237,27 +236,27 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 			}
 		case protoreflect.MessageDescriptor:
 			switch wantNode := want.node.(type) {
-			case ast.MessageElement:
+			case ast.AnyMessageElement:
 				switch wantNode := wantNode.(type) {
 				case *ast.OptionNode:
 					want.desc = haveDesc.Options().(*descriptorpb.MessageOptions).ProtoReflect().Descriptor()
 				case *ast.FieldNode:
 					if _, ok := have.node.(*ast.ExtendNode); ok {
 						// (proto2 only) nested extension declaration
-						want.desc = haveDesc.Extensions().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+						want.desc = haveDesc.Extensions().ByName(wantNode.Name.AsIdentifier())
 					} else {
-						want.desc = haveDesc.Fields().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+						want.desc = haveDesc.Fields().ByName(wantNode.Name.AsIdentifier())
 					}
 				case *ast.MapFieldNode:
-					want.desc = haveDesc.Fields().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+					want.desc = haveDesc.Fields().ByName(wantNode.Name.AsIdentifier())
 				case *ast.OneofNode:
-					want.desc = haveDesc.Oneofs().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+					want.desc = haveDesc.Oneofs().ByName(wantNode.Name.AsIdentifier())
 				case *ast.GroupNode:
-					want.desc = haveDesc.Messages().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+					want.desc = haveDesc.Messages().ByName(wantNode.Name.AsIdentifier())
 				case *ast.MessageNode:
-					want.desc = haveDesc.Messages().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+					want.desc = haveDesc.Messages().ByName(wantNode.Name.AsIdentifier())
 				case *ast.EnumNode:
-					want.desc = haveDesc.Enums().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+					want.desc = haveDesc.Enums().ByName(wantNode.Name.AsIdentifier())
 				case *ast.ExtendNode:
 					// (proto2 only) looking for a nested extension declaration.
 					// can't do anything yet, we need to resolve by field name
@@ -269,7 +268,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 				if wantNode.IsAnyTypeReference() {
 					want.desc = linkRes.FindMessageDescriptorByTypeReferenceURLNode(wantNode)
 				} else {
-					want.desc = haveDesc.Fields().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+					want.desc = haveDesc.Fields().ByName(wantNode.Name.AsIdentifier())
 				}
 			case *ast.MessageLiteralNode:
 				want.desc = haveDesc
@@ -287,12 +286,12 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 				} else {
 					want.desc = haveDesc.Fields().ByName(protoreflect.Name(wantNode.Name.Value()))
 				}
-			case ast.IdentValueNode:
+			case ast.AnyIdentValueNode:
 				want.desc = haveDesc
 			}
 		case protoreflect.ExtensionTypeDescriptor:
 			switch wantNode := want.node.(type) {
-			case ast.IdentValueNode:
+			case ast.AnyIdentValueNode:
 				switch containingField := want.prev.node.(type) {
 				case *ast.FieldReferenceNode:
 					want.desc = haveDesc
@@ -301,7 +300,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 						want.desc = haveDesc.Descriptor()
 					} else {
 						found := false
-						switch ident := containingField.FldType.(type) {
+						switch ident := containingField.FieldType.Unwrap().(type) {
 						case *ast.IdentNode:
 							found = wantNode == ident
 						case *ast.CompoundIdentNode:
@@ -325,17 +324,8 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 			}
 		case protoreflect.FieldDescriptor:
 			switch wantNode := want.node.(type) {
-			case ast.FieldDeclNode:
-				switch wantNode := wantNode.(type) {
-				case *ast.FieldNode:
-					want.desc = haveDesc.Message().Fields().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
-				case *ast.GroupNode:
-					want.desc = haveDesc.Message().Fields().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
-				case *ast.MapFieldNode:
-					want.desc = haveDesc.Message().Fields().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
-				case *ast.SyntheticMapField:
-					want.desc = haveDesc.Message().Fields().ByName(protoreflect.Name(wantNode.Ident.AsIdentifier()))
-				}
+			case ast.AnyFieldDeclNode:
+				want.desc = haveDesc.Message().Fields().ByName(wantNode.GetName().AsIdentifier())
 			case *ast.FieldReferenceNode:
 				want.desc = haveDesc
 			case *ast.ArrayLiteralNode:
@@ -356,7 +346,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 				want.desc = haveDesc.MapValue().Message()
 			case *ast.CompactOptionsNode:
 				want.desc = haveDesc.Options().(*descriptorpb.FieldOptions).ProtoReflect().Descriptor()
-			case ast.IdentValueNode:
+			case ast.AnyIdentValueNode:
 				// need to disambiguate
 				switch haveNode := have.node.(type) {
 				case *ast.FieldReferenceNode:
@@ -364,20 +354,20 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 				case *ast.MessageFieldNode:
 					switch haveDesc.Kind() {
 					case protoreflect.EnumKind:
-						switch val := haveNode.Val.(type) {
-						case ast.IdentValueNode:
-							want.desc = haveDesc.Enum().Values().ByName(protoreflect.Name(val.AsIdentifier()))
+						switch val := haveNode.Val.Unwrap().(type) {
+						case *ast.IdentNode:
+							want.desc = haveDesc.Enum().Values().ByName(val.AsIdentifier())
 						case *ast.ArrayLiteralNode:
 							for _, el := range val.Elements {
-								if wantNode == el {
-									want.desc = haveDesc.Enum().Values().ByName(protoreflect.Name(wantNode.AsIdentifier()))
+								if wantNode == ast.Node(el.Unwrap()) { // FIXME
+									want.desc = haveDesc.Enum().Values().ByName(wantNode.AsIdentifier())
 								}
 							}
 						}
 					}
-				case ast.FieldDeclNode:
+				case ast.AnyFieldDeclNode:
 					switch {
-					case wantNode.Start() >= haveNode.FieldType().Start() && wantNode.End() <= haveNode.FieldType().End():
+					case wantNode.Start() >= haveNode.GetFieldType().Start() && wantNode.End() <= haveNode.GetFieldType().End():
 						switch {
 						case haveDesc.IsExtension():
 							// keep the field descriptor
@@ -388,7 +378,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 						case haveDesc.Kind() == protoreflect.EnumKind:
 							want.desc = haveDesc.Enum()
 						}
-					case wantNode == haveNode.FieldName():
+					case wantNode == haveNode.GetName():
 						// keep the field descriptor
 						// this may be nil if we're in a regular message field, but set if
 						// we are in a message literal
@@ -400,50 +390,46 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 			}
 		case protoreflect.EnumDescriptor:
 			switch wantNode := want.node.(type) {
-			case ast.EnumElement:
+			case ast.AnyEnumElement:
 				switch wantNode := wantNode.(type) {
 				case *ast.OptionNode:
 					want.desc = haveDesc.Options().(*descriptorpb.EnumOptions).ProtoReflect().Descriptor()
 				case *ast.EnumValueNode:
-					want.desc = haveDesc.Values().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+					want.desc = haveDesc.Values().ByName(wantNode.Name.AsIdentifier())
 				case *ast.ReservedNode:
 				}
-			case ast.IdentValueNode:
+			case *ast.IdentNode:
 				// this could be either the enum name itself or a value name
 				if haveNode, ok := have.node.(*ast.EnumNode); ok && haveNode.Name == wantNode {
 					want.desc = haveDesc
 				} else {
-					want.desc = haveDesc.Values().ByName(protoreflect.Name(wantNode.AsIdentifier()))
+					want.desc = haveDesc.Values().ByName(wantNode.AsIdentifier())
 				}
 			}
 		case protoreflect.EnumValueDescriptor:
-			switch wantNode := want.node.(type) {
-			case ast.EnumValueDeclNode:
-				switch wantNode.(type) {
-				case *ast.EnumValueNode:
-					want.desc = haveDesc // ??
-				case ast.NoSourceNode:
-				}
+			switch want.node.(type) {
+			case *ast.EnumValueNode:
+				want.desc = haveDesc
 			case *ast.CompactOptionsNode:
 				want.desc = haveDesc.Options().(*descriptorpb.EnumValueOptions).ProtoReflect().Descriptor()
-			case ast.IdentValueNode:
+			case ast.AnyIdentValueNode:
 				want.desc = haveDesc
 			}
 		case protoreflect.ServiceDescriptor:
 			switch wantNode := want.node.(type) {
-			case ast.ServiceElement:
+			case ast.AnyServiceElement:
 				switch wantNode := wantNode.(type) {
 				case *ast.OptionNode:
 					want.desc = haveDesc.Options().(*descriptorpb.ServiceOptions).ProtoReflect().Descriptor()
 				case *ast.RPCNode:
-					want.desc = haveDesc.Methods().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+					want.desc = haveDesc.Methods().ByName(wantNode.Name.AsIdentifier())
 				}
-			case ast.IdentValueNode:
+			case ast.AnyIdentValueNode:
 				want.desc = haveDesc
 			}
 		case protoreflect.MethodDescriptor:
 			switch wantNode := want.node.(type) {
-			case ast.RPCElement:
+			case ast.AnyRPCElement:
 				switch wantNode.(type) {
 				case *ast.OptionNode:
 					want.desc = haveDesc.Options().(*descriptorpb.MethodOptions).ProtoReflect().Descriptor()
@@ -460,19 +446,19 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 				}
 			case *ast.CompactOptionsNode:
 				want.desc = haveDesc.Options().(*descriptorpb.MethodOptions).ProtoReflect().Descriptor()
-			case ast.IdentValueNode:
+			case ast.AnyIdentValueNode:
 				want.desc = haveDesc
 			}
 		case protoreflect.OneofDescriptor:
 			switch wantNode := want.node.(type) {
-			case ast.OneofElement:
+			case ast.AnyOneofElement:
 				switch wantNode := wantNode.(type) {
 				case *ast.OptionNode:
 					want.desc = haveDesc.Options().(*descriptorpb.OneofOptions).ProtoReflect().Descriptor()
 				case *ast.FieldNode:
-					want.desc = haveDesc.Fields().ByName(protoreflect.Name(wantNode.Name.AsIdentifier()))
+					want.desc = haveDesc.Fields().ByName(wantNode.Name.AsIdentifier())
 				}
-			case ast.IdentValueNode:
+			case ast.AnyIdentValueNode:
 				want.desc = haveDesc
 			}
 		default:
@@ -713,7 +699,7 @@ func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, 
 			if intersectsLocation(node) {
 				paths = append(paths, slices.Clone(tracker.Path()))
 			}
-			if node.Sep != nil && node.Name != nil && tokenAtOffset == node.Sep.Token() {
+			if node.Sep != nil && node.Name != nil && tokenAtOffset == node.Sep.GetToken() {
 				// this won't be visited by the walker, but we want the path to
 				// end with the field reference node if the cursor is between the
 				// field name and the separator
@@ -823,7 +809,7 @@ func findDefinition(desc protoreflect.Descriptor, linkRes linker.Result) (ast.No
 	var node ast.Node
 	switch desc := desc.(type) {
 	case protoreflect.MessageDescriptor:
-		node = linkRes.MessageNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.DescriptorProto)).MessageName()
+		node = linkRes.MessageNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.DescriptorProto)).GetName()
 	case protoreflect.EnumDescriptor:
 		node = linkRes.EnumNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.EnumDescriptorProto)).GetName()
 	case protoreflect.ServiceDescriptor:
@@ -861,7 +847,7 @@ func findDefinition(desc protoreflect.Descriptor, linkRes linker.Result) (ast.No
 	if node == nil {
 		return ast.NodeReference{}, fmt.Errorf("failed to find node for %q", desc.FullName())
 	}
-	if _, ok := node.(ast.NoSourceNode); ok {
+	if _, ok := node.(*ast.NoSourceNode); ok {
 		return ast.NodeReference{}, fmt.Errorf("no source available")
 	}
 	return ast.NewNodeReference(linkRes.AST(), node), nil

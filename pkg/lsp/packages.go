@@ -36,11 +36,10 @@ func (c *Cache) TryFindPackageReferences(params protocol.TextDocumentPositionPar
 
 LOOP:
 	for _, decl := range fileNode.Decls {
-		switch decl := decl.(type) {
-		case *ast.PackageNode:
+		if decl := decl.GetPackage(); decl != nil {
 			if decl.Name != nil {
 				if tokenAtOffset >= decl.Name.Start() && tokenAtOffset <= decl.Name.End() {
-					switch name := decl.Name.(type) {
+					switch name := decl.Name.Unwrap().(type) {
 					case *ast.IdentNode:
 						return c.FindPackageNameRefs(protoreflect.FullName(name.Val), false)
 					case *ast.CompoundIdentNode:
@@ -82,13 +81,13 @@ func (c *Cache) FindPackageNameRefs(name protoreflect.FullName, prefixMatch bool
 		res := f.(linker.Result)
 		resFileNode := res.AST()
 		for _, decl := range resFileNode.Decls {
-			pkgNode, ok := decl.(*ast.PackageNode)
-			if !ok {
+			pkgNode := decl.GetPackage()
+			if pkgNode == nil {
 				continue
 			}
 
 			var rng protocol.Range
-			switch node := pkgNode.Name.(type) {
+			switch node := pkgNode.Name.Unwrap().(type) {
 			case *ast.IdentNode:
 				if info := resFileNode.NodeInfo(node); info.IsValid() {
 					rng = toRange(info)
@@ -154,8 +153,7 @@ func (c *Cache) tryHoverPackageNode(params protocol.TextDocumentPositionParams) 
 
 LOOP:
 	for _, decl := range fileNode.Decls {
-		switch decl := decl.(type) {
-		case *ast.PackageNode:
+		if decl := decl.GetPackage(); decl != nil {
 			if decl.Name == nil {
 				break
 			}
@@ -175,7 +173,7 @@ LOOP:
 				}
 			}
 
-			switch name := decl.Name.(type) {
+			switch name := decl.Name.Unwrap().(type) {
 			case *ast.IdentNode:
 				if tokenAtOffset >= decl.Name.Start() && tokenAtOffset <= decl.Name.End() {
 					return makeStandardHover()

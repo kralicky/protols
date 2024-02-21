@@ -309,7 +309,7 @@ func codeActionsForError(errWithPos reporter.ErrorWithPos) []CodeAction {
 		if strings.Contains(name, ".") {
 			break
 		}
-		f := err.ParentFile().(*ast.FileNode)
+		f := err.ParentFile()
 		tokens := f.Tokens()
 		eof, _ := tokens.Last()
 		last, _ := tokens.Previous(eof)
@@ -426,7 +426,7 @@ func (dr *DiagnosticHandler) HandleError(err reporter.ErrorWithPos) error {
 	span := err.GetPosition()
 	var version int32
 	if info, ok := span.(ast.NodeInfo); ok {
-		version = info.Internal().ParentFile().Version()
+		version = info.Internal().ParentFile().GetVersion()
 	}
 	filename := span.Start().Filename
 
@@ -467,7 +467,7 @@ func (dr *DiagnosticHandler) HandleWarning(err reporter.ErrorWithPos) {
 	span := err.GetPosition()
 	var version int32
 	if info, ok := span.(ast.NodeInfo); ok {
-		version = info.Internal().ParentFile().Version()
+		version = info.Internal().ParentFile().GetVersion()
 	}
 	filename := span.Start().Filename
 

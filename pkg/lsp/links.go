@@ -25,7 +25,7 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 	var imports []*ast.ImportNode
 	// get the source positions of the import statements
 	for _, decl := range resAst.Decls {
-		if imp, ok := decl.(*ast.ImportNode); ok {
+		if imp := decl.GetImport(); imp != nil {
 			if imp.IsIncomplete() {
 				continue
 			}

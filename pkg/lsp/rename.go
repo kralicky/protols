@@ -140,7 +140,7 @@ func (c *Cache) Rename(params *protocol.RenameParams) (*protocol.WorkspaceEdit, 
 			}
 		case *ast.FieldReferenceNode:
 			// ensure only the name is replaced
-			switch name := node.Name.(type) {
+			switch name := node.Name.Unwrap().(type) {
 			case *ast.IdentNode:
 				editRange = ref.NodeInfo.Internal().ParentFile().NodeInfo(name)
 			case *ast.CompoundIdentNode:

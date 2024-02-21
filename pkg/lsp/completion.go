@@ -125,10 +125,10 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	}
 	existingOpts := findExistingOptions(scope)
 
+	fileNode := searchTarget.AST()
 	switch node := path[len(path)-1].(type) {
 	case *ast.MessageNode:
 		var partialName, partialNameSuffix string
-		fileNode := searchTarget.AST()
 		if node.Name != nil && tokenAtOffset >= node.Name.Start() && tokenAtOffset <= node.Name.End() {
 			// complete message names
 			var err error
@@ -204,7 +204,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			}
 		}
 	case *ast.RPCTypeNode:
-		if node.Stream != nil && tokenAtOffset == node.Stream.Token() {
+		if node.Stream != nil && tokenAtOffset == node.Stream.GetToken() {
 			// nothing to complete when the cursor is on the stream keyword
 			break
 		}
@@ -213,7 +213,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		var partialName, partialNameSuffix string
 		if !node.IsIncomplete() {
 			withinName := node.MessageType != nil && tokenAtOffset >= node.MessageType.Start() && tokenAtOffset <= node.MessageType.End()
-			if !withinName && tokenAtOffset == node.CloseParen.Token() {
+			if !withinName && tokenAtOffset == node.CloseParen.GetToken() {
 				// check if the cursor is before or after the paren
 				start := fileNode.NodeInfo(node.CloseParen).Start()
 				if start.Offset == posOffset {
@@ -242,7 +242,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
 	case *ast.OptionNode:
 		switch {
-		case !node.Name.IsIncomplete() && node.Equals != nil && tokenAtOffset > node.Equals.Token():
+		case !node.Name.IsIncomplete() && node.Equals != nil && tokenAtOffset > node.Equals.GetToken():
 			// complete option values
 			ref := node.Name.Parts[len(node.Name.Parts)-1]
 			fd := maybeCurrentLinkRes.FindFieldDescriptorByFieldReferenceNode(ref)
@@ -250,7 +250,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				completions = append(completions,
 					c.completeFieldLiteralValues(fd, node.Val, searchTarget.AST(), mapper, posOffset, params.Position)...)
 			}
-		case node.Name == nil && tokenAtOffset > node.Keyword.Token() && (node.Equals == nil || tokenAtOffset <= node.Equals.Token()):
+		case node.Name == nil && tokenAtOffset > node.Keyword.GetToken() && (node.Equals == nil || tokenAtOffset <= node.Equals.GetToken()):
 			// complete new option names
 			completions = append(completions,
 				c.completeOptionOrExtensionName(scope.Options().ProtoReflect().Descriptor(), path, searchTarget.AST(), nil, 0, maybeCurrentLinkRes, existingOpts, mapper, posOffset, params.Position)...)
@@ -359,45 +359,51 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		var completeType string
 		var completeTypeSuffix string
 
+		fldType := node.GetFieldType()
+		fldName := node.GetName()
 		switch {
-		case tokenAtOffset == node.End():
-			// figure out what the previous token is
-			switch tokenAtOffset - 1 {
-			case node.FldType.End():
-				// complete the field name
-				switch fldType := node.FldType.(type) {
-				case *ast.CompoundIdentNode:
-					completeType = string(fldType.AsIdentifier())
-				case *ast.IdentNode:
-					completeType = string(fldType.AsIdentifier())
-				}
-				shouldCompleteType = true
-			case node.Name.Token():
-			case node.Equals.Token():
-			case node.Tag.Token():
-			case node.Options.End():
-			}
-		case tokenAtOffset >= node.FldType.Start() && tokenAtOffset <= node.FldType.End():
+		case fldType == nil:
+			shouldCompleteType = true
+		case fldName != nil && tokenAtOffset >= fldName.Start() && tokenAtOffset <= fldName.End():
+			// don't complete within the field name
+			return nil, nil
+		case tokenAtOffset >= node.FieldType.Start() && tokenAtOffset <= node.FieldType.End():
 			// complete within the field type
-			pos := searchTarget.AST().NodeInfo(node.FldType).Start()
+			pos := fileNode.NodeInfo(node.FieldType).Start()
 			startOffset, err := mapper.PositionOffset(toPosition(pos))
 			if err != nil {
 				return nil, err
 			}
 			cursorIndexIntoType := posOffset - startOffset
-			completeType = string(node.FldType.AsIdentifier())
+			completeType = string(node.FieldType.AsIdentifier())
 			if len(completeType) >= cursorIndexIntoType {
 				completeTypeSuffix = completeType[cursorIndexIntoType:]
 				completeType = completeType[:cursorIndexIntoType]
 				shouldCompleteType = true
 			}
-			if node.Label != nil && node.Label.Start() == node.FldType.Start() {
+			if node.Label != nil && node.Label.Start() == node.FieldType.Start() {
 				// handle empty *ast.IncompleteIdentNodes, such as in 'optional <cursor>'
 				completeType = ""
 				shouldCompleteType = true
 			} else {
 				// complete keywords
 				shouldCompleteKeywords = true
+			}
+		case tokenAtOffset == ast.TokenError && !node.IsIncomplete() && node.Label != nil:
+			// Check for the following case:
+			// message Foo {
+			//   repeated <cursor>
+			//   Foo bar = 1;
+			// }
+			// Here, there is a single well-formed field ('repeated Foo bar = 1')
+			// but the user is most likely attempting to complete a type name for
+			// a new field after typing 'repeated'.
+			labelEndPos := toPosition(fileNode.NodeInfo(node.Label).End())
+			fldTypeStartPos := toPosition(fileNode.NodeInfo(node.FieldType).Start())
+			if labelEndPos.Line == params.Position.Line &&
+				params.Position.Character > labelEndPos.Character &&
+				params.Position.Line < fldTypeStartPos.Line {
+				shouldCompleteType = true
 			}
 		}
 		if shouldCompleteType {
@@ -495,10 +501,10 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		switch prev := path[len(path)-2].(type) {
 		case *ast.FileNode:
 			var partialName, partialNameSuffix string
-			if ident, ok := node.E.(*ast.IdentNode); ok {
+			if node.Err != nil {
 				// complete partial top-level keywords
 				var err error
-				partialName, partialNameSuffix, err = findPartialNames(prev, ident, mapper, posOffset)
+				partialName, partialNameSuffix, err = findPartialNames(prev, node.Err, mapper, posOffset)
 				if err != nil {
 					return nil, err
 				}
@@ -530,7 +536,7 @@ func (c *Cache) completeOptionOrExtensionName(
 	case -1:
 	case 0: // first part of the option name
 		var partialName, partialNameSuffix string
-		if node != nil && node.Name != nil && (!node.IsExtension() || node.Name.Start() > node.Open.Token()) {
+		if node != nil && node.Name != nil && (!node.IsExtension() || node.Name.Start() > node.Open.GetToken()) {
 			var err error
 			partialName, partialNameSuffix, err = findPartialNames(fileNode, node.Name, mapper, posOffset)
 			if err != nil {
@@ -648,7 +654,7 @@ func (c *Cache) completePackageNames(
 
 func (c *Cache) completeFieldLiteralValues(
 	fd protoreflect.FieldDescriptor,
-	valueNode ast.ValueNode,
+	valueNode *ast.ValueNode,
 	fileNode *ast.FileNode,
 	mapper *protocol.Mapper,
 	posOffset int,
@@ -667,7 +673,7 @@ func (c *Cache) completeFieldLiteralValues(
 	case protoreflect.MessageKind:
 		msg := fd.Message()
 		if !msg.IsMapEntry() {
-			if valueNode == (ast.NoSourceNode{}) {
+			if !valueNode.HasValue() {
 				return []protocol.CompletionItem{
 					{
 						Label: "{...}",
@@ -833,7 +839,7 @@ LOOP:
 			}
 			scope = desc
 			break LOOP
-		case ast.FileDeclNode, *ast.RPCNode:
+		case *ast.FileNode, *ast.RPCNode:
 			scope = linkRes
 			break LOOP
 		}
@@ -1017,6 +1023,7 @@ func completeTypeNames(cache *Cache, partialName, partialNameSuffix string, link
 	} else {
 		candidates = cache.FindAllDescriptorsByPrefix(context.TODO(), partialName, filter).All()
 	}
+
 	return completeTypeNamesFromList(candidates, partialName, partialNameSuffix, linkRes, scope, pos)
 }
 
@@ -1326,8 +1333,9 @@ func fileKeywordCompletions(fileNode *ast.FileNode, partialName, partialNameSuff
 	}
 	hasPkgNode := false
 	for _, pkg := range fileNode.Decls {
-		if _, ok := pkg.(*ast.PackageNode); ok {
+		if pkg.GetPackage() != nil {
 			hasPkgNode = true
+			break
 		}
 	}
 	if !hasPkgNode {

@@ -29,7 +29,7 @@ func (c *Cache) documentSymbolsForFileLocked(uri protocol.DocumentURI) ([]protoc
 
 	fn := f.AST()
 	for _, decl := range fn.Decls {
-		switch node := decl.(type) {
+		switch node := decl.Unwrap().(type) {
 		case *ast.MessageNode:
 			symbols = append(symbols, messageSymbols(fn, node)...)
 		case *ast.EnumNode:
@@ -157,14 +157,14 @@ func messageSymbols(fn *ast.FileNode, node *ast.MessageNode) []protocol.Document
 		SelectionRange: toRange(fn.NodeInfo(node.Name)),
 	}
 	for _, decl := range node.Decls {
-		switch node := decl.(type) {
+		switch node := decl.Unwrap().(type) {
 		case *ast.FieldNode:
 			if node.IsIncomplete() {
 				continue
 			}
 			sym.Children = append(sym.Children, protocol.DocumentSymbol{
 				Name:           string(node.Name.AsIdentifier()),
-				Detail:         string(node.FldType.AsIdentifier()),
+				Detail:         string(node.FieldType.AsIdentifier()),
 				Kind:           protocol.Field,
 				Range:          toRange(fn.NodeInfo(node)),
 				SelectionRange: toRange(fn.NodeInfo(node.Name)),
@@ -172,7 +172,7 @@ func messageSymbols(fn *ast.FileNode, node *ast.MessageNode) []protocol.Document
 		case *ast.MapFieldNode:
 			sym.Children = append(sym.Children, protocol.DocumentSymbol{
 				Name:           string(node.Name.AsIdentifier()),
-				Detail:         fmt.Sprintf("map<%s, %s>", string(node.KeyField().Ident.AsIdentifier()), string(node.ValueField().Ident.AsIdentifier())),
+				Detail:         fmt.Sprintf("map<%s, %s>", string(node.KeyField().GetName().AsIdentifier()), string(node.ValueField().GetName().AsIdentifier())),
 				Kind:           protocol.Field,
 				Range:          toRange(fn.NodeInfo(node)),
 				SelectionRange: toRange(fn.NodeInfo(node.Name)),
@@ -197,7 +197,7 @@ func enumSymbols(fn *ast.FileNode, node *ast.EnumNode) []protocol.DocumentSymbol
 		SelectionRange: toRange(fn.NodeInfo(node.Name)),
 	}
 	for _, decl := range node.Decls {
-		switch node := decl.(type) {
+		switch node := decl.Unwrap().(type) {
 		case *ast.EnumValueNode:
 			sym.Children = append(sym.Children, protocol.DocumentSymbol{
 				Name:           string(node.Name.AsIdentifier()),
@@ -213,14 +213,14 @@ func enumSymbols(fn *ast.FileNode, node *ast.EnumNode) []protocol.DocumentSymbol
 func extendSymbols(fn *ast.FileNode, node *ast.ExtendNode) []protocol.DocumentSymbol {
 	symbols := []protocol.DocumentSymbol{}
 	for _, decl := range node.Decls {
-		switch decl := decl.(type) {
+		switch decl := decl.Unwrap().(type) {
 		case *ast.FieldNode:
 			if decl.IsIncomplete() {
 				continue
 			}
 			symbols = append(symbols, protocol.DocumentSymbol{
 				Name:           string(decl.Name.AsIdentifier()),
-				Detail:         fmt.Sprintf("[%s] %s", node.Extendee.AsIdentifier(), string(decl.FldType.AsIdentifier())),
+				Detail:         fmt.Sprintf("[%s] %s", node.Extendee.AsIdentifier(), string(decl.FieldType.AsIdentifier())),
 				Kind:           protocol.Field,
 				Range:          toRange(fn.NodeInfo(decl)),
 				SelectionRange: toRange(fn.NodeInfo(decl.Name)),
@@ -238,7 +238,7 @@ func serviceSymbols(fn *ast.FileNode, node *ast.ServiceNode) []protocol.Document
 		SelectionRange: toRange(fn.NodeInfo(node.Name)),
 	}
 	for _, decl := range node.Decls {
-		switch node := decl.(type) {
+		switch node := decl.Unwrap().(type) {
 		case *ast.RPCNode:
 			var detail string
 			switch {

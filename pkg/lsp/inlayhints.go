@@ -98,7 +98,7 @@ func (c *Cache) computeImportHints(doc protocol.TextDocumentIdentifier, rng prot
 	var imports []*ast.ImportNode
 	// get the source positions of the import statements
 	for _, decl := range resAst.Decls {
-		if imp, ok := decl.(*ast.ImportNode); ok {
+		if imp := decl.GetImport(); imp != nil {
 			if imp.IsIncomplete() {
 				continue
 			}
@@ -183,11 +183,8 @@ func buildMessageLiteralHints(lit *ast.MessageLiteralNode, msg protoreflect.Mess
 				Value:   string(fieldDesc.Message().FullName()),
 				Tooltip: makeTooltip(fieldDesc.Message()),
 			})
-			switch val := field.Val.(type) {
-			case *ast.MessageLiteralNode:
+			if val := field.Val.GetMessageLiteral(); val != nil {
 				hints = append(hints, buildMessageLiteralHints(val, fieldDesc.Message(), a)...)
-			case *ast.ArrayLiteralNode:
-			default:
 			}
 			fieldHint.PaddingLeft = false
 		}

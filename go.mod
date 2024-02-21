@@ -7,10 +7,11 @@ require (
 	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/bufbuild/protovalidate-go v0.5.2
 	github.com/google/cel-go v0.20.0
+	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
 	github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f
-	github.com/kralicky/protocompile v0.0.0-20240221032829-e40f4c19d142
-	github.com/kralicky/tools-lite v0.0.0-20240209234032-93b7eedbea2e
+	github.com/kralicky/protocompile v0.0.0-20240221212304-b5a12d32e33d
+	github.com/kralicky/tools-lite v0.0.0-20240221184119-4cba2183fdda
 	github.com/mattn/go-tty v0.0.5
 	github.com/spf13/cobra v1.8.0
 	golang.org/x/mod v0.15.0

@@ -3,7 +3,6 @@ package lsp
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"runtime"
 	"strings"
 	"sync"
@@ -97,9 +96,6 @@ func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
 }
 
 func (c *Cache) LoadFiles(files []string) {
-	slog.Debug("initializing")
-	defer slog.Debug("done initializing")
-
 	created := make([]file.Modification, len(files))
 	for i, f := range files {
 		created[i] = file.Modification{

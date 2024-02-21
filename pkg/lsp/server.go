@@ -26,15 +26,14 @@ type Server struct {
 
 	client protocol.Client
 
-	trackerMu sync.Mutex
-	tracker   *progress.Tracker
-
-	diagnosticStreamMu     sync.RWMutex
-	diagnosticStreamCancel func()
+	trackerMu    sync.Mutex
+	tracker      *progress.Tracker
+	shutdownOnce sync.Once
 }
 
 type ServerOptions struct {
 	unknownCommandHandlers map[string]UnknownCommandHandler
+	shutdownHooks          []func(context.Context)
 }
 
 type ServerOption func(*ServerOptions)
@@ -53,6 +52,12 @@ func WithUnknownCommandHandler(handler UnknownCommandHandler, cmds ...string) Se
 		for _, cmd := range cmds {
 			o.unknownCommandHandlers[cmd] = handler
 		}
+	}
+}
+
+func WithShutdownHook(hook func(context.Context)) ServerOption {
+	return func(o *ServerOptions) {
+		o.shutdownHooks = append(o.shutdownHooks, hook)
 	}
 }
 
@@ -136,6 +141,10 @@ func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitializ
 		},
 	}
 	slog.Debug("Initialize", "folders", folders)
+	defer s.client.LogMessage(ctx, &protocol.LogMessageParams{
+		Type:    protocol.Info,
+		Message: fmt.Sprintf("initialized workspace folders: %v", folders),
+	})
 	return &protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
 			TextDocumentSync: protocol.TextDocumentSyncOptions{
@@ -736,8 +745,28 @@ func (s *Server) References(ctx context.Context, params *protocol.ReferenceParam
 }
 
 // Shutdown implements protocol.Server.
-func (*Server) Shutdown(context.Context) error {
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.shutdownOnce.Do(func() { s.shutdown(ctx) })
 	return nil
+}
+
+// Exit implements protocol.Server.
+func (s *Server) Exit(ctx context.Context) error {
+	s.shutdownOnce.Do(func() { s.shutdown(ctx) })
+	return nil
+}
+
+func (s *Server) shutdown(ctx context.Context) {
+	slog.Info("server is shutting down")
+	for path := range s.caches {
+		s.cacheDestroyLocked(path, fmt.Errorf("server is shutting down"))
+	}
+	clear(s.caches)
+	for _, hook := range s.shutdownHooks {
+		// these must be run in a separate goroutine, since closing a jsonrpc conn
+		// from within the hook can trigger a deadlock.
+		go hook(ctx)
+	}
 }
 
 // DidChangeWorkspaceFolders implements protocol.Server.
@@ -1020,11 +1049,6 @@ func (*Server) DidOpenNotebookDocument(context.Context, *protocol.DidOpenNoteboo
 // DidSaveNotebookDocument implements protocol.Server.
 func (*Server) DidSaveNotebookDocument(context.Context, *protocol.DidSaveNotebookDocumentParams) error {
 	return notImplemented("DidSaveNotebookDocument")
-}
-
-// Exit implements protocol.Server.
-func (*Server) Exit(context.Context) error {
-	return notImplemented("Exit")
 }
 
 // FoldingRange implements protocol.Server.

@@ -464,6 +464,7 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			s.mktokens(node, tracker.Path(), semanticTypeNumber, 0)
 		case *ast.SpecialFloatLiteralNode:
 			s.mktokens(node, tracker.Path(), semanticTypeNumber, 0)
+			return false
 		case *ast.IdentNode:
 			if node.IsKeyword {
 				s.mktokens(node, tracker.Path(), semanticTypeKeyword, 0)
@@ -487,9 +488,10 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 				if strings.Contains(string(extendee.AsIdentifier()), "google.protobuf.") {
 					modifier = semanticModifierDefaultLibrary
 				}
-				for _, node := range extendee.OrderedNodes() {
-					s.mktokens(node, append(tracker.Path(), node), semanticTypeType, modifier)
-				}
+				s.mktokens(extendee, append(tracker.Path(), extendee), semanticTypeType, modifier)
+				// for _, node := range extendee.OrderedNodes() {
+				// 	s.mktokens(node, append(tracker.Path(), node), semanticTypeType, modifier)
+				// }
 			}
 		case *ast.OneofNode:
 			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeInterface, semanticModifierDefinition)
@@ -520,31 +522,31 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			if node.Name != nil {
 				s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeVariable, semanticModifierDefinition)
 			}
-		case *ast.FieldReferenceNode:
-			if node.IsIncomplete() {
-				return true
-			}
-			if node.IsAnyTypeReference() {
-				urlPrefix := node.GetUrlPrefix().Unwrap()
-				name := node.GetName().Unwrap()
-				s.mktokens(urlPrefix, append(tracker.Path(), urlPrefix), semanticTypeType, semanticModifierDefaultLibrary)
-				s.mktokens(node.Slash, append(tracker.Path(), node.Slash), semanticTypeType, semanticModifierDefaultLibrary)
-				s.mktokens(name, append(tracker.Path(), name), semanticTypeType, 0)
-			} else if node.IsExtension() {
-				name := node.GetName().Unwrap()
-				s.mktokens(node.Open, append(tracker.Path(), node.Open), semanticTypeOperator, 0)
-				s.mktokens(name, append(tracker.Path(), name), semanticTypeVariable, semanticModifierStatic)
-				s.mktokens(node.Close, append(tracker.Path(), node.Close), semanticTypeOperator, 0)
-			} else {
-				// handle "default" and "json_name" pseudo-options
-				name := node.Name.Unwrap()
-				if name.AsIdentifier() == "default" || name.AsIdentifier() == "json_name" {
-					// treat it as a keyword
-					s.mktokens(name, append(tracker.Path(), name), semanticTypeKeyword, 0)
-				} else {
-					s.mktokens(name, append(tracker.Path(), name), semanticTypeProperty, 0)
+		case *ast.OptionNameNode:
+			path := tracker.Path()
+			for _, part := range node.OrderedNodes() {
+				switch node := part.(type) {
+				case *ast.FieldReferenceNode:
+					if node.IsExtension() {
+						name := node.GetName().Unwrap()
+						s.mktokens(node.Open, append(path, node, node.Open), semanticTypeOperator, 0)
+						s.mktokens(name, append(path, node, name), semanticTypeProperty, 0)
+						s.mktokens(node.Close, append(path, node, node.Close), semanticTypeOperator, 0)
+					} else {
+						// handle "default" and "json_name" pseudo-options
+						name := node.Name.Unwrap()
+						if name.AsIdentifier() == "default" || name.AsIdentifier() == "json_name" {
+							// treat it as a keyword
+							s.mktokens(name, append(path, node, name), semanticTypeKeyword, 0)
+						} else {
+							s.mktokens(name, append(path, node, name), semanticTypeProperty, 0)
+						}
+					}
+				case *ast.RuneNode:
+					s.mktokens(part, append(path, part), semanticTypeProperty, 0)
 				}
 			}
+			return false
 		case *ast.OptionNode:
 			if node.Name != nil && len(node.Name.Parts) > 0 {
 				switch val := node.Val.Unwrap().(type) {
@@ -579,6 +581,31 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 				}
 			}
 		case *ast.MessageFieldNode:
+			path := tracker.Path()
+			fieldRef := node.Name
+			if fieldRef.IsAnyTypeReference() {
+				// [type.googleapis.com/foo.bar.baz]
+				open := fieldRef.Open
+				urlPrefix := fieldRef.UrlPrefix.Unwrap()
+				slash := fieldRef.Slash
+				name := fieldRef.Name.Unwrap()
+				close := fieldRef.Close
+				s.mktokens(open, append(path, fieldRef, open), semanticTypeOperator, 0)
+				s.mktokens(urlPrefix, append(path, fieldRef, urlPrefix), semanticTypeType, semanticModifierDefaultLibrary)
+				s.mktokens(slash, append(path, fieldRef, slash), semanticTypeType, semanticModifierDefaultLibrary)
+				s.mktokens(name, append(path, fieldRef, name), semanticTypeType, 0)
+				s.mktokens(close, append(path, fieldRef, close), semanticTypeOperator, 0)
+			} else if fieldRef.IsExtension() {
+				// [foo.bar.baz]
+				open := fieldRef.Open
+				name := fieldRef.GetName().Unwrap()
+				close := fieldRef.Close
+				s.mktokens(open, append(path, fieldRef, open), semanticTypeOperator, 0)
+				s.mktokens(name, append(path, fieldRef, name), semanticTypeProperty, 0)
+				s.mktokens(close, append(path, fieldRef, close), semanticTypeOperator, 0)
+			} else {
+				s.mktokens(fieldRef, append(path, fieldRef), semanticTypeProperty, 0)
+			}
 			switch val := node.Val.Unwrap().(type) {
 			case *ast.ArrayLiteralNode:
 				s.inspectArrayLiteral(node, val, tracker)

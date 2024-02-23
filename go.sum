@@ -1,5 +1,5 @@
-buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.32.0-20240212200630-3014d81c3a48.1 h1:rOe/itdO7+9cWOnKqvpn1K7VmTDwp3vI4juPz6aNQbc=
-buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.32.0-20240212200630-3014d81c3a48.1/go.mod h1:tiTMKD8j6Pd/D2WzREoweufjzaJKHZg35f/VGcZ2v3I=
+buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.32.0-20240221180331-f05a6f4403ce.1 h1:AmmAwHbvaeOIxDKG2+aTn5C36HjmFIMkrdTp49rp80Q=
+buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.32.0-20240221180331-f05a6f4403ce.1/go.mod h1:tiTMKD8j6Pd/D2WzREoweufjzaJKHZg35f/VGcZ2v3I=
 cloud.google.com/go/dlp v1.11.2 h1:lTipOuJaSjlYnnotPMbEhKURLC6GzCMDDzVbJAEbmYM=
 cloud.google.com/go/dlp v1.11.2/go.mod h1:9Czi+8Y/FegpWzgSfkRlyz+jwW6Te9Rv26P3UfU/h/w=
 github.com/AlecAivazis/survey/v2 v2.3.7 h1:6I/u8FvytdGsgonrYsVn2t8t4QiRnh6QSTqkkhIiSjQ=

@@ -5,7 +5,7 @@ go 1.22
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.32.0-20240221180331-f05a6f4403ce.1
 	github.com/AlecAivazis/survey/v2 v2.3.7
-	github.com/bufbuild/protovalidate-go v0.5.2
+	github.com/bufbuild/protovalidate-go v0.6.0
 	github.com/google/cel-go v0.20.0
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0

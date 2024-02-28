@@ -81,6 +81,7 @@ func (c *Cache) compileLocked(protos ...string) {
 		}
 	}
 	slog.Debug("done compiling", "protos", len(protos))
+	c.partialResultsMu.Lock()
 	for _, r := range res.Files {
 		path := r.Path()
 		found := false
@@ -106,12 +107,14 @@ func (c *Cache) compileLocked(protos ...string) {
 			c.results = append(c.results, r)
 			c.pragmas.Store(protocompile.ResolvedPath(path), &pragmaMap{m: pragmas})
 		}
+		delete(c.partiallyLinkedResults, protocompile.ResolvedPath(path))
+		delete(c.unlinkedResults, protocompile.ResolvedPath(path))
 	}
-	c.partialResultsMu.Lock()
 	for path, partial := range res.PartialLinkResults {
 		partial := partial
 		slog.With("path", path).Debug("adding new partial linker result")
 		c.partiallyLinkedResults[path] = partial
+		delete(c.unlinkedResults, path)
 		for i, f := range c.results {
 			if f.Path() == string(path) {
 				c.results[i] = linker.NewPlaceholderFile(partial.Path())
@@ -124,6 +127,7 @@ func (c *Cache) compileLocked(protos ...string) {
 		partial := partial
 		slog.With("path", path).Debug("adding new partial linker result")
 		c.unlinkedResults[path] = partial
+		delete(c.partiallyLinkedResults, path)
 		for i, f := range c.results {
 			if f.Path() == string(path) {
 				c.results[i] = linker.NewPlaceholderFile(f.Path())

@@ -24,7 +24,7 @@ type Server struct {
 	caches       map[string]*Cache
 	cacheCancels map[string]context.CancelCauseFunc
 
-	client protocol.Client
+	client protocol.ClientCloser
 
 	trackerMu    sync.Mutex
 	tracker      *progress.Tracker
@@ -33,7 +33,6 @@ type Server struct {
 
 type ServerOptions struct {
 	unknownCommandHandlers map[string]UnknownCommandHandler
-	shutdownHooks          []func(context.Context)
 }
 
 type ServerOption func(*ServerOptions)
@@ -55,13 +54,7 @@ func WithUnknownCommandHandler(handler UnknownCommandHandler, cmds ...string) Se
 	}
 }
 
-func WithShutdownHook(hook func(context.Context)) ServerOption {
-	return func(o *ServerOptions) {
-		o.shutdownHooks = append(o.shutdownHooks, hook)
-	}
-}
-
-func NewServer(client protocol.Client, opts ...ServerOption) *Server {
+func NewServer(client protocol.ClientCloser, opts ...ServerOption) *Server {
 	var options ServerOptions
 	options.apply(opts...)
 
@@ -756,17 +749,12 @@ func (s *Server) Exit(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) shutdown(ctx context.Context) {
+func (s *Server) shutdown(_ context.Context) {
 	slog.Info("server is shutting down")
 	for path := range s.caches {
 		s.cacheDestroyLocked(path, fmt.Errorf("server is shutting down"))
 	}
 	clear(s.caches)
-	for _, hook := range s.shutdownHooks {
-		// these must be run in a separate goroutine, since closing a jsonrpc conn
-		// from within the hook can trigger a deadlock.
-		go hook(ctx)
-	}
 }
 
 // DidChangeWorkspaceFolders implements protocol.Server.

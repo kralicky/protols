@@ -28,16 +28,12 @@ type streamServer struct{}
 
 func (s *streamServer) ServeStream(ctx context.Context, conn jsonrpc2.Conn) error {
 	client := protocol.ClientDispatcher(conn)
-
 	server := lsp.NewServer(client,
 		lsp.WithUnknownCommandHandler(
 			&unknownHandler{Generators: codegen.DefaultGenerators()},
 			"protols/generate",
 			"protols/generateWorkspace",
 		),
-		lsp.WithShutdownHook(func(ctx context.Context) {
-			conn.Close()
-		}),
 	)
 	handler := protocol.CancelHandler(
 		AsyncHandler(

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/kralicky/protols/pkg/lsprpc"
 	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
@@ -20,7 +19,6 @@ import (
 	"github.com/kralicky/tools-lite/gopls/pkg/test/integration/fake"
 	"github.com/kralicky/tools-lite/pkg/jsonrpc2"
 	"github.com/kralicky/tools-lite/pkg/jsonrpc2/servertest"
-	"github.com/kralicky/tools-lite/pkg/testenv"
 )
 
 var runner *Runner
@@ -61,8 +59,6 @@ type Runner struct {
 	SkipCleanup bool
 
 	tempDir string
-	tsOnce  sync.Once
-	ts      *servertest.TCPServer
 }
 
 type (
@@ -94,13 +90,10 @@ func (r *Runner) Run(t *testing.T, files string, test TestFunc, opts ...integrat
 
 	config := defaultConfig()
 	t.Run("in-process", func(t *testing.T) {
-		ctx := context.Background()
-		if d, ok := testenv.Deadline(t); ok {
-			timeout := time.Until(d) * 19 / 20 // Leave an arbitrary 5% for cleanup.
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, timeout)
-			defer cancel()
-		}
+		// TODO: shutdown is broken in the upstream code; if it gets fixed, this
+		// should implement and verify correct shutdown behavior.
+		ctx, ca := context.WithCancel(context.Background())
+		defer ca()
 		rootDir := filepath.Join(r.tempDir, filepath.FromSlash(t.Name()))
 		if err := os.MkdirAll(rootDir, 0o755); err != nil {
 			t.Fatal(err)
@@ -120,7 +113,6 @@ func (r *Runner) Run(t *testing.T, files string, test TestFunc, opts ...integrat
 			}
 		}()
 		ss := lsprpc.NewStreamServer()
-		r.ts = servertest.NewTCPServer(ctx, ss, nil)
 
 		framer := jsonrpc2.NewRawStream
 		ls := &loggingFramer{}
@@ -144,16 +136,6 @@ func (r *Runner) Run(t *testing.T, files string, test TestFunc, opts ...integrat
 			if t.Failed() {
 				ls.printBuffers(t.Name(), os.Stderr)
 			}
-			// For tests that failed due to a timeout, don't fail to shutdown
-			// because ctx is done.
-			//
-			// There is little point to setting an arbitrary timeout for closing
-			// the editor: in general we want to clean up before proceeding to the
-			// next test, and if there is a deadlock preventing closing it will
-			// eventually be handled by the `go test` timeout.
-			if err := editor.Close(context.WithoutCancel(ctx)); err != nil {
-				t.Errorf("error closing editor: %v", err)
-			}
 		}()
 		// Always await the initial workspace load.
 		env.Await(integration.AllOf(
@@ -166,11 +148,6 @@ func (r *Runner) Run(t *testing.T, files string, test TestFunc, opts ...integrat
 // Close cleans up resource that have been allocated to this workspace.
 func (r *Runner) Close() error {
 	var errmsgs []string
-	if r.ts != nil {
-		if err := r.ts.Close(); err != nil {
-			errmsgs = append(errmsgs, err.Error())
-		}
-	}
 	if !r.SkipCleanup {
 		if err := os.RemoveAll(r.tempDir); err != nil {
 			errmsgs = append(errmsgs, err.Error())

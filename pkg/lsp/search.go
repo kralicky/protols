@@ -513,7 +513,7 @@ func (s *stack) push(node ast.Node, desc protoreflect.Descriptor) {
 	*s = append(*s, e)
 }
 
-// find the narrowest token that contains the position and also has a node
+// find the narrowest non-rune token that contains the position and also has a node
 // associated with it. The set of tokens will contain all the tokens that
 // contain the position, scoped to the narrowest top-level declaration (message, service, etc.)
 //
@@ -567,6 +567,10 @@ func findNarrowestSemanticToken(parseRes parser.Result, tokens []semanticItem, p
 		}
 		if token.node == nil {
 			// Skip tokens without a node
+			continue
+		}
+		if _, ok := token.node.(*ast.RuneNode); ok {
+			// Skip rune nodes (parens, separators, brackets, etc)
 			continue
 		}
 		return token, true

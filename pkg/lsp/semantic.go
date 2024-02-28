@@ -532,7 +532,7 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 						s.mktokens(node.Open, append(path, node, node.Open), semanticTypeOperator, 0)
 						s.mktokens(name, append(path, node, name), semanticTypeProperty, 0)
 						s.mktokens(node.Close, append(path, node, node.Close), semanticTypeOperator, 0)
-					} else {
+					} else if !node.IsIncomplete() {
 						// handle "default" and "json_name" pseudo-options
 						name := node.Name.Unwrap()
 						if name.AsIdentifier() == "default" || name.AsIdentifier() == "json_name" {

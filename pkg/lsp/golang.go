@@ -69,6 +69,10 @@ func (s *GoLanguageDriver) RefreshModules() {
 	s.moduleResolver.ClearForNewScan()
 }
 
+func (s *GoLanguageDriver) HasGoModule() bool {
+	return s.localModDir != "" && s.localModName != ""
+}
+
 type ParsedGoFile struct {
 	*goast.File
 	Fset     *token.FileSet

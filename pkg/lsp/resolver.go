@@ -130,7 +130,15 @@ func (r *Resolver) UpdateURIPathMappings(modifications []file.Modification) {
 					}
 				}
 				mod, err := r.LookupGoModule(filename, f)
+				f.Close()
 				if err != nil {
+					if err == ErrNoModule {
+						slog.With("filename", filename).Info("go module is no longer present for file, removing from cache")
+						delete(r.filePathsByURI, m.URI)
+						delete(r.fileURIsByPath, existingPath)
+						delete(r.importSourcesByURI, m.URI)
+						continue
+					}
 					slog.With(
 						"filename", filename,
 						"error", err,
@@ -161,12 +169,20 @@ func (r *Resolver) UpdateURIPathMappings(modifications []file.Modification) {
 				continue
 			}
 			goPkg, err := r.LookupGoModule(filename, f)
+			f.Close()
 			if err != nil {
+				if err == ErrNoModule {
+					relativePath := strings.TrimPrefix(m.URI.Path(), protocol.DocumentURI(r.folder.URI).Path()+"/")
+
+					r.filePathsByURI[m.URI] = relativePath
+					r.fileURIsByPath[relativePath] = m.URI
+					r.importSourcesByURI[m.URI] = SourceRelativePath
+					continue
+				}
 				slog.With(
 					"filename", filename,
 					"error", err,
 				).Error("failed to lookup go module")
-				r.filePathsByURI[m.URI] = ""
 				continue
 			}
 			canonicalName := filepath.Join(goPkg, filepath.Base(filename))
@@ -448,11 +464,12 @@ func (r *Resolver) SyntheticFiles() []protocol.DocumentURI {
 	return uris
 }
 
-func (r *Resolver) LookupGoModule(filename string, f io.ReadCloser) (string, error) {
-	// // Check if the file is in a go package directory
-	// if pkgName, err := imports.PackageDirToName(filepath.Dir(filename)); err == nil {
-	// 	return pkgName, nil
-	// }
+var ErrNoModule = errors.New("no go module found")
+
+func (r *Resolver) LookupGoModule(filename string, f io.Reader) (string, error) {
+	if !r.goLanguageDriver.HasGoModule() {
+		return "", ErrNoModule
+	}
 
 	// Check if the filename is relative to a local go module
 	if pkgName, err := r.goLanguageDriver.ImplicitGoPackagePath(filename); err == nil {
@@ -531,7 +548,7 @@ func (r *Resolver) findImportPathsByPrefix(prefix string) map[protocol.DocumentU
 	return paths
 }
 
-func FastLookupGoModule(f io.ReadCloser) (string, error) {
+func FastLookupGoModule(f io.Reader) (string, error) {
 	// Search the .proto file for `option go_package = "...";`
 	// We know this will be somewhere at the top of the file.
 	scan := bufio.NewScanner(f)

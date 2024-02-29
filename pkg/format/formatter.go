@@ -1804,6 +1804,10 @@ func (f *formatter) writeCompactOptions(compactOptionsNode *ast.CompactOptionsNo
 		if len(compactOptionsNode.Options) > 0 {
 			f.writeInline(compactOptionsNode.OpenBracket)
 			for i, optionNode := range compactOptionsNode.Options {
+				if optionNode.Name == nil && optionNode.Equals == nil && optionNode.Val == nil && optionNode.Semicolon != nil {
+					// leading comma, ignore
+					continue
+				}
 				f.writeInline(optionNode.Name)
 				f.Space()
 				if optionNode.Equals != nil {

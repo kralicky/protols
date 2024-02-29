@@ -172,9 +172,16 @@ option (foo.bar.rept) = {
   r:     {name: "s"}
 };`[1:],
 		},
+		9: {
+			input: `message Foo { optional int32 foo = 1 [ , json_name = "foo", ]; }`,
+			want: `
+message Foo {
+  optional int32 foo = 1 [json_name = "foo"];
+}`[1:],
+		},
 	}
 
-	for _, c := range cases[8:] {
+	for _, c := range cases[9:] {
 		root, err := parser.Parse("", strings.NewReader(c.input), reporter.NewHandler(nil), 0)
 		require.NoError(t, err)
 

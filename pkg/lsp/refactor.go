@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -15,7 +16,7 @@ import (
 	"github.com/kralicky/protocompile/ast"
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protols/pkg/format"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -47,6 +48,10 @@ type pendingCodeActionManager struct {
 
 var actionQueue pendingCodeActionManager
 
+type codeActionData struct {
+	Id string `json:"id"`
+}
+
 func (q *pendingCodeActionManager) enqueue(title string, kind protocol.CodeActionKind, resolve func(*protocol.CodeAction) error) protocol.CodeAction {
 	newId := uuid.NewString()
 	ctx, ca := context.WithTimeout(context.Background(), 30*time.Second)
@@ -60,19 +65,24 @@ func (q *pendingCodeActionManager) enqueue(title string, kind protocol.CodeActio
 		resolve:      resolve,
 	})
 
+	data, _ := json.Marshal(codeActionData{Id: newId})
 	return protocol.CodeAction{
 		Title: title,
 		Kind:  kind,
-		Data:  newId,
+		Data:  (*json.RawMessage)(&data),
 	}
 }
 
 func (q *pendingCodeActionManager) resolve(ca *protocol.CodeAction) error {
-	id, ok := ca.Data.(string)
-	if !ok {
-		return fmt.Errorf("invalid code action data type: %T", ca.Data)
+	if ca.Data == nil {
+		return fmt.Errorf("missing data in code action: %v", ca)
 	}
-	pca, ok := q.queue.LoadAndDelete(id)
+	var data codeActionData
+
+	if err := json.Unmarshal(*ca.Data, &data); err != nil {
+		return fmt.Errorf("malformed code action data: %v", err)
+	}
+	pca, ok := q.queue.LoadAndDelete(data.Id)
 	if !ok {
 		return fmt.Errorf("no pending code action with id %q", ca.Data)
 	}

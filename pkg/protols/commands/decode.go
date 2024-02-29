@@ -12,7 +12,7 @@ import (
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/kralicky/protols/pkg/lsp"
 	"github.com/kralicky/protols/pkg/sources"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"github.com/mattn/go-tty"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"

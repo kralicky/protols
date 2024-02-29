@@ -2,7 +2,7 @@ package lsp
 
 import (
 	"github.com/kralicky/protocompile/ast"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 )
 
 type ranger interface {

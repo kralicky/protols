@@ -9,7 +9,7 @@ import (
 
 	"github.com/kralicky/protocompile/parser"
 	"github.com/kralicky/tools-lite/gopls/pkg/file"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"github.com/kralicky/tools-lite/pkg/diff"
 	"github.com/kralicky/tools-lite/pkg/jsonrpc2"
 )

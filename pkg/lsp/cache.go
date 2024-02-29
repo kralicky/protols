@@ -15,7 +15,7 @@ import (
 	"github.com/kralicky/protocompile/parser"
 	"github.com/kralicky/protocompile/reporter"
 	"github.com/kralicky/tools-lite/gopls/pkg/file"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/reflect/protoreflect"

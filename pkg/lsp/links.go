@@ -5,7 +5,7 @@ import (
 
 	"github.com/kralicky/protocompile"
 	"github.com/kralicky/protocompile/ast"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 )
 
 func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]protocol.DocumentLink, error) {

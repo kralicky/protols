@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 )
 
 func (c *Cache) GetCodeActions(ctx context.Context, params *protocol.CodeActionParams) ([]protocol.CodeAction, error) {

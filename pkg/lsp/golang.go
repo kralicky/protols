@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
@@ -16,7 +17,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"github.com/kralicky/tools-lite/pkg/diff"
 	"github.com/kralicky/tools-lite/pkg/gocommand"
 	"github.com/kralicky/tools-lite/pkg/imports"
@@ -45,16 +46,15 @@ func NewGoLanguageDriver(workdir string) *GoLanguageDriver {
 	procEnv := &imports.ProcessEnv{
 		GocmdRunner: &gocommand.Runner{},
 		Env:         env,
-		ModFile:     filepath.Join(workdir, "go.mod"),
 		ModFlag:     "readonly",
 		WorkingDir:  workdir,
 	}
 	res, err := procEnv.GetResolver()
-	if err != nil {
-		panic(err)
+	if err != nil || res == nil {
+		slog.Warn("failed to create module resolver", "error", err)
+		return nil
 	}
 	resolver := res.(*imports.ModuleResolver)
-	resolver.ClearForNewMod()
 	modDir, modName := resolver.ModInfo(workdir)
 
 	return &GoLanguageDriver{

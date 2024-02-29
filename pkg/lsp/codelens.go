@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/kralicky/protocompile/linker"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 

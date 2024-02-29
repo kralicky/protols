@@ -14,7 +14,7 @@ import (
 	"github.com/kralicky/protols/pkg/util"
 	"github.com/kralicky/protols/sdk/codegen"
 	"github.com/kralicky/protols/sdk/plugin"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"github.com/kralicky/tools-lite/pkg/event"
 	"github.com/kralicky/tools-lite/pkg/jsonrpc2"
 	"google.golang.org/protobuf/types/descriptorpb"

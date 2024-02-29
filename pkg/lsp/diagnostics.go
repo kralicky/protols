@@ -16,7 +16,7 @@ import (
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protocompile/parser"
 	"github.com/kralicky/protocompile/reporter"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 )
 
 // func (c *Cache) ComputeDiagnosticReports(uri protocol.DocumentURI, prevResultId string) ([]protocol.Diagnostic, protocol.DocumentDiagnosticReportKind, string, error) {

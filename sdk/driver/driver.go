@@ -9,7 +9,7 @@ import (
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protols/pkg/lsp"
 	sdkutil "github.com/kralicky/protols/sdk/util"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 )

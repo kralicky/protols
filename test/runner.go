@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/kralicky/protols/pkg/lsprpc"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"github.com/kralicky/tools-lite/gopls/pkg/test/integration"
 	"github.com/kralicky/tools-lite/gopls/pkg/test/integration/fake"
 	"github.com/kralicky/tools-lite/pkg/jsonrpc2"

@@ -9,7 +9,7 @@ import (
 	"github.com/kralicky/protocompile/parser"
 	"github.com/kralicky/protocompile/protoutil"
 	"github.com/kralicky/protols/pkg/x/symbols"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 

@@ -5,7 +5,7 @@ import (
 	"sync"
 
 	"github.com/kralicky/tools-lite/gopls/pkg/file"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 )
 
 type documentVersionQueue struct {

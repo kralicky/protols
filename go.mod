@@ -1,6 +1,6 @@
 module github.com/kralicky/protols
 
-go 1.22
+go 1.22.0
 
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.32.0-20240221180331-f05a6f4403ce.1
@@ -10,8 +10,8 @@ require (
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
 	github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f
-	github.com/kralicky/protocompile v0.0.0-20240221233927-485eb43cbc65
-	github.com/kralicky/tools-lite v0.0.0-20240221184119-4cba2183fdda
+	github.com/kralicky/protocompile v0.0.0-20240229195713-5e8dd896b202
+	github.com/kralicky/tools-lite v0.0.0-20240229193424-bd18a0b4c7f5
 	github.com/mattn/go-tty v0.0.5
 	github.com/spf13/cobra v1.8.0
 	github.com/stretchr/testify v1.8.4
@@ -30,6 +30,7 @@ require (
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
+	github.com/kr/pretty v0.2.1 // indirect
 	github.com/mattn/go-colorable v0.1.4 // indirect
 	github.com/mattn/go-isatty v0.0.10 // indirect
 	github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b // indirect

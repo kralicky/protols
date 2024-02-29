@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/kralicky/protols/pkg/x/protogen/strs"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 

@@ -10,7 +10,7 @@ import (
 	"github.com/kralicky/protocompile"
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protocompile/reporter"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/cache"
+	"github.com/kralicky/tools-lite/gopls/pkg/cache"
 )
 
 type Compiler struct {

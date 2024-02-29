@@ -4,7 +4,7 @@ import (
 	"bytes"
 
 	"github.com/kralicky/protols/pkg/format"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"github.com/kralicky/tools-lite/pkg/diff"
 )
 

@@ -10,7 +10,7 @@ import (
 
 	"github.com/kralicky/protols/pkg/format"
 	"github.com/kralicky/tools-lite/gopls/pkg/file"
-	"github.com/kralicky/tools-lite/gopls/pkg/lsp/protocol"
+	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 )
 
 type SelectRangeParams struct {

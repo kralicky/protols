@@ -245,3 +245,33 @@ message Y {
 		}
 	})
 }
+
+func TestComments(t *testing.T) {
+	const src = `
+-- test.proto --
+extend .google. /* comment */ protobuf.ExtensionRangeOptions {
+  optional string label = 20000;
+}`
+	Run(t, src, func(t *testing.T, env *integration.Env) {
+		env.OpenFile("test.proto")
+		tokens := env.SemanticTokensFull("test.proto")
+		want := []fake.SemanticToken{
+			{Token: "extend", TokenType: "keyword"},
+			{Token: ".", TokenType: "type", Mod: "defaultLibrary"},
+			{Token: "google", TokenType: "type", Mod: "defaultLibrary"},
+			{Token: ".", TokenType: "type", Mod: "defaultLibrary"},
+			{Token: "/* comment */", TokenType: "comment"},
+			{Token: "protobuf", TokenType: "type", Mod: "defaultLibrary"},
+			{Token: ".", TokenType: "type", Mod: "defaultLibrary"},
+			{Token: "ExtensionRangeOptions", TokenType: "type", Mod: "defaultLibrary"},
+			{Token: "optional", TokenType: "keyword"},
+			{Token: "string", TokenType: "type", Mod: "defaultLibrary"},
+			{Token: "label", TokenType: "variable", Mod: "definition"},
+			{Token: "=", TokenType: "operator"},
+			{Token: "20000", TokenType: "number"},
+		}
+		if x := cmp.Diff(want, tokens); x != "" {
+			t.Errorf("Semantic tokens do not match (-want +got):\n%s", x)
+		}
+	})
+}

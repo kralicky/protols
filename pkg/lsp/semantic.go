@@ -484,14 +484,7 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			case *ast.IdentNode:
 				s.mktokens(extendee, append(tracker.Path(), extendee), semanticTypeType, 0)
 			case *ast.CompoundIdentNode:
-				modifier := tokenModifier(0)
-				if strings.Contains(string(extendee.AsIdentifier()), "google.protobuf.") {
-					modifier = semanticModifierDefaultLibrary
-				}
-				s.mktokens(extendee, append(tracker.Path(), extendee), semanticTypeType, modifier)
-				// for _, node := range extendee.OrderedNodes() {
-				// 	s.mktokens(node, append(tracker.Path(), node), semanticTypeType, modifier)
-				// }
+				s.inspectCompoundIdent(extendee, tracker)
 			}
 		case *ast.OneofNode:
 			s.mktokens(node.Name, append(tracker.Path(), node.Name), semanticTypeInterface, semanticModifierDefinition)
@@ -513,9 +506,7 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 					case *ast.IdentNode:
 						s.mktokens(fldType, append(tracker.Path(), fldType), semanticTypeType, modifier)
 					case *ast.CompoundIdentNode:
-						for _, node := range fldType.OrderedNodes() {
-							s.mktokens(node, append(tracker.Path(), node), semanticTypeType, modifier)
-						}
+						s.inspectCompoundIdent(fldType, tracker)
 					}
 				}
 			}
@@ -640,6 +631,24 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 		}
 		return true
 	}, walkOptions...)
+}
+
+func (s *semanticItems) inspectCompoundIdent(compoundIdent *ast.CompoundIdentNode, tracker *ast.AncestorTracker) {
+	modifier := tokenModifier(0)
+	name := compoundIdent.AsIdentifier()
+	if strings.Contains(strings.TrimPrefix(string(name), "."), "google.protobuf.") {
+		modifier = semanticModifierDefaultLibrary
+	}
+	// check if the compound ident is "continuous" (no spaces, comments, etc. between parts)
+	// if so, create a single token for the entire compound ident
+	if s.AST().NodeInfo(compoundIdent).RawText() == string(name) {
+		s.mktokens(compoundIdent, append(tracker.Path(), compoundIdent), semanticTypeType, modifier)
+	} else {
+		// otherwise, create a token for each part
+		for _, node := range compoundIdent.OrderedNodes() {
+			s.mktokens(node, append(tracker.Path(), compoundIdent, node), semanticTypeType, modifier)
+		}
+	}
 }
 
 func (s *semanticItems) inspectFieldLiteral(node ast.Node, val *ast.ValueNode, tracker *ast.AncestorTracker) {

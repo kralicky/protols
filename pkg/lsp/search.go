@@ -304,6 +304,10 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 						case *ast.IdentNode:
 							found = wantNode == ident
 						case *ast.CompoundIdentNode:
+							if wantNode == ident {
+								found = true
+								break
+							}
 							for _, comp := range ident.Components {
 								if wantNode == comp {
 									found = true
@@ -472,6 +476,13 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 	if len(stack) == 0 {
 		// nothing relevant found
 		return nil, protocol.Range{}, nil
+	}
+
+	// as a special case, adjust the range for compound identifiers
+	if _, ok := stack[0].node.(*ast.IdentNode); ok {
+		if compoundIdent, ok := stack[1].node.(*ast.CompoundIdentNode); ok {
+			return stack[0].desc, toRange(root.NodeInfo(compoundIdent)), nil
+		}
 	}
 
 	return stack[0].desc, toRange(root.NodeInfo(stack[0].node)), nil

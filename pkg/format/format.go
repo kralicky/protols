@@ -121,7 +121,7 @@ func NodeInfoOverlay(fileNode FileNodeInterface, infos map[ast.Node]ast.NodeInfo
 			if cn == node {
 				return true
 			}
-			if terminalNode, ok := cn.(ast.TerminalNodeInterface); ok && terminalNode.GetToken() == 0 {
+			if terminalNode, ok := cn.(ast.TerminalNode); ok && terminalNode.GetToken() == 0 {
 				if _, ok := infos[cn]; !ok {
 					infos[cn] = ast.NodeInfo{}
 				}

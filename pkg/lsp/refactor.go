@@ -214,7 +214,8 @@ func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionPa
 	if err != nil {
 		return
 	}
-	token, comment := linkRes.AST().ItemAtOffset(offset)
+	fileNode := linkRes.AST()
+	token, comment := fileNode.ItemAtOffset(offset)
 	if token == ast.TokenError || comment.IsValid() {
 		return
 	}
@@ -232,7 +233,7 @@ func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionPa
 		return
 	}
 
-	indexIntoName := slices.Index(optNameNode.Parts, fieldRefNode)
+	indexIntoName := unwrapIndex(optNameNode.Parts, fieldRefNode)
 	var targetExtension protoreflect.ExtensionDescriptor
 	targetField := linkRes.FindFieldDescriptorByFieldReferenceNode(fieldRefNode)
 	if targetField == nil {
@@ -354,20 +355,17 @@ func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionPa
 		return true
 	}, tracker.AsWalkOptions()...)
 
-	fileNode := linkRes.AST()
+	results <- actionQueue.enqueue("Simplify repeated options", protocol.RefactorRewrite, func(ca *protocol.CodeAction) error {
+		fileNode := linkRes.AST()
 
-	edits := calcSimplifyRepeatedOptionsEdits(fileNode, existingContainer, targetExtensionNameNode, paths)
-
-	action := protocol.CodeAction{
-		Title: "Simplify repeated options",
-		Kind:  protocol.RefactorRewrite,
-		Edit: &protocol.WorkspaceEdit{
+		edits := calcSimplifyRepeatedOptionsEdits(fileNode, existingContainer, targetExtensionNameNode, paths)
+		ca.Edit = &protocol.WorkspaceEdit{
 			Changes: map[protocol.DocumentURI][]protocol.TextEdit{
 				mapper.URI: edits,
 			},
-		},
-	}
-	results <- action
+		}
+		return nil
+	})
 }
 
 func newFieldVisitor(tracker *ast.AncestorTracker, paths *[][]ast.Node) func(ast.Node) bool {
@@ -897,7 +895,7 @@ func calcSimplifyRepeatedOptionsEdits(
 	replaceWithinParent := func(existingNode *ast.OptionNode, newNodes ...*ast.OptionNode) {
 		switch parent := parentNode.(type) {
 		case *ast.MessageNode:
-			idx := slices.Index(parent.Decls, existingNode.AsMessageElement())
+			idx := unwrapIndex(parent.Decls, existingNode)
 			newElems := make([]*ast.MessageElement, len(newNodes))
 			for i, node := range newNodes {
 				newElems[i] = node.AsMessageElement()
@@ -908,7 +906,7 @@ func calcSimplifyRepeatedOptionsEdits(
 			for i, node := range newNodes {
 				newElems[i] = node.AsFileElement()
 			}
-			idx := slices.Index(parent.Decls, existingNode.AsFileElement())
+			idx := unwrapIndex(parent.Decls, existingNode)
 			parent.Decls = slices.Replace(parent.Decls, idx, idx+1, newElems...)
 		}
 	}
@@ -925,7 +923,7 @@ func calcSimplifyRepeatedOptionsEdits(
 	} else {
 		removeWithinExisting = func(node *ast.MessageFieldNode) {
 			existingMsgLit := existingContainer.Val.GetMessageLiteral()
-			idx := slices.Index(existingMsgLit.Elements, node)
+			idx := unwrapIndex(existingMsgLit.Elements, node)
 			if idx != -1 {
 				existingMsgLit.Elements = slices.Delete(existingMsgLit.Elements, idx, idx+1)
 			}
@@ -936,6 +934,16 @@ func calcSimplifyRepeatedOptionsEdits(
 			} else {
 				pathsOutsideContainer = append(pathsOutsideContainer, path)
 			}
+		}
+	}
+
+SEARCH:
+	for _, path := range pathsWithinContainer {
+		msgField := path[fieldIndex].(*ast.MessageFieldNode)
+		switch val := msgField.Val.Unwrap().(type) {
+		case *ast.ArrayLiteralNode:
+			containerArrayNode = val
+			break SEARCH
 		}
 	}
 
@@ -1236,4 +1244,13 @@ func buildSimplifyFieldLiteralsASTChanges(fields []*ast.MessageFieldNode) (inser
 		Semicolon: &ast.RuneNode{Rune: ';'},
 	}
 	return
+}
+
+func unwrapIndex[T ast.Node](within []T, elem ast.Node) int {
+	for i, e := range within {
+		if ast.Unwrap(e) == elem {
+			return i
+		}
+	}
+	return -1
 }

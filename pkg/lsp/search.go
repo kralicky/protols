@@ -371,7 +371,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 					}
 				case ast.AnyFieldDeclNode:
 					switch {
-					case wantNode.Start() >= haveNode.GetFieldType().Start() && wantNode.End() <= haveNode.GetFieldType().End():
+					case wantNode.Start() >= haveNode.GetFieldTypeNode().Start() && wantNode.End() <= haveNode.GetFieldTypeNode().End():
 						switch {
 						case haveDesc.IsExtension():
 							// keep the field descriptor

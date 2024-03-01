@@ -1888,7 +1888,7 @@ func (f *formatter) writeArrayLiteral(arrayLiteralNode *ast.ArrayLiteralNode) {
 		elementWriterFunc = func() {
 			for i := 0; i < len(arrayLiteralNode.Elements); i++ {
 				lastElement := i == len(arrayLiteralNode.Elements)-1
-				if _, ok := arrayLiteralNode.Elements[i].Unwrap().(ast.TerminalNodeInterface); !ok {
+				if _, ok := arrayLiteralNode.Elements[i].Unwrap().(ast.TerminalNode); !ok {
 					if inline {
 						f.writeCompositeValueForArrayLiteral(arrayLiteralNode.Elements[i], false)
 					} else {
@@ -2491,7 +2491,7 @@ func (f *formatter) writeInline(node ast.Node) {
 	defer func() {
 		f.inline = false
 	}()
-	if _, ok := node.(ast.TerminalNodeInterface); !ok {
+	if _, ok := node.(ast.TerminalNode); !ok {
 		// We only want to write comments for terminal nodes.
 		// Otherwise comments accessible from CompositeNodes
 		// will be written twice.
@@ -2531,7 +2531,7 @@ func (f *formatter) writeInline(node ast.Node) {
 func (f *formatter) writeBodyEnd(node ast.Node, semicolon *ast.RuneNode, leadingEndline bool) {
 	node = ast.Unwrap(node)
 
-	if _, ok := node.(ast.TerminalNodeInterface); !ok {
+	if _, ok := node.(ast.TerminalNode); !ok {
 		// We only want to write comments for terminal nodes.
 		// Otherwise comments accessible from CompositeNodes
 		// will be written twice.
@@ -2599,7 +2599,7 @@ func (f *formatter) writeLineElement(node ast.Node) {
 func (f *formatter) writeBodyEndInline(node ast.Node, semicolon *ast.RuneNode, leadingInline bool) {
 	node = ast.Unwrap(node)
 
-	if _, ok := node.(ast.TerminalNodeInterface); !ok {
+	if _, ok := node.(ast.TerminalNode); !ok {
 		// We only want to write comments for terminal nodes.
 		// Otherwise comments accessible from CompositeNodes
 		// will be written twice.
@@ -2645,7 +2645,7 @@ func (f *formatter) writeBodyEndInline(node ast.Node, semicolon *ast.RuneNode, l
 //	syntax = " proto3" /* This is a leading comment on the ';'; // This is a trailing comment on the ';'.
 func (f *formatter) writeLineEnd(node ast.Node) {
 	node = ast.Unwrap(node)
-	if _, ok := node.(ast.TerminalNodeInterface); !ok {
+	if _, ok := node.(ast.TerminalNode); !ok {
 		// We only want to write comments for terminal nodes.
 		// Otherwise comments accessible from CompositeNodes
 		// will be written twice.

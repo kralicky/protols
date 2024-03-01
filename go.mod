@@ -10,7 +10,7 @@ require (
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
 	github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f
-	github.com/kralicky/protocompile v0.0.0-20240229195713-5e8dd896b202
+	github.com/kralicky/protocompile v0.0.0-20240301211304-c227fef16dbd
 	github.com/kralicky/tools-lite v0.0.0-20240229193424-bd18a0b4c7f5
 	github.com/mattn/go-tty v0.0.5
 	github.com/spf13/cobra v1.8.0

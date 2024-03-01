@@ -4,15 +4,9 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/kralicky/protols/pkg/lsp"
 	"github.com/kralicky/tools-lite/gopls/pkg/test/integration"
 	"github.com/kralicky/tools-lite/gopls/pkg/test/integration/fake"
 )
-
-func TestMain(m *testing.M) {
-	lsp.DebugCheckOverlappingTokens = true
-	Main(m)
-}
 
 func TestSemanticTokens(t *testing.T) {
 	const src = `

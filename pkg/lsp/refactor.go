@@ -18,6 +18,7 @@ import (
 	"github.com/kralicky/protols/pkg/format"
 	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/reflect/protopath"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -181,6 +182,15 @@ func RefactorUndeclaredName(ctx context.Context, cache *Cache, uri protocol.Docu
 
 type Analyzer func(ctx context.Context, request *protocol.CodeActionParams, linkRes linker.Result, mapper *protocol.Mapper, results chan<- protocol.CodeAction)
 
+type optionRefInfo struct {
+	Parent ast.Node
+	Option *ast.OptionNode
+	Field  *ast.MessageFieldNode
+
+	FullNodePath  []ast.Node
+	FullProtoPath protopath.Path
+}
+
 // simplifyRepeatedOptions transforms repeated options declared separately
 // into a single option with a repeated value. For example:
 //
@@ -203,9 +213,6 @@ type Analyzer func(ctx context.Context, request *protocol.CodeActionParams, link
 //	  string_list: ["foo", "bar"];
 //	};
 func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionParams, linkRes linker.Result, mapper *protocol.Mapper, results chan<- protocol.CodeAction) {
-	var existingContainer *ast.OptionNode
-	var parentToSearch ast.Node
-
 	if request.Range == (protocol.Range{}) || request.Range.Start != request.Range.End {
 		return
 	}
@@ -220,24 +227,43 @@ func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionPa
 		return
 	}
 
-	path, ok := findPathIntersectingToken(linkRes, token, request.Range.Start)
+	nodePath, _, ok := findPathIntersectingToken(linkRes, token, request.Range.Start)
 	if !ok {
 		return
 	}
-	fieldRefNode, ok := path[len(path)-1].(*ast.FieldReferenceNode)
+	targetNode, container, refs, ok := collectRepeatedOptionRefs(nodePath, linkRes)
 	if !ok {
 		return
 	}
-	optNameNode, ok := path[len(path)-2].(*ast.OptionNameNode)
+
+	results <- actionQueue.enqueue("Simplify repeated options", protocol.RefactorRewrite, func(ca *protocol.CodeAction) error {
+		fileNode := linkRes.AST()
+
+		edits := calcSimplifyRepeatedOptionsEdits(fileNode, container, targetNode, refs)
+		ca.Edit = &protocol.WorkspaceEdit{
+			Changes: map[protocol.DocumentURI][]protocol.TextEdit{
+				mapper.URI: edits,
+			},
+		}
+		return nil
+	})
+}
+
+func collectRepeatedOptionRefs(nodePath []ast.Node, linkRes linker.Result) (*ast.FieldReferenceNode, *ast.OptionNode, []optionRefInfo, bool) {
+	fieldRefNode, ok := nodePath[len(nodePath)-1].(*ast.FieldReferenceNode)
 	if !ok {
-		return
+		return nil, nil, nil, false
+	}
+	optNameNode, ok := nodePath[len(nodePath)-2].(*ast.OptionNameNode)
+	if !ok {
+		return nil, nil, nil, false
 	}
 
 	indexIntoName := unwrapIndex(optNameNode.Parts, fieldRefNode)
 	var targetExtension protoreflect.ExtensionDescriptor
 	targetField := linkRes.FindFieldDescriptorByFieldReferenceNode(fieldRefNode)
 	if targetField == nil {
-		return
+		return nil, nil, nil, false
 	}
 	var targetExtensionNameNode *ast.FieldReferenceNode
 	for i := indexIntoName; i >= 0; i-- {
@@ -248,7 +274,7 @@ func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionPa
 		namePartDesc := linkRes.OptionNamePartDescriptor(namePart)
 		extDesc := linkRes.FindOptionNameFieldDescriptor(namePartDesc)
 		if extDesc == nil || !extDesc.IsExtension() {
-			return
+			return nil, nil, nil, false
 		}
 		targetExtension = extDesc
 		targetExtensionNameNode = namePart
@@ -256,22 +282,24 @@ func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionPa
 	}
 
 	if targetField.Cardinality() != protoreflect.Repeated {
-		return
+		return nil, nil, nil, false
 	}
-	for i := len(path) - 2; i >= 0; i-- {
-		if opt, ok := path[i].(*ast.OptionNode); ok {
-			if opt.Name.Parts[len(opt.Name.Parts)-1] == path[len(path)-1] {
+	var existingContainer *ast.OptionNode
+	var parentToSearch ast.Node
+	for i := len(nodePath) - 2; i >= 0; i-- {
+		if opt, ok := nodePath[i].(*ast.OptionNode); ok {
+			if opt.Name.Parts[len(opt.Name.Parts)-1] == nodePath[len(nodePath)-1] {
 				// 'option (parent).frn = ...'
 			} else if len(opt.Name.Parts) == 1 {
 				// 'option (parent) = ...'
 				existingContainer = opt
 			}
-			parentToSearch = path[i-1]
+			parentToSearch = nodePath[i-1]
 			break
 		}
 	}
 	if parentToSearch == nil {
-		return
+		return nil, nil, nil, false
 	}
 
 	if existingContainer == nil {
@@ -301,7 +329,7 @@ func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionPa
 			return true
 		})
 	}
-	paths := [][3]ast.Node{} // [parent, option, field]
+	refs := []optionRefInfo{}
 	var tracker ast.AncestorTracker
 	ast.Inspect(parentToSearch, func(node ast.Node) bool {
 		switch node := node.(type) {
@@ -320,7 +348,15 @@ func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionPa
 							fldDesc := linkRes.FindOptionNameFieldDescriptor(namePartDesc)
 							if fldDesc == targetField {
 								// 'option (parent).frn = ...'
-								paths = append(paths, [3]ast.Node{parentToSearch, node, last})
+								// optionPath := slices.Clone(tracker.ProtoPath())
+								// fieldPath := append(optionPath, protopath.FieldAccess(node.ProtoReflect().Descriptor().Fields().ByNumber(2)))
+								// refs = append(refs, optionRefInfo{
+								// 	Parent:        parentToSearch,
+								// 	Option:        node,
+								// 	Field:         last,
+								// 	FullNodePath:  slices.Clone(tracker.Path()),
+								// 	FullProtoPath: slices.Clone(tracker.ProtoPath()),
+								// })
 								return false
 							}
 						} else if i == len(node.Name.Parts)-1 {
@@ -349,23 +385,17 @@ func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionPa
 					break
 				}
 			}
-
-			paths = append(paths, [3]ast.Node{parentToSearch, containingOption, node})
+			refs = append(refs, optionRefInfo{
+				Parent:        parentToSearch,
+				Option:        containingOption,
+				Field:         node,
+				FullNodePath:  slices.Clone(tracker.Path()),
+				FullProtoPath: slices.Clone(tracker.ProtoPath()),
+			})
 		}
 		return true
 	}, tracker.AsWalkOptions()...)
-
-	results <- actionQueue.enqueue("Simplify repeated options", protocol.RefactorRewrite, func(ca *protocol.CodeAction) error {
-		fileNode := linkRes.AST()
-
-		edits := calcSimplifyRepeatedOptionsEdits(fileNode, existingContainer, targetExtensionNameNode, paths)
-		ca.Edit = &protocol.WorkspaceEdit{
-			Changes: map[protocol.DocumentURI][]protocol.TextEdit{
-				mapper.URI: edits,
-			},
-		}
-		return nil
-	})
+	return targetExtensionNameNode, existingContainer, refs, true
 }
 
 func newFieldVisitor(tracker *ast.AncestorTracker, paths *[][]ast.Node) func(ast.Node) bool {
@@ -601,7 +631,7 @@ func inlineMessageFields(ctx context.Context, request *protocol.CodeActionParams
 	if token == ast.TokenError || comment.IsValid() {
 		return
 	}
-	path, ok := findPathIntersectingToken(linkRes, token, request.Range.Start)
+	path, _, ok := findPathIntersectingToken(linkRes, token, request.Range.Start)
 	if !ok {
 		return
 	}
@@ -747,7 +777,7 @@ func renumberFields(ctx context.Context, request *protocol.CodeActionParams, lin
 	if token == ast.TokenError || comment.IsValid() {
 		return
 	}
-	path, ok := findPathIntersectingToken(linkRes, token, request.Range.Start)
+	path, _, ok := findPathIntersectingToken(linkRes, token, request.Range.Start)
 	if !ok {
 		return
 	}
@@ -877,23 +907,20 @@ func calcSimplifyRepeatedOptionsEdits(
 	fileNode *ast.FileNode,
 	existingContainer *ast.OptionNode,
 	extName *ast.FieldReferenceNode,
-	paths [][3]ast.Node,
+	refs []optionRefInfo,
 ) (edits []protocol.TextEdit) {
-	if len(paths) == 0 {
+	if len(refs) == 0 {
 		return nil
 	}
-	const (
-		parentIdx     = 0
-		optionNodeIdx = 1
-		fieldIndex    = 2
-	)
-	firstOptNode := paths[0][optionNodeIdx].(*ast.OptionNode)
+
+	mutableParent := ast.Clone(refs[0].Parent)
+
+	firstOptNode := refs[0].Option
 	if firstOptNode.IsIncomplete() {
 		return nil
 	}
-	parentNode := paths[0][parentIdx]
 	replaceWithinParent := func(existingNode *ast.OptionNode, newNodes ...*ast.OptionNode) {
-		switch parent := parentNode.(type) {
+		switch parent := mutableParent.(type) {
 		case *ast.MessageNode:
 			idx := unwrapIndex(parent.Decls, existingNode)
 			newElems := make([]*ast.MessageElement, len(newNodes))
@@ -912,14 +939,14 @@ func calcSimplifyRepeatedOptionsEdits(
 	}
 
 	var removeWithinExisting func(*ast.MessageFieldNode)
-	firstFieldNode := paths[0][fieldIndex].(*ast.MessageFieldNode)
+	firstFieldNode := refs[0].Field
 
 	var containerArrayNode *ast.ArrayLiteralNode
 
-	var pathsWithinContainer [][3]ast.Node
-	var pathsOutsideContainer [][3]ast.Node
+	var pathsWithinContainer []optionRefInfo
+	var pathsOutsideContainer []optionRefInfo
 	if existingContainer == nil {
-		pathsOutsideContainer = paths
+		pathsOutsideContainer = refs
 	} else {
 		removeWithinExisting = func(node *ast.MessageFieldNode) {
 			existingMsgLit := existingContainer.Val.GetMessageLiteral()
@@ -928,8 +955,8 @@ func calcSimplifyRepeatedOptionsEdits(
 				existingMsgLit.Elements = slices.Delete(existingMsgLit.Elements, idx, idx+1)
 			}
 		}
-		for _, path := range paths {
-			if path[optionNodeIdx] == existingContainer {
+		for _, path := range refs {
+			if path.Option == existingContainer {
 				pathsWithinContainer = append(pathsWithinContainer, path)
 			} else {
 				pathsOutsideContainer = append(pathsOutsideContainer, path)
@@ -937,13 +964,11 @@ func calcSimplifyRepeatedOptionsEdits(
 		}
 	}
 
-SEARCH:
 	for _, path := range pathsWithinContainer {
-		msgField := path[fieldIndex].(*ast.MessageFieldNode)
-		switch val := msgField.Val.Unwrap().(type) {
-		case *ast.ArrayLiteralNode:
-			containerArrayNode = val
-			break SEARCH
+		msgField := path.Field
+		if arr := msgField.Val.GetArrayLiteral(); arr != nil {
+			containerArrayNode = arr
+			break
 		}
 	}
 
@@ -977,7 +1002,7 @@ SEARCH:
 	}
 
 	for _, path := range pathsWithinContainer {
-		msgField := path[fieldIndex].(*ast.MessageFieldNode)
+		msgField := path.Field
 		switch val := msgField.Val.Unwrap().(type) {
 		case *ast.ArrayLiteralNode:
 			if val == containerArrayNode {
@@ -990,7 +1015,7 @@ SEARCH:
 		removeWithinExisting(msgField)
 	}
 	for _, path := range pathsOutsideContainer {
-		optionNode := path[optionNodeIdx].(*ast.OptionNode)
+		optionNode := path.Option
 		switch val := optionNode.Val.Unwrap().(type) {
 		case *ast.ArrayLiteralNode:
 			containerArrayNode.Elements = append(containerArrayNode.Elements, val.Elements...)
@@ -1008,13 +1033,13 @@ SEARCH:
 	// replace firstOptionNode with newOptionNode
 	replaceWithinParent(firstOptNode, newOptionNode)
 
-	newParentText, err := format.PrintNode(fileNode, parentNode)
+	newParentText, err := format.PrintNode(fileNode, mutableParent)
 	if err != nil {
 		panic(err)
 	}
 	edits = append(edits, protocol.TextEdit{
-		Range:   toRange(fileNode.NodeInfo(parentNode)),
-		NewText: indentTextHanging(newParentText, int(fileNode.NodeInfo(parentNode).Start().Col-1)),
+		Range:   toRange(fileNode.NodeInfo(mutableParent)),
+		NewText: indentTextHanging(newParentText, int(fileNode.NodeInfo(mutableParent).Start().Col-1)),
 	})
 	return
 }

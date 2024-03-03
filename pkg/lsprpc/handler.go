@@ -13,6 +13,9 @@ import (
 	"github.com/kralicky/protols/pkg/lsp"
 	"github.com/kralicky/protols/pkg/util"
 	"github.com/kralicky/protols/sdk/codegen"
+	"github.com/kralicky/protols/sdk/codegen/generators/golang"
+	"github.com/kralicky/protols/sdk/codegen/generators/golang/grpc"
+	"github.com/kralicky/protols/sdk/codegen/generators/pathbuilder"
 	"github.com/kralicky/protols/sdk/plugin"
 	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"github.com/kralicky/tools-lite/pkg/event"
@@ -30,7 +33,13 @@ func (s *streamServer) ServeStream(ctx context.Context, conn jsonrpc2.Conn) erro
 	client := protocol.ClientDispatcher(conn)
 	server := lsp.NewServer(client,
 		lsp.WithUnknownCommandHandler(
-			&unknownHandler{Generators: codegen.DefaultGenerators()},
+			&unknownHandler{
+				Generators: []codegen.Generator{
+					golang.Generator,
+					grpc.Generator,
+					pathbuilder.Generator,
+				},
+			},
 			"protols/generate",
 			"protols/generateWorkspace",
 		),

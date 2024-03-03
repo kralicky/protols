@@ -1,7 +1,6 @@
 package lsp
 
 import (
-	"cmp"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -13,6 +12,7 @@ import (
 	"github.com/kralicky/protocompile/parser"
 	"github.com/kralicky/protocompile/protoutil"
 	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
+	"google.golang.org/protobuf/reflect/protopath"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
@@ -309,7 +309,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 								break
 							}
 							for _, comp := range ident.Components {
-								if wantNode == comp {
+								if wantNode == comp.GetIdent() {
 									found = true
 									break
 								}
@@ -626,9 +626,10 @@ func findNarrowestSemanticToken(parseRes parser.Result, tokens []semanticItem, p
 //	    __ <- [(file)→(message Foo)→(field bar)→(compact options)]
 //	  ];
 //	}
-func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, location protocol.Position) ([]ast.Node, bool) {
+func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, location protocol.Position) ([]ast.Node, protopath.Path, bool) {
 	tracker := &ast.AncestorTracker{}
-	paths := [][]ast.Node{}
+	nodePaths := [][]ast.Node{}
+	paths := []protopath.Path{}
 	fileNode := parseRes.AST()
 	intersectsLocation := func(node ast.Node) bool {
 		info := fileNode.NodeInfo(node)
@@ -652,31 +653,35 @@ func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, 
 	if tokenAtOffset != ast.TokenError {
 		opts = append(opts, ast.WithIntersection(tokenAtOffset))
 	}
+	appendPaths := func() {
+		nodePaths = append(nodePaths, slices.Clone(tracker.Path()))
+		paths = append(paths, slices.Clone(tracker.ProtoPath()))
+	}
 	ast.Inspect(parseRes.AST(), func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.ImportNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.SyntaxNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.MessageNode:
 			if intersectsLocationExclusive(node, node.CloseBrace) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.EnumNode:
 			if intersectsLocationExclusive(node, node.CloseBrace) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.EnumValueNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.ServiceNode:
 			if intersectsLocationExclusive(node, node.CloseBrace) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.RPCNode:
 			var end ast.Node
@@ -688,74 +693,78 @@ func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, 
 				break
 			}
 			if node.Semicolon != nil && intersectsLocationExclusive(node, end) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.ExtendNode:
 			if node.IsIncomplete() {
 				if intersectsLocation(node) {
-					paths = append(paths, slices.Clone(tracker.Path()))
+					appendPaths()
 				}
 			} else if intersectsLocationExclusive(node, node.CloseBrace) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.OptionNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.MessageLiteralNode:
 			if intersectsLocationExclusive(node, node.Close) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.OptionNameNode:
 			if intersectsLocation(node) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.MessageFieldNode:
 			if intersectsLocation(node) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 			if node.Sep != nil && node.Name != nil && tokenAtOffset == node.Sep.GetToken() {
 				// this won't be visited by the walker, but we want the path to
 				// end with the field reference node if the cursor is between the
 				// field name and the separator
-				paths = append(paths, append(slices.Clone(tracker.Path()), node.Name))
+				nodePaths = append(nodePaths, append(slices.Clone(tracker.Path()), node.Name))
+				paths = append(paths, append(slices.Clone(tracker.ProtoPath()), protopath.FieldAccess(node.ProtoReflect().Descriptor().Fields().ByNumber(1))))
 			}
 		case *ast.CompactOptionsNode:
 			if intersectsLocationExclusive(node, node.CloseBracket) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.FieldNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.FieldReferenceNode:
 			if intersectsLocation(node) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.RPCTypeNode:
 			if intersectsLocationExclusive(node, node.CloseParen) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.PackageNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		case *ast.ErrorNode:
 			if intersectsLocation(node) {
-				paths = append(paths, slices.Clone(tracker.Path()))
+				appendPaths()
 			}
 		}
 		return true
 	}, opts...)
-	if len(paths) == 0 {
-		return nil, false
+	if len(nodePaths) == 0 {
+		return nil, protopath.Path{}, false
 	}
 
 	// take the longest path
-	slices.SortFunc(paths, func(i, j []ast.Node) int {
-		return -cmp.Compare(len(i), len(j))
-	})
-	return paths[0], true
+	longestPathIdx := 0
+	for i, path := range nodePaths {
+		if len(path) > len(nodePaths[longestPathIdx]) {
+			longestPathIdx = i
+		}
+	}
+	return nodePaths[longestPathIdx], paths[longestPathIdx], true
 }
 
 func visitEnclosingRange(tracker *ast.AncestorTracker, paths *[][]ast.Node) bool {

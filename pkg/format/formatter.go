@@ -538,12 +538,13 @@ func (f *formatter) writeOptionName(optionNameNode *ast.OptionNameNode) {
 	if optionNameNode == nil {
 		return
 	}
-	for i := 0; i < len(optionNameNode.Parts); i++ {
+	parts, dots := optionNameNode.Split() // TODO: this is a temporary fix, refactor this logic later
+	for i := 0; i < len(parts); i++ {
 		if f.inCompactOptions && i == 0 {
 			// The leading comments of the first token (either open rune or the
 			// name) will have already been written, so we need to handle this
 			// case specially.
-			fieldReferenceNode := optionNameNode.Parts[0]
+			fieldReferenceNode := parts[0]
 			if fieldReferenceNode.Open != nil {
 				f.writeNode(fieldReferenceNode.Open)
 				if info := f.fileNode.NodeInfo(fieldReferenceNode.Open); info.TrailingComments().Len() > 0 {
@@ -566,7 +567,7 @@ func (f *formatter) writeOptionName(optionNameNode *ast.OptionNameNode) {
 		}
 		if i > 0 {
 			// The length of this slice must be exactly len(Parts)-1.
-			f.writeInline(optionNameNode.Dots[i-1])
+			f.writeInline(dots[i-1])
 		}
 		f.writeNode(optionNameNode.Parts[i])
 	}
@@ -1170,7 +1171,7 @@ func (f *formatter) maybeWriteCompactMessageLiteral(
 		f.Indent(messageLiteralNode.Open)
 	}
 	f.writeInline(messageLiteralNode.Open)
-	for i, fieldNode := range messageLiteralNode.Elements {
+	for _, fieldNode := range messageLiteralNode.Elements {
 		f.writeInline(fieldNode.Name)
 		if fieldNode.Sep != nil {
 			f.writeInline(fieldNode.Sep)
@@ -1180,8 +1181,8 @@ func (f *formatter) maybeWriteCompactMessageLiteral(
 		}
 		f.Space()
 		f.writeInline(fieldNode.Val)
-		if i < len(messageLiteralNode.Seps)-1 {
-			f.writer.Write([]byte(", "))
+		if fieldNode.Semicolon != nil {
+			f.writeInline(fieldNode.Semicolon)
 		}
 	}
 	f.writeInline(messageLiteralNode.Close)
@@ -1212,7 +1213,7 @@ func messageLiteralHasNestedArray(messageLiteralNode *ast.MessageLiteralNode) bo
 }
 
 func arrayLiteralHasNestedMessageOrArray(arrayLiteralNode *ast.ArrayLiteralNode) bool {
-	for _, elem := range arrayLiteralNode.Elements {
+	for _, elem := range arrayLiteralNode.FilterValues() {
 		switch elem.Unwrap().(type) {
 		case *ast.ArrayLiteralNode, *ast.MessageLiteralNode:
 			return true
@@ -1252,13 +1253,13 @@ func (f *formatter) writeMessageLiteralElements(messageLiteralNode *ast.MessageL
 		columnFormatElements(f, messageLiteralNode)
 		return
 	}
-	for i := 0; i < len(messageLiteralNode.Elements); i++ {
-		if sep := messageLiteralNode.Seps[i]; sep != nil {
-			f.writeMessageFieldWithSeparator(messageLiteralNode.Elements[i])
-			f.writeLineEnd(messageLiteralNode.Seps[i])
+	for _, elem := range messageLiteralNode.Elements {
+		if sep := elem.Semicolon; sep != nil {
+			f.writeMessageFieldWithSeparator(elem)
+			f.writeLineEnd(sep)
 			continue
 		}
-		f.writeNode(messageLiteralNode.Elements[i])
+		f.writeNode(elem)
 	}
 }
 
@@ -1675,13 +1676,15 @@ func (f *formatter) writeGroup(groupNode *ast.GroupNode) {
 func (f *formatter) writeExtensionRange(extensionRangeNode *ast.ExtensionRangeNode) {
 	f.writeStart(extensionRangeNode.Keyword)
 	f.Space()
-	for i := 0; i < len(extensionRangeNode.Ranges); i++ {
+	ranges := extensionRangeNode.FilterRanges() // FIXME
+	commas := extensionRangeNode.FilterCommas() // FIXME
+	for i := 0; i < len(ranges); i++ {
 		if i > 0 {
 			// The length of this slice must be exactly len(Ranges)-1.
-			f.writeInline(extensionRangeNode.Commas[i-1])
+			f.writeInline(commas[i-1])
 			f.Space()
 		}
-		f.writeNode(extensionRangeNode.Ranges[i])
+		f.writeNode(ranges[i])
 	}
 	if extensionRangeNode.Options != nil {
 		f.Space()
@@ -1698,14 +1701,17 @@ func (f *formatter) writeExtensionRange(extensionRangeNode *ast.ExtensionRangeNo
 func (f *formatter) writeReserved(reservedNode *ast.ReservedNode) {
 	f.writeStart(reservedNode.Keyword)
 	// Either names or ranges will be set, but never both.
-	elements := make([]ast.Node, 0, len(reservedNode.Names)+len(reservedNode.Ranges))
+	names := reservedNode.FilterNames()   // FIXME
+	ranges := reservedNode.FilterRanges() // FIXME
+	commas := reservedNode.FilterCommas() // FIXME
+	elements := make([]ast.Node, 0, len(names)+len(ranges))
 	switch {
-	case reservedNode.Names != nil:
-		for _, nameNode := range reservedNode.Names {
+	case names != nil:
+		for _, nameNode := range names {
 			elements = append(elements, nameNode)
 		}
-	case reservedNode.Ranges != nil:
-		for _, rangeNode := range reservedNode.Ranges {
+	case ranges != nil:
+		for _, rangeNode := range ranges {
 			elements = append(elements, rangeNode)
 		}
 	}
@@ -1713,7 +1719,7 @@ func (f *formatter) writeReserved(reservedNode *ast.ReservedNode) {
 	for i := 0; i < len(elements); i++ {
 		if i > 0 {
 			// The length of this slice must be exactly len({Names,Ranges})-1.
-			f.writeInline(reservedNode.Commas[i-1])
+			f.writeInline(commas[i-1])
 			f.Space()
 		}
 		f.writeInline(elements[i])
@@ -1886,20 +1892,21 @@ func (f *formatter) writeArrayLiteral(arrayLiteralNode *ast.ArrayLiteralNode) {
 	var elementWriterFunc func()
 	if len(arrayLiteralNode.Elements) > 0 {
 		elementWriterFunc = func() {
-			for i := 0; i < len(arrayLiteralNode.Elements); i++ {
-				lastElement := i == len(arrayLiteralNode.Elements)-1
-				if _, ok := arrayLiteralNode.Elements[i].Unwrap().(ast.TerminalNode); !ok {
+			values, commas := arrayLiteralNode.Split() // FIXME
+			for i := 0; i < len(values); i++ {
+				lastElement := i == len(values)-1
+				if _, ok := values[i].Unwrap().(ast.TerminalNode); !ok {
 					if inline {
-						f.writeCompositeValueForArrayLiteral(arrayLiteralNode.Elements[i], false)
+						f.writeCompositeValueForArrayLiteral(values[i], false)
 					} else {
-						f.writeCompositeValueForArrayLiteral(arrayLiteralNode.Elements[i], lastElement)
+						f.writeCompositeValueForArrayLiteral(values[i], lastElement)
 					}
 					if !lastElement {
 						if inline {
-							f.writeInline(arrayLiteralNode.Commas[i])
+							f.writeInline(commas[i])
 							f.Space()
 						} else {
-							f.writeLineEnd(arrayLiteralNode.Commas[i])
+							f.writeLineEnd(commas[i])
 						}
 					}
 					continue
@@ -1907,18 +1914,18 @@ func (f *formatter) writeArrayLiteral(arrayLiteralNode *ast.ArrayLiteralNode) {
 				if lastElement {
 					// The last element won't have a trailing comma.
 					if inline {
-						f.writeBodyEndInline(arrayLiteralNode.Elements[i], nil, true)
+						f.writeBodyEndInline(values[i], nil, true)
 					} else {
-						f.writeLineElement(arrayLiteralNode.Elements[i])
+						f.writeLineElement(values[i])
 					}
 					return
 				}
-				f.writeStartMaybeCompact(arrayLiteralNode.Elements[i], inline)
+				f.writeStartMaybeCompact(values[i], inline)
 				if inline {
-					f.writeInline(arrayLiteralNode.Commas[i])
+					f.writeInline(commas[i])
 					f.Space()
 				} else {
-					f.writeLineEnd(arrayLiteralNode.Commas[i])
+					f.writeLineEnd(commas[i])
 				}
 			}
 		}
@@ -2100,7 +2107,7 @@ func (f *formatter) writeOpenBracePrefixForArray(openBrace ast.Node) {
 
 // writeCompoundIdent writes a compound identifier (e.g. '.com.foo.Bar').
 func (f *formatter) writeCompoundIdent(compoundIdentNode *ast.CompoundIdentNode) {
-	for _, node := range compoundIdentNode.OrderedNodes() {
+	for _, node := range compoundIdentNode.Components {
 		f.writeInline(node)
 	}
 }
@@ -2115,11 +2122,11 @@ func (f *formatter) writeCompoundIdent(compoundIdentNode *ast.CompoundIdentNode)
 //	  bar.v1.Bar bar = 1;
 //	}
 func (f *formatter) writeCompountIdentForFieldName(compoundIdentNode *ast.CompoundIdentNode, maybeNodeWriter ...func(ast.Node)) {
-	leadingDot, ok := compoundIdentNode.LeadingDot()
+	leadingDot, ok := compoundIdentNode.Components[0].Unwrap().(*ast.RuneNode)
 	if ok {
 		f.writeStart(leadingDot, maybeNodeWriter...)
 	}
-	orderedNodes := compoundIdentNode.OrderedNodes()
+	orderedNodes := compoundIdentNode.Components
 	for i, node := range orderedNodes {
 		if i == 0 && leadingDot == nil {
 			f.writeStart(node, maybeNodeWriter...)
@@ -2992,7 +2999,7 @@ func StringForOptionName(optionNameNode *ast.OptionNameNode) string {
 		return ""
 	}
 	var result string
-	for j, part := range optionNameNode.Parts {
+	for j, part := range optionNameNode.FilterFieldReferences() {
 		if j > 0 {
 			// Add a dot between each of the parts.
 			result += "."

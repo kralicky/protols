@@ -42,7 +42,7 @@ func (c *Cache) ComputeHover(params protocol.TextDocumentPositionParams) (*proto
 		return nil, nil
 	}
 
-	path, found := findPathIntersectingToken(parseRes, tokenAtOffset, location.Range.Start)
+	path, _, found := findPathIntersectingToken(parseRes, tokenAtOffset, location.Range.Start)
 	if !found {
 		return nil, nil
 	}

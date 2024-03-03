@@ -43,13 +43,14 @@ LOOP:
 					case *ast.IdentNode:
 						return c.FindPackageNameRefs(protoreflect.FullName(name.Val), false)
 					case *ast.CompoundIdentNode:
-						for i, ident := range name.Components {
+						idents := name.FilterIdents()
+						for i, ident := range idents {
 							if tokenAtOffset >= ident.Start() && tokenAtOffset <= ident.End() {
 								var parts []string
 								for j := 0; j <= i; j++ {
-									parts = append(parts, name.Components[j].Val)
+									parts = append(parts, idents[j].Val)
 								}
-								return c.FindPackageNameRefs(protoreflect.FullName(strings.Join(parts, ".")), i < len(name.Components)-1)
+								return c.FindPackageNameRefs(protoreflect.FullName(strings.Join(parts, ".")), i < len(idents)-1)
 							}
 						}
 					}
@@ -98,12 +99,13 @@ func (c *Cache) FindPackageNameRefs(name protoreflect.FullName, prefixMatch bool
 						rng = toRange(info)
 					}
 				} else {
-					parts := make([]string, 0, len(node.Components))
-					for i, part := range node.Components {
+					idents := node.FilterIdents()
+					parts := make([]string, 0, len(idents))
+					for i, part := range idents {
 						parts = append(parts, part.Val)
 						if strings.Join(parts, ".") == string(name) {
-							start := resFileNode.NodeInfo(node.Components[0])
-							end := resFileNode.NodeInfo(node.Components[i])
+							start := resFileNode.NodeInfo(idents[0])
+							end := resFileNode.NodeInfo(idents[i])
 							if start.IsValid() && end.IsValid() {
 								rng = protocol.Range{
 									Start: toPosition(start.Start()),
@@ -180,15 +182,16 @@ LOOP:
 				}
 			case *ast.CompoundIdentNode:
 				parts := []string{}
-				for i, part := range name.Components {
+				idents := name.FilterIdents()
+				for i, part := range idents {
 					parts = append(parts, part.Val)
 					if tokenAtOffset >= part.Start() && tokenAtOffset <= part.End() {
-						if i == len(name.Components)-1 {
+						if i == len(idents)-1 {
 							return makeStandardHover()
 						}
 
-						start := fileNode.NodeInfo(name.Components[0])
-						end := fileNode.NodeInfo(name.Components[i])
+						start := fileNode.NodeInfo(idents[0])
+						end := fileNode.NodeInfo(idents[i])
 						if start.IsValid() && end.IsValid() {
 							partialName := protoreflect.FullName(strings.Join(parts, "."))
 							return &protocol.Hover{

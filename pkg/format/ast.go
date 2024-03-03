@@ -19,7 +19,7 @@ func DumpAST(node ast.Node, parseRes parser.Result) string {
 	lineCount := fileNode.NodeInfo(fileNode).End().Line
 	maxLeftPad := int(math.Log10(float64(lineCount)) + 1)
 	ast.Inspect(node, v.Visit,
-		ast.WithBefore(func(n ast.Node) bool {
+		ast.WithBefore(ast.NodeView(func(n ast.Node) {
 			indentLevel++
 			desc := parseRes.Descriptor(n)
 			nodeInfo := fileNode.NodeInfo(n)
@@ -40,12 +40,10 @@ func DumpAST(node ast.Node, parseRes parser.Result) string {
 			if trailingComments > 0 {
 				buf.WriteString(fmt.Sprintf("/tc=%d/ ", trailingComments))
 			}
-
-			return true
-		}),
-		ast.WithAfter(func(n ast.Node) {
+		})),
+		ast.WithAfter(ast.NodeView(func(n ast.Node) {
 			indentLevel--
-		}),
+		})),
 	)
 	return buf.String()
 }
@@ -110,7 +108,7 @@ func (v *dumpVisitor) Visit(node ast.Node) bool {
 		}
 
 	case *ast.ExtensionRangeNode:
-		v.buf.WriteString(fmt.Sprintf("#ranges=%d\n", len(node.Ranges)))
+		v.buf.WriteString(fmt.Sprintf("#elements=%d\n", len(node.Elements)))
 
 	case *ast.FieldNode:
 		v.buf.WriteString(fmt.Sprintf("label=%q type=%q name=%q tag=%d", maybe(node.Label).Val, node.FieldType.AsIdentifier(), maybe(node.Name).Val, maybe(node.Tag).Val))
@@ -214,16 +212,7 @@ func (v *dumpVisitor) Visit(node ast.Node) bool {
 		}
 
 	case *ast.ReservedNode:
-		switch {
-		case node.Ranges != nil:
-			v.buf.WriteString(fmt.Sprintf("#ranges=%d\n", len(node.Ranges)))
-		case node.Names != nil:
-			v.buf.WriteString(fmt.Sprintf("#names=%d\n", len(node.Names)))
-		case node.Identifiers != nil:
-			v.buf.WriteString(fmt.Sprintf("#identifiers=%d\n", len(node.Identifiers)))
-		default:
-			v.buf.WriteString("(empty)\n")
-		}
+		v.buf.WriteString(fmt.Sprintf("#elements=%d\n", len(node.Elements)))
 
 	case *ast.RuneNode:
 		v.buf.WriteString(fmt.Sprintf("rune=%q\n", string(node.Rune)))

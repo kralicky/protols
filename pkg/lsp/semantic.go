@@ -515,8 +515,8 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			}
 		case *ast.OptionNameNode:
 			path := tracker.Path()
-			for _, part := range node.OrderedNodes() {
-				switch node := part.(type) {
+			for _, part := range node.GetParts() {
+				switch node := part.Unwrap().(type) {
 				case *ast.FieldReferenceNode:
 					if node.IsExtension() {
 						name := node.GetName().Unwrap()
@@ -645,7 +645,7 @@ func (s *semanticItems) inspectCompoundIdent(compoundIdent *ast.CompoundIdentNod
 		s.mktokens(compoundIdent, append(tracker.Path(), compoundIdent), semanticTypeType, modifier)
 	} else {
 		// otherwise, create a token for each part
-		for _, node := range compoundIdent.OrderedNodes() {
+		for _, node := range compoundIdent.Components {
 			s.mktokens(node, append(tracker.Path(), compoundIdent, node), semanticTypeType, modifier)
 		}
 	}
@@ -705,20 +705,20 @@ func (s *semanticItems) inspectArrayLiteral(node ast.Node, val *ast.ArrayLiteral
 	}
 	switch fd.Kind() {
 	case protoreflect.FloatKind, protoreflect.DoubleKind:
-		for _, elem := range val.Elements {
+		for _, elem := range val.FilterValues() {
 			if sfl := elem.GetSpecialFloatLiteral(); sfl != nil && sfl.Keyword != nil {
 				s.mktokens(sfl, append(tracker.Path(), sfl), semanticTypeNumber, 0)
 			}
 		}
 	case protoreflect.BoolKind:
-		for _, elem := range val.Elements {
+		for _, elem := range val.FilterValues() {
 			if id := elem.GetIdent(); id != nil && id.IsKeyword && (id.AsIdentifier() == "true" || id.AsIdentifier() == "false") {
 				s.mktokens(elem, append(tracker.Path(), elem), semanticTypeKeyword, 0)
 			}
 		}
 	case protoreflect.EnumKind:
 		if enum := fd.Enum(); enum != nil {
-			for _, elem := range val.Elements {
+			for _, elem := range val.FilterValues() {
 				if id := elem.GetIdent(); id != nil {
 					name := id.AsIdentifier()
 					if enum.Values().ByName(name) != nil {

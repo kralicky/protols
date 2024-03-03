@@ -11,6 +11,7 @@ import (
 	"github.com/kralicky/protols/pkg/sources"
 	"github.com/kralicky/protols/sdk/codegen/generators/golang"
 	"github.com/kralicky/protols/sdk/codegen/generators/golang/grpc"
+	_ "github.com/kralicky/protols/sdk/codegen/generators/pathbuilder"
 	"github.com/kralicky/protols/sdk/driver"
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/types/pluginpb"

@@ -98,7 +98,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		return nil, nil
 	}
 
-	path, found := findPathIntersectingToken(searchTarget, tokenAtOffset, params.Position)
+	path, _, found := findPathIntersectingToken(searchTarget, tokenAtOffset, params.Position)
 	if !found {
 		var completions []protocol.CompletionItem
 		if searchTarget.AST().EndExclusive() == ast.TokenError { // only EOF
@@ -244,7 +244,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		switch {
 		case !node.Name.IsIncomplete() && node.Equals != nil && tokenAtOffset > node.Equals.GetToken():
 			// complete option values
-			ref := node.Name.Parts[len(node.Name.Parts)-1]
+			ref := node.Name.Parts[len(node.Name.Parts)-1].GetFieldRef()
 			fd := maybeCurrentLinkRes.FindFieldDescriptorByFieldReferenceNode(ref)
 			if fd != nil {
 				completions = append(completions,
@@ -261,7 +261,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		switch prev := path[len(path)-2].(type) {
 		case *ast.OptionNameNode:
 			scope = scope.Options().ProtoReflect().Descriptor()
-			nodeIdx = slices.Index(prev.Parts, node)
+			nodeIdx = unwrapIndex(prev.Parts, node)
 		case *ast.MessageFieldNode:
 			if desc == nil {
 				if desc, _, _ := deepPathSearch(path[:len(path)-2], searchTarget, maybeCurrentLinkRes); desc != nil {
@@ -291,7 +291,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			c.completeOptionOrExtensionName(scope, path, searchTarget.AST(), node, nodeIdx, maybeCurrentLinkRes, existingFields, mapper, posOffset, params.Position)...)
 	case *ast.OptionNameNode:
 		// this can be the closest node in a few cases, such as on or after a trailing dot
-		nodeChildren := node.OrderedNodes()
+		nodeChildren := node.Parts
 		var partialName string
 		var part *ast.FieldReferenceNode
 		var prevDesc protoreflect.Descriptor
@@ -299,13 +299,13 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			if nodeChildren[i].Start() != tokenAtOffset {
 				continue
 			}
-			switch node := nodeChildren[i].(type) {
+			switch node := nodeChildren[i].Unwrap().(type) {
 			case *ast.RuneNode: // dot
 				// if the cursor is to the left of the dot, we are still completing the previous part
 				info := searchTarget.AST().NodeInfo(node)
 				if info.IsValid() && i > 0 {
 					if info.Start().Offset == posOffset {
-						if lp, ok := nodeChildren[i-1].(*ast.FieldReferenceNode); ok {
+						if lp := nodeChildren[i-1].GetFieldRef(); lp != nil {
 							// e.g. '(a).b.(c)<cursor>.d'
 							// partial name is the whole previous ident
 							partialName = string(lp.Name.AsIdentifier())
@@ -326,20 +326,20 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				// e.g. '(foo)<cursor>.bar'
 				prevDesc = scope.Options().ProtoReflect().Descriptor()
 				if len(nodeChildren) > 0 {
-					if frn, ok := nodeChildren[0].(*ast.FieldReferenceNode); ok {
+					if frn := nodeChildren[0].GetFieldRef(); frn != nil {
 						part = frn
 					}
 				}
 			case i > len(nodeChildren)-1:
 				// after the last part (e.g. 'foo.bar.<cursor>')
 				for j := len(nodeChildren) - 1; j >= 0; j-- {
-					if frn, ok := nodeChildren[j].(*ast.FieldReferenceNode); ok {
+					if frn := nodeChildren[j].GetFieldRef(); frn != nil {
 						prevDesc = maybeCurrentLinkRes.FindFieldDescriptorByFieldReferenceNode(frn)
 						break
 					}
 				}
 			default:
-				if frn, ok := nodeChildren[i].(*ast.FieldReferenceNode); ok {
+				if frn := nodeChildren[i].GetFieldRef(); frn != nil {
 					part = frn
 					prevDesc = maybeCurrentLinkRes.FindFieldDescriptorByFieldReferenceNode(part)
 				}
@@ -562,7 +562,7 @@ func (c *Cache) completeOptionOrExtensionName(
 			}
 		}
 		// nodeIdx > 0
-		prevFieldRef := path[len(path)-2].(*ast.OptionNameNode).Parts[nodeIdx-1]
+		prevFieldRef := path[len(path)-2].(*ast.OptionNameNode).Parts[nodeIdx-1].GetFieldRef()
 		// find the descriptor for the previous field reference
 		prevFd := linkRes.FindFieldDescriptorByFieldReferenceNode(prevFieldRef)
 		if prevFd == nil {

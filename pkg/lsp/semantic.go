@@ -190,7 +190,7 @@ func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng 
 var DebugCheckOverlappingTokens = false
 
 func computeSemanticTokens(cache *Cache, e *semanticItems, walkOptions ...ast.WalkOption) {
-	e.inspect(cache, e.AST(), walkOptions...)
+	e.inspect(e.AST(), walkOptions...)
 	sort.Slice(e.items, func(i, j int) bool {
 		if e.items[i].line != e.items[j].line {
 			return e.items[i].line < e.items[j].line
@@ -438,7 +438,7 @@ func init() {
 	celEnv, _ = celEnv.Extend(cel.EnableMacroCallTracking())
 }
 
-func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.WalkOption) {
+func (s *semanticItems) inspect(node ast.Node, walkOptions ...ast.WalkOption) {
 	tracker := &ast.AncestorTracker{}
 	// check if node is a non-nil interface to a nil pointer
 	if ast.IsNil(node) {
@@ -515,7 +515,7 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 			}
 		case *ast.OptionNameNode:
 			path := tracker.Path()
-			for _, part := range node.GetParts() {
+			for _, part := range node.Parts {
 				switch node := part.Unwrap().(type) {
 				case *ast.FieldReferenceNode:
 					if node.IsExtension() {
@@ -545,6 +545,33 @@ func (s *semanticItems) inspect(cache *Cache, node ast.Node, walkOptions ...ast.
 					s.inspectArrayLiteral(node.Name.Parts[len(node.Name.Parts)-1], val, tracker)
 				default:
 					s.inspectFieldLiteral(node.Name.Parts[len(node.Name.Parts)-1], node.Val, tracker)
+				}
+			}
+			if s.maybeLinkRes != nil {
+				if ident := node.Val.GetIdent(); ident != nil && !ident.IsKeyword {
+					// handle possible keywords that cannot be disambiguated by the parser
+					descpb := s.maybeLinkRes.OptionDescriptor(node)
+					if descpb != nil {
+						desc := s.maybeLinkRes.FindOptionFieldDescriptor(descpb)
+						if desc != nil {
+							switch desc.Kind() {
+							case protoreflect.BoolKind:
+								switch ident.Val {
+								case "true", "false":
+									s.mktokens(ident, append(tracker.Path(), ident), semanticTypeKeyword, 0)
+								default:
+									s.mktokens(ident, append(tracker.Path(), ident), semanticTypeVariable, 0)
+								}
+							case protoreflect.EnumKind:
+								v := desc.Enum().Values().ByName(protoreflect.Name(ident.Val))
+								if v != nil {
+									s.mktokens(ident, append(tracker.Path(), ident), semanticTypeEnumMember, 0)
+								} else {
+									s.mktokens(ident, append(tracker.Path(), ident), semanticTypeVariable, 0)
+								}
+							}
+						}
+					}
 				}
 			}
 		case *ast.MessageLiteralNode:
@@ -646,7 +673,7 @@ func (s *semanticItems) inspectCompoundIdent(compoundIdent *ast.CompoundIdentNod
 	} else {
 		// otherwise, create a token for each part
 		for _, node := range compoundIdent.Components {
-			s.mktokens(node, append(tracker.Path(), compoundIdent, node), semanticTypeType, modifier)
+			s.mktokens(node, append(tracker.Path(), compoundIdent, node.Unwrap()), semanticTypeType, modifier)
 		}
 	}
 }

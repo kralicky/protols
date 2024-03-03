@@ -538,38 +538,35 @@ func (f *formatter) writeOptionName(optionNameNode *ast.OptionNameNode) {
 	if optionNameNode == nil {
 		return
 	}
-	parts, dots := optionNameNode.Split() // TODO: this is a temporary fix, refactor this logic later
-	for i := 0; i < len(parts); i++ {
+	for i, part := range optionNameNode.Parts {
 		if f.inCompactOptions && i == 0 {
 			// The leading comments of the first token (either open rune or the
 			// name) will have already been written, so we need to handle this
 			// case specially.
-			fieldReferenceNode := parts[0]
-			if fieldReferenceNode.Open != nil {
-				f.writeNode(fieldReferenceNode.Open)
-				if info := f.fileNode.NodeInfo(fieldReferenceNode.Open); info.TrailingComments().Len() > 0 {
-					f.writeInlineComments(info.TrailingComments())
+			fieldReferenceNode := part.GetFieldRef()
+			if fieldReferenceNode != nil {
+				if fieldReferenceNode.Open != nil {
+					f.writeNode(fieldReferenceNode.Open)
+					if info := f.fileNode.NodeInfo(fieldReferenceNode.Open); info.TrailingComments().Len() > 0 {
+						f.writeInlineComments(info.TrailingComments())
+					}
+					f.writeInline(fieldReferenceNode.Name)
+				} else {
+					f.writeNode(fieldReferenceNode.Name)
+					if info := f.fileNode.NodeInfo(fieldReferenceNode.Name); info.TrailingComments().Len() > 0 {
+						f.writeInlineComments(info.TrailingComments())
+					}
 				}
-				f.writeInline(fieldReferenceNode.Name)
-			} else {
-				f.writeNode(fieldReferenceNode.Name)
-				if info := f.fileNode.NodeInfo(fieldReferenceNode.Name); info.TrailingComments().Len() > 0 {
-					f.writeInlineComments(info.TrailingComments())
+				if fieldReferenceNode.Close != nil {
+					f.writeInline(fieldReferenceNode.Close)
+				} else if fieldReferenceNode.Open != nil {
+					// (extended syntax rule) fill in missing close paren automatically
+					f.writeInline(&ast.RuneNode{Rune: ')'})
 				}
+				continue
 			}
-			if fieldReferenceNode.Close != nil {
-				f.writeInline(fieldReferenceNode.Close)
-			} else if fieldReferenceNode.Open != nil {
-				// (extended syntax rule) fill in missing close paren automatically
-				f.writeInline(&ast.RuneNode{Rune: ')'})
-			}
-			continue
 		}
-		if i > 0 {
-			// The length of this slice must be exactly len(Parts)-1.
-			f.writeInline(dots[i-1])
-		}
-		f.writeNode(optionNameNode.Parts[i])
+		f.writeNode(part)
 	}
 }
 
@@ -1171,7 +1168,7 @@ func (f *formatter) maybeWriteCompactMessageLiteral(
 		f.Indent(messageLiteralNode.Open)
 	}
 	f.writeInline(messageLiteralNode.Open)
-	for _, fieldNode := range messageLiteralNode.Elements {
+	for i, fieldNode := range messageLiteralNode.Elements {
 		f.writeInline(fieldNode.Name)
 		if fieldNode.Sep != nil {
 			f.writeInline(fieldNode.Sep)
@@ -1181,8 +1178,12 @@ func (f *formatter) maybeWriteCompactMessageLiteral(
 		}
 		f.Space()
 		f.writeInline(fieldNode.Val)
-		if fieldNode.Semicolon != nil {
+		if fieldNode.Semicolon == nil && i < len(messageLiteralNode.Elements)-1 {
+			fieldNode.Semicolon = &ast.RuneNode{Rune: ','}
+		}
+		if fieldNode.Semicolon != nil && i < len(messageLiteralNode.Elements)-1 {
 			f.writeInline(fieldNode.Semicolon)
+			f.Space()
 		}
 	}
 	f.writeInline(messageLiteralNode.Close)
@@ -1676,15 +1677,12 @@ func (f *formatter) writeGroup(groupNode *ast.GroupNode) {
 func (f *formatter) writeExtensionRange(extensionRangeNode *ast.ExtensionRangeNode) {
 	f.writeStart(extensionRangeNode.Keyword)
 	f.Space()
-	ranges := extensionRangeNode.FilterRanges() // FIXME
-	commas := extensionRangeNode.FilterCommas() // FIXME
-	for i := 0; i < len(ranges); i++ {
-		if i > 0 {
-			// The length of this slice must be exactly len(Ranges)-1.
-			f.writeInline(commas[i-1])
+	for _, elem := range extensionRangeNode.Elements {
+		if comma := elem.GetComma(); comma == nil {
+			// don't write spaces before commas
 			f.Space()
 		}
-		f.writeNode(ranges[i])
+		f.writeInline(elem)
 	}
 	if extensionRangeNode.Options != nil {
 		f.Space()
@@ -1700,29 +1698,12 @@ func (f *formatter) writeExtensionRange(extensionRangeNode *ast.ExtensionRangeNo
 //	reserved 5-10, 100 to max;
 func (f *formatter) writeReserved(reservedNode *ast.ReservedNode) {
 	f.writeStart(reservedNode.Keyword)
-	// Either names or ranges will be set, but never both.
-	names := reservedNode.FilterNames()   // FIXME
-	ranges := reservedNode.FilterRanges() // FIXME
-	commas := reservedNode.FilterCommas() // FIXME
-	elements := make([]ast.Node, 0, len(names)+len(ranges))
-	switch {
-	case names != nil:
-		for _, nameNode := range names {
-			elements = append(elements, nameNode)
-		}
-	case ranges != nil:
-		for _, rangeNode := range ranges {
-			elements = append(elements, rangeNode)
-		}
-	}
-	f.Space()
-	for i := 0; i < len(elements); i++ {
-		if i > 0 {
-			// The length of this slice must be exactly len({Names,Ranges})-1.
-			f.writeInline(commas[i-1])
+	for _, elem := range reservedNode.Elements {
+		if comma := elem.GetComma(); comma == nil {
+			// don't write spaces before commas
 			f.Space()
 		}
-		f.writeInline(elements[i])
+		f.writeInline(elem)
 	}
 	f.writeLineEnd(reservedNode.Semicolon)
 }

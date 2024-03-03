@@ -179,15 +179,38 @@ message Foo {
   optional int32 foo = 1 [json_name = "foo"];
 }`[1:],
 		},
+		10: {
+			input: `message Foo { reserved  1  to  max }`,
+			want: `
+message Foo {
+  reserved 1 to max;
+}`[1:],
+		},
+		11: {
+			input: `
+message Foo {
+  reserved 1, 10 to 12 , 15 ;
+  reserved  "foo" ,"bar" ;
+  reserved foo, bar, baz;
+  extensions  100  to  max [ key="value", ];
+}`,
+			want: `
+message Foo {
+  reserved 1, 10 to 12, 15;
+  reserved "foo", "bar";
+  reserved foo, bar, baz;
+  extensions 100 to max [key = "value"];
+}`[1:],
+		},
 	}
 
-	for _, c := range cases[9:] {
+	for i, c := range cases {
 		root, err := parser.Parse("", strings.NewReader(c.input), reporter.NewHandler(nil), 0)
 		require.NoError(t, err)
 
 		got, err := format.PrintNode(root, root)
 		require.NoError(t, err)
 
-		require.Equal(t, c.want, got)
+		require.Equal(t, c.want, got, "case %d", i)
 	}
 }

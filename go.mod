@@ -14,7 +14,7 @@ require (
 	github.com/kralicky/tools-lite v0.0.0-20240229193424-bd18a0b4c7f5
 	github.com/mattn/go-tty v0.0.5
 	github.com/spf13/cobra v1.8.0
-	github.com/stretchr/testify v1.8.4
+	github.com/stretchr/testify v1.9.0
 	golang.org/x/mod v0.15.0
 	golang.org/x/sync v0.6.0
 	google.golang.org/genproto v0.0.0-20240221002015-b0ce06bbee7c

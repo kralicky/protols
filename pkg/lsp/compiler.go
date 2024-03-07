@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/kralicky/protocompile"
+	"github.com/kralicky/protocompile/ast"
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protocompile/reporter"
 	"github.com/kralicky/tools-lite/gopls/pkg/cache"
+	"google.golang.org/protobuf/proto"
 )
 
 type Compiler struct {
@@ -87,7 +89,9 @@ func (c *Cache) compileLocked(protos ...string) {
 		found := false
 		var pragmas map[string]string
 		if resAst := r.(linker.Result).AST(); resAst != nil {
-			pragmas = resAst.Pragmas
+			if proto.HasExtension(resAst, ast.E_ExtendedAttributes) {
+				pragmas = proto.GetExtension(resAst, ast.E_ExtendedAttributes).(*ast.ExtendedAttributes).Pragmas
+			}
 		}
 
 		for i, f := range c.results {
@@ -121,7 +125,11 @@ func (c *Cache) compileLocked(protos ...string) {
 				break
 			}
 		}
-		c.pragmas.Store(path, &pragmaMap{m: partial.AST().Pragmas})
+		var pragmas map[string]string
+		if proto.HasExtension(partial.AST(), ast.E_ExtendedAttributes) {
+			pragmas = proto.GetExtension(partial.AST(), ast.E_ExtendedAttributes).(*ast.ExtendedAttributes).Pragmas
+		}
+		c.pragmas.Store(path, &pragmaMap{m: pragmas})
 	}
 	for path, partial := range res.UnlinkedParserResults {
 		partial := partial
@@ -134,7 +142,11 @@ func (c *Cache) compileLocked(protos ...string) {
 				break
 			}
 		}
-		c.pragmas.Store(path, &pragmaMap{m: partial.AST().Pragmas})
+		var pragmas map[string]string
+		if proto.HasExtension(partial.AST(), ast.E_ExtendedAttributes) {
+			pragmas = proto.GetExtension(partial.AST(), ast.E_ExtendedAttributes).(*ast.ExtendedAttributes).Pragmas
+		}
+		c.pragmas.Store(path, &pragmaMap{m: pragmas})
 	}
 	c.partialResultsMu.Unlock()
 

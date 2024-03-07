@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kralicky/protocompile/ast"
+	"github.com/kralicky/protocompile/ast/paths"
 	"github.com/kralicky/protocompile/parser"
 )
 
@@ -19,7 +20,7 @@ func DumpAST(node ast.Node, parseRes parser.Result) string {
 	lineCount := fileNode.NodeInfo(fileNode).End().Line
 	maxLeftPad := int(math.Log10(float64(lineCount)) + 1)
 	ast.Inspect(node, v.Visit,
-		ast.WithBefore(ast.NodeView(func(n ast.Node) {
+		ast.WithBefore(paths.NodeView(func(n ast.Node) {
 			indentLevel++
 			desc := parseRes.Descriptor(n)
 			nodeInfo := fileNode.NodeInfo(n)
@@ -41,7 +42,7 @@ func DumpAST(node ast.Node, parseRes parser.Result) string {
 				buf.WriteString(fmt.Sprintf("/tc=%d/ ", trailingComments))
 			}
 		})),
-		ast.WithAfter(ast.NodeView(func(n ast.Node) {
+		ast.WithAfter(paths.NodeView(func(n ast.Node) {
 			indentLevel--
 		})),
 	)

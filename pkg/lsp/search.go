@@ -3,11 +3,11 @@ package lsp
 import (
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"sync"
 
 	"github.com/kralicky/protocompile/ast"
+	"github.com/kralicky/protocompile/ast/paths"
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protocompile/parser"
 	"github.com/kralicky/protocompile/protoutil"
@@ -25,24 +25,20 @@ var ErrNoDescriptorFound = fmt.Errorf("failed to find descriptor")
 // Traverses the given path backwards to find the closest top-level mapped
 // descriptor, then traverses forwards to find the deeply nested descriptor
 // for the original ast node.
-func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Result) (protoreflect.Descriptor, protocol.Range, error) {
+func deepPathSearch(path protopath.Path, parseRes parser.Result, linkRes linker.Result) (protoreflect.Descriptor, protocol.Range, error) {
 	root := linkRes.AST()
-
 	if len(path) == 0 {
 		panic("bug: empty path")
 	}
-	if _, ok := path[0].(*ast.FileNode); !ok {
-		panic("bug: first path element is not an *ast.FileNode")
-	}
-
 	if len(path) == 1 {
 		return linkRes, toRange(root.NodeInfo(root)), nil
 	}
+	values := paths.DereferenceAll(root, path)
 
 	stack := stack{}
 
-	for i := len(path) - 1; i > 0; i-- {
-		currentNode := path[i]
+	for i := len(values) - 1; i > 0; i-- {
+		currentNode := values[i]
 		switch currentNode.(type) {
 		// short-circuit for some nodes that we know don't map to descriptors -
 		// keywords and numbers
@@ -77,9 +73,9 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 					// if it is, we're looking for the value message, but only if the
 					// location is within the value token and not the key token.
 					// look ahead two path entries to check which token we're in
-					if len(path) > i+2 {
-						if mapTypeNode, ok := path[i+1].(*ast.MapTypeNode); ok {
-							if identNode, ok := path[i+2].(ast.AnyIdentValueNode); ok {
+					if len(values) > i+2 {
+						if mapTypeNode, ok := values[i+1].(*ast.MapTypeNode); ok {
+							if identNode, ok := values[i+2].(ast.AnyIdentValueNode); ok {
 								if identNode == mapTypeNode.KeyType {
 									return nil, protocol.Range{}, nil
 								}
@@ -96,7 +92,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 					prevIndex-- // go up one more level, we're inside a map field node
 				}
 				if prevIndex >= 0 {
-					if _, ok := path[prevIndex].(*ast.MessageNode); ok {
+					if _, ok := values[prevIndex].(*ast.MessageNode); ok {
 						// the immediate parent is another message, so this message is not
 						// a top-level descriptor. push it on the stack and go up one level
 						stack.push(currentNode, nil)
@@ -116,7 +112,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 				// check if we're looking for an enum nested in a message
 				// (enums can't be nested in other enums)
 				if i > 0 {
-					if _, ok := path[i-1].(*ast.MessageNode); ok {
+					if _, ok := values[i-1].(*ast.MessageNode); ok {
 						// the immediate parent is a message, so this enum is not
 						// a top-level descriptor. push it on the stack and go up one level
 						stack.push(currentNode, nil)
@@ -165,7 +161,7 @@ func deepPathSearch(path []ast.Node, parseRes parser.Result, linkRes linker.Resu
 		return stack[0].desc, toRange(root.NodeInfo(stack[0].node)), nil
 	}
 
-	stack.push(path[0], linkRes)
+	stack.push(root, linkRes)
 
 	for i := len(stack) - 1; i >= 0; i-- {
 		want := stack[i]
@@ -626,10 +622,9 @@ func findNarrowestSemanticToken(parseRes parser.Result, tokens []semanticItem, p
 //	    __ <- [(file)→(message Foo)→(field bar)→(compact options)]
 //	  ];
 //	}
-func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, location protocol.Position) ([]ast.Node, protopath.Path, bool) {
-	tracker := &ast.AncestorTracker{}
-	nodePaths := [][]ast.Node{}
-	paths := []protopath.Path{}
+func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, location protocol.Position) (protopath.Values, bool) {
+	tracker := &paths.AncestorTracker{}
+	paths := []protopath.Values{}
 	fileNode := parseRes.AST()
 	intersectsLocation := func(node ast.Node) bool {
 		info := fileNode.NodeInfo(node)
@@ -653,35 +648,34 @@ func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, 
 	if tokenAtOffset != ast.TokenError {
 		opts = append(opts, ast.WithIntersection(tokenAtOffset))
 	}
-	appendPaths := func() {
-		nodePaths = append(nodePaths, slices.Clone(tracker.Path()))
-		paths = append(paths, slices.Clone(tracker.ProtoPath()))
+	appendPath := func() {
+		paths = append(paths, tracker.Values())
 	}
 	ast.Inspect(parseRes.AST(), func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.ImportNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.SyntaxNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.MessageNode:
 			if intersectsLocationExclusive(node, node.CloseBrace) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.EnumNode:
 			if intersectsLocationExclusive(node, node.CloseBrace) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.EnumValueNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.ServiceNode:
 			if intersectsLocationExclusive(node, node.CloseBrace) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.RPCNode:
 			var end ast.Node
@@ -693,91 +687,93 @@ func findPathIntersectingToken(parseRes parser.Result, tokenAtOffset ast.Token, 
 				break
 			}
 			if node.Semicolon != nil && intersectsLocationExclusive(node, end) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.ExtendNode:
 			if node.IsIncomplete() {
 				if intersectsLocation(node) {
-					appendPaths()
+					appendPath()
 				}
 			} else if intersectsLocationExclusive(node, node.CloseBrace) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.OptionNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.MessageLiteralNode:
 			if intersectsLocationExclusive(node, node.Close) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.OptionNameNode:
 			if intersectsLocation(node) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.MessageFieldNode:
 			if intersectsLocation(node) {
-				appendPaths()
+				appendPath()
 			}
 			if node.Sep != nil && node.Name != nil && tokenAtOffset == node.Sep.GetToken() {
 				// this won't be visited by the walker, but we want the path to
 				// end with the field reference node if the cursor is between the
 				// field name and the separator
-				nodePaths = append(nodePaths, append(slices.Clone(tracker.Path()), node.Name))
-				paths = append(paths, append(slices.Clone(tracker.ProtoPath()), protopath.FieldAccess(node.ProtoReflect().Descriptor().Fields().ByNumber(1))))
+				values := tracker.Values()
+				values.Path = append(values.Path, protopath.FieldAccess(node.ProtoReflect().Descriptor().Fields().ByNumber(1)))
+				values.Values = append(values.Values, protoreflect.ValueOfMessage(node.Name.ProtoReflect()))
+				paths = append(paths, values)
 			}
 		case *ast.CompactOptionsNode:
 			if intersectsLocationExclusive(node, node.CloseBracket) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.FieldNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.FieldReferenceNode:
 			if intersectsLocation(node) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.RPCTypeNode:
 			if intersectsLocationExclusive(node, node.CloseParen) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.PackageNode:
 			if intersectsLocationExclusive(node, node.Semicolon) {
-				appendPaths()
+				appendPath()
 			}
 		case *ast.ErrorNode:
 			if intersectsLocation(node) {
-				appendPaths()
+				appendPath()
 			}
 		}
 		return true
 	}, opts...)
-	if len(nodePaths) == 0 {
-		return nil, protopath.Path{}, false
+	if len(paths) == 0 {
+		return protopath.Values{}, false
 	}
 
 	// take the longest path
 	longestPathIdx := 0
-	for i, path := range nodePaths {
-		if len(path) > len(nodePaths[longestPathIdx]) {
+	for i, path := range paths {
+		if len(path.Path) > len(paths[longestPathIdx].Path) {
 			longestPathIdx = i
 		}
 	}
-	return nodePaths[longestPathIdx], paths[longestPathIdx], true
+	return paths[longestPathIdx], true
 }
 
-func visitEnclosingRange(tracker *ast.AncestorTracker, paths *[][]ast.Node) bool {
-	p := slices.Clone(tracker.Path())
+func visitEnclosingRange(tracker *paths.AncestorTracker, paths *[]protopath.Values) bool {
+	p := tracker.Values()
 	if len(*paths) == 0 {
 		*paths = append(*paths, p)
-	} else if len(p) >= len((*paths)[len(*paths)-1]) {
+	} else if len(p.Path) >= len((*paths)[len(*paths)-1].Path) {
 		*paths = append(*paths, p)
 	}
 	return true
 }
 
-func DefaultEnclosingRangeVisitor(tracker *ast.AncestorTracker, paths *[][]ast.Node) func(ast.Node) bool {
+func DefaultEnclosingRangeVisitor(tracker *paths.AncestorTracker, paths *[]protopath.Values) func(ast.Node) bool {
 	return func(node ast.Node) bool {
 		switch node.(type) {
 		case *ast.ImportNode,
@@ -805,11 +801,11 @@ func DefaultEnclosingRangeVisitor(tracker *ast.AncestorTracker, paths *[][]ast.N
 	}
 }
 
-func findPathsEnclosingRange(parseRes parser.Result, start, end ast.Token, visitor ...func(tracker *ast.AncestorTracker, paths *[][]ast.Node) func(ast.Node) bool) ([][]ast.Node, bool) {
-	tracker := &ast.AncestorTracker{}
+func findPathsEnclosingRange(parseRes parser.Result, start, end ast.Token, visitor ...func(tracker *paths.AncestorTracker, paths *[]protopath.Values) func(ast.Node) bool) ([]protopath.Values, bool) {
+	tracker := &paths.AncestorTracker{}
 	opts := tracker.AsWalkOptions()
 	opts = append(opts, ast.WithRange(start, end))
-	var paths [][]ast.Node
+	var paths []protopath.Values
 
 	if len(visitor) == 0 {
 		visitor = append(visitor, DefaultEnclosingRangeVisitor)
@@ -821,7 +817,7 @@ func findPathsEnclosingRange(parseRes parser.Result, start, end ast.Token, visit
 
 	lowerBound := len(paths) - 1
 	for i := len(paths) - 2; i >= 0; i-- {
-		if len(paths[i]) < len(paths[lowerBound]) {
+		if len(paths[i].Path) < len(paths[lowerBound].Path) {
 			break
 		}
 		lowerBound = i

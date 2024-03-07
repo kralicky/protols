@@ -72,6 +72,7 @@ message Foo {
 		require.NoError(t, err)
 		require.Len(t, actions, 1)
 		env.ApplyCodeAction(actions[0])
+		env.SaveBuffer("options.proto")
 		require.Equal(t, `
 import "google/protobuf/descriptor.proto";
 
@@ -99,12 +100,21 @@ message Foo {
 
   option (mapTest2) = {
     kvs: [
-      {key: "a", value: "1"}
-      {key: "b", value: "2"}
-      {key: "c", value: "3"}
-      {key: "d", value: "4"}
-      {key: "e", value: "5"}
-      {key: "f", value: "6"}
+      {key: "a", value: "1"},
+      {key: "c", value: "3"},
+      {key: "b", value: "2"},
+      {
+        key:   "f"
+        value: "6"
+      },
+      {
+        key:   "e"
+        value: "5"
+      },
+      {
+        key:   "d"
+        value: "4"
+      }
     ]
   };
 }

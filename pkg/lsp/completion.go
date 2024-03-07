@@ -11,9 +11,11 @@ import (
 	"strings"
 
 	"github.com/kralicky/protocompile/ast"
+	"github.com/kralicky/protocompile/ast/paths"
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protocompile/parser"
 	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
+	"google.golang.org/protobuf/reflect/protopath"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -98,7 +100,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		return nil, nil
 	}
 
-	path, _, found := findPathIntersectingToken(searchTarget, tokenAtOffset, params.Position)
+	path, found := findPathIntersectingToken(searchTarget, tokenAtOffset, params.Position)
 	if !found {
 		var completions []protocol.CompletionItem
 		if searchTarget.AST().EndExclusive() == ast.TokenError { // only EOF
@@ -117,7 +119,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	}
 
 	completions := []protocol.CompletionItem{}
-	desc, _, _ := deepPathSearch(path, searchTarget, maybeCurrentLinkRes)
+	desc, _, _ := deepPathSearch(path.Path, searchTarget, maybeCurrentLinkRes)
 
 	scope := findCompletionScope(path, maybeCurrentLinkRes)
 	if scope == nil {
@@ -126,7 +128,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	existingOpts := findExistingOptions(scope)
 
 	fileNode := searchTarget.AST()
-	switch node := path[len(path)-1].(type) {
+	switch node := paths.NodeAt[ast.Node](path.Index(1)).(type) {
 	case *ast.MessageNode:
 		var partialName, partialNameSuffix string
 		if node.Name != nil && tokenAtOffset >= node.Name.Start() && tokenAtOffset <= node.Name.End() {
@@ -170,7 +172,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				completions = append(completions, fieldCompletion(fld, insertPos, messageLiteralStyle))
 			}
 		case protoreflect.ExtensionTypeDescriptor:
-			if _, ok := path[len(path)-2].(*ast.ExtendNode); ok {
+			if ext := paths.NodeAt[*ast.ExtendNode](path.Index(-2)); ext != nil {
 				// this is a field of an extend node, not a message literal
 				break
 			}
@@ -258,13 +260,13 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	case *ast.FieldReferenceNode:
 		nodeIdx := -1
 		scope := scope
-		switch prev := path[len(path)-2].(type) {
+		switch prev := paths.NodeAt[ast.Node](path.Index(-2)).(type) {
 		case *ast.OptionNameNode:
 			scope = scope.Options().ProtoReflect().Descriptor()
 			nodeIdx = unwrapIndex(prev.Parts, node)
 		case *ast.MessageFieldNode:
 			if desc == nil {
-				if desc, _, _ := deepPathSearch(path[:len(path)-2], searchTarget, maybeCurrentLinkRes); desc != nil {
+				if desc, _, _ := deepPathSearch(path.Path[:len(path.Path)-2], searchTarget, maybeCurrentLinkRes); desc != nil {
 					nodeIdx = 0
 					scope = desc
 				}
@@ -279,7 +281,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			break
 		}
 		existingFields := map[string]struct{}{}
-		if messageLitNode, ok := path[len(path)-3].(*ast.MessageLiteralNode); ok {
+		if messageLitNode := paths.NodeAt[*ast.MessageLiteralNode](path.Index(-3)); messageLitNode != nil {
 			for _, elem := range messageLitNode.Elements {
 				if elem.IsIncomplete() {
 					continue
@@ -409,8 +411,8 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		if shouldCompleteType {
 			fmt.Println("completing type", completeType)
 			var scope protoreflect.FullName
-			if len(path) > 1 {
-				if desc, _, err := deepPathSearch(path[:len(path)-1], searchTarget, maybeCurrentLinkRes); err == nil {
+			if len(path.Path) > 1 {
+				if desc, _, err := deepPathSearch(path.Path[:len(path.Path)-1], searchTarget, maybeCurrentLinkRes); err == nil {
 					scope = desc.FullName()
 				}
 			}
@@ -496,9 +498,9 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	case *ast.PackageNode:
 		// complete package names
 		completions = append(completions,
-			c.completePackageNames(node, path, searchTarget.AST(), maybeCurrentLinkRes, mapper, posOffset, params.Position)...)
+			c.completePackageNames(node, searchTarget.AST(), maybeCurrentLinkRes, mapper, posOffset, params.Position)...)
 	case *ast.ErrorNode:
-		switch prev := path[len(path)-2].(type) {
+		switch prev := paths.NodeAt[ast.Node](path.Index(-2)).(type) {
 		case *ast.FileNode:
 			var partialName, partialNameSuffix string
 			if node.Err != nil {
@@ -521,7 +523,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 
 func (c *Cache) completeOptionOrExtensionName(
 	scope protoreflect.Descriptor,
-	path []ast.Node,
+	path protopath.Values,
 	fileNode *ast.FileNode,
 	node *ast.FieldReferenceNode,
 	nodeIdx int,
@@ -562,7 +564,7 @@ func (c *Cache) completeOptionOrExtensionName(
 			}
 		}
 		// nodeIdx > 0
-		prevFieldRef := path[len(path)-2].(*ast.OptionNameNode).Parts[nodeIdx-1].GetFieldRef()
+		prevFieldRef := paths.NodeAt[*ast.OptionNameNode](path.Index(-2)).Parts[nodeIdx-1].GetFieldRef()
 		// find the descriptor for the previous field reference
 		prevFd := linkRes.FindFieldDescriptorByFieldReferenceNode(prevFieldRef)
 		if prevFd == nil {
@@ -588,7 +590,6 @@ func editAddImport(parseRes parser.Result, path string) protocol.TextEdit {
 
 func (c *Cache) completePackageNames(
 	node *ast.PackageNode,
-	nodePath []ast.Node,
 	fileNode *ast.FileNode,
 	linkRes linker.Result,
 	mapper *protocol.Mapper,
@@ -827,13 +828,13 @@ var (
 	snippetMode           = protocol.SnippetTextFormat
 )
 
-func findCompletionScope(nodePath []ast.Node, linkRes linker.Result) protoreflect.Descriptor {
+func findCompletionScope(nodePath protopath.Values, linkRes linker.Result) protoreflect.Descriptor {
 	var scope protoreflect.Descriptor
 LOOP:
-	for i := len(nodePath) - 1; i >= 0; i-- {
-		switch nodePath[i].(type) {
+	for i := len(nodePath.Path) - 1; i >= 0; i-- {
+		switch paths.NodeAt[ast.Node](nodePath.Index(i)).(type) {
 		case *ast.MessageNode, *ast.FieldNode, *ast.EnumNode, *ast.ServiceNode, *ast.MessageFieldNode:
-			desc, _, err := deepPathSearch(nodePath[:i+1], linkRes, linkRes)
+			desc, _, err := deepPathSearch(nodePath.Path[:i+1], linkRes, linkRes)
 			if err != nil || desc == nil {
 				continue
 			}

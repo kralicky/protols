@@ -9,8 +9,9 @@ require (
 	github.com/google/cel-go v0.20.0
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
+	github.com/kralicky/codegen v0.0.0-20240307225947-51de80fcb2f3
 	github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f
-	github.com/kralicky/protocompile v0.0.0-20240303223929-c9a5911d389f
+	github.com/kralicky/protocompile v0.0.0-20240307230234-dc85191b2548
 	github.com/kralicky/tools-lite v0.0.0-20240229193424-bd18a0b4c7f5
 	github.com/mattn/go-tty v0.0.5
 	github.com/spf13/cobra v1.8.0

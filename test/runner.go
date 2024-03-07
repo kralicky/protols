@@ -76,6 +76,7 @@ func defaultConfig() runConfig {
 			FileAssociations: map[string]string{
 				"protobuf": `.*\.proto$`,
 			},
+			CapabilitiesJSON: []byte(`{"textDocument":{"codeAction":{"resolveSupport":{"properties":["edit"]}}}}`),
 		},
 	}
 }

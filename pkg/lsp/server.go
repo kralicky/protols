@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -24,7 +25,8 @@ type Server struct {
 	caches       map[string]*Cache
 	cacheCancels map[string]context.CancelCauseFunc
 
-	client protocol.ClientCloser
+	client             protocol.ClientCloser
+	clientCapabilities protocol.ClientCapabilities
 
 	trackerMu    sync.Mutex
 	tracker      *progress.Tracker
@@ -116,6 +118,7 @@ func (s *Server) cacheDestroyLocked(path string, err error) {
 // Initialize implements protocol.Server.
 func (s *Server) Initialize(ctx context.Context, params *protocol.ParamInitialize) (result *protocol.InitializeResult, err error) {
 	folders := params.WorkspaceFolders
+	s.clientCapabilities = params.Capabilities
 	s.tracker.SetSupportsWorkDoneProgress(params.Capabilities.Window.WorkDoneProgress)
 	s.cachesMu.Lock()
 	for _, folder := range folders {
@@ -786,6 +789,26 @@ func (s *Server) CodeAction(ctx context.Context, params *protocol.CodeActionPara
 	return c.GetCodeActions(ctx, params)
 }
 
+func changesToDocumentChanges(changes map[protocol.DocumentURI][]protocol.TextEdit) []protocol.DocumentChanges {
+	var result []protocol.DocumentChanges
+	for uri, edits := range changes {
+		result = append(result, protocol.DocumentChanges{
+			TextDocumentEdit: &protocol.TextDocumentEdit{
+				TextDocument: protocol.OptionalVersionedTextDocumentIdentifier{
+					TextDocumentIdentifier: protocol.TextDocumentIdentifier{URI: uri},
+				},
+				Edits: protocol.AsAnnotatedTextEdits(edits),
+			},
+		})
+	}
+	return result
+}
+
+func (s *Server) clientSupportsResolveEdits() bool {
+	return s.clientCapabilities.TextDocument.CodeAction.ResolveSupport != nil &&
+		slices.Contains(s.clientCapabilities.TextDocument.CodeAction.ResolveSupport.Properties, "edit")
+}
+
 // PrepareRename implements protocol.Server.
 func (s *Server) PrepareRename(ctx context.Context, params *protocol.PrepareRenameParams) (*protocol.PrepareRenameResult, error) {
 	c, err := s.CacheForURI(params.TextDocument.URI)
@@ -824,9 +847,15 @@ func (s *Server) Symbol(ctx context.Context, params *protocol.WorkspaceSymbolPar
 
 // ResolveCodeAction implements protocol.Server.
 func (s *Server) ResolveCodeAction(ctx context.Context, codeAction *protocol.CodeAction) (*protocol.CodeAction, error) {
-	err := resolveCodeAction(codeAction)
+	uri, version, err := resolveCodeAction(codeAction)
 	if err != nil {
 		return nil, err
+	}
+	if s.clientSupportsResolveEdits() {
+		if codeAction.Edit != nil {
+			codeAction.Edit.DocumentChanges = protocol.TextEditsToDocumentChanges(uri, version, codeAction.Edit.Changes[uri])
+			codeAction.Edit.Changes = nil
+		}
 	}
 	return codeAction, nil
 }

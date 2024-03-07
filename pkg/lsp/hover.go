@@ -42,11 +42,11 @@ func (c *Cache) ComputeHover(params protocol.TextDocumentPositionParams) (*proto
 		return nil, nil
 	}
 
-	path, _, found := findPathIntersectingToken(parseRes, tokenAtOffset, location.Range.Start)
+	path, found := findPathIntersectingToken(parseRes, tokenAtOffset, location.Range.Start)
 	if !found {
 		return nil, nil
 	}
-	node := path[len(path)-1]
+	node := path.Index(-1).Value.Message().Interface().(ast.Node)
 	text, err := format.PrintNode(parseRes.AST(), node)
 	if err != nil {
 		return nil, err

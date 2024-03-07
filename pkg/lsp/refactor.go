@@ -14,6 +14,7 @@ import (
 	gsync "github.com/kralicky/gpkg/sync"
 
 	"github.com/kralicky/protocompile/ast"
+	"github.com/kralicky/protocompile/ast/paths"
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protols/pkg/format"
 	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
@@ -50,10 +51,12 @@ type pendingCodeActionManager struct {
 var actionQueue pendingCodeActionManager
 
 type codeActionData struct {
-	Id string `json:"id"`
+	Id      string               `json:"id"`
+	URI     protocol.DocumentURI `json:"uri"`
+	Version int32                `json:"version"`
 }
 
-func (q *pendingCodeActionManager) enqueue(title string, kind protocol.CodeActionKind, resolve func(*protocol.CodeAction) error) protocol.CodeAction {
+func (q *pendingCodeActionManager) enqueue(title string, kind protocol.CodeActionKind, uri protocol.DocumentURI, version int32, resolve func(*protocol.CodeAction) error) protocol.CodeAction {
 	newId := uuid.NewString()
 	ctx, ca := context.WithTimeout(context.Background(), 30*time.Second)
 	cancelDelete := context.AfterFunc(ctx, func() {
@@ -66,7 +69,11 @@ func (q *pendingCodeActionManager) enqueue(title string, kind protocol.CodeActio
 		resolve:      resolve,
 	})
 
-	data, _ := json.Marshal(codeActionData{Id: newId})
+	data, _ := json.Marshal(codeActionData{
+		Id:      newId,
+		URI:     uri,
+		Version: version,
+	})
 	return protocol.CodeAction{
 		Title: title,
 		Kind:  kind,
@@ -74,25 +81,25 @@ func (q *pendingCodeActionManager) enqueue(title string, kind protocol.CodeActio
 	}
 }
 
-func (q *pendingCodeActionManager) resolve(ca *protocol.CodeAction) error {
+func (q *pendingCodeActionManager) resolve(ca *protocol.CodeAction) (protocol.DocumentURI, int32, error) {
 	if ca.Data == nil {
-		return fmt.Errorf("missing data in code action: %v", ca)
+		return "", 0, fmt.Errorf("missing data in code action: %v", ca)
 	}
 	var data codeActionData
 
 	if err := json.Unmarshal(*ca.Data, &data); err != nil {
-		return fmt.Errorf("malformed code action data: %v", err)
+		return "", 0, fmt.Errorf("malformed code action data: %v", err)
 	}
 	pca, ok := q.queue.LoadAndDelete(data.Id)
 	if !ok {
-		return fmt.Errorf("no pending code action with id %q", ca.Data)
+		return "", 0, fmt.Errorf("no pending code action with id %q", ca.Data)
 	}
 	pca.cancelDelete()
 	pca.cancel()
-	return pca.resolve(ca)
+	return data.URI, data.Version, pca.resolve(ca)
 }
 
-func resolveCodeAction(ca *protocol.CodeAction) error {
+func resolveCodeAction(ca *protocol.CodeAction) (protocol.DocumentURI, int32, error) {
 	return actionQueue.resolve(ca)
 }
 
@@ -184,11 +191,8 @@ type Analyzer func(ctx context.Context, request *protocol.CodeActionParams, link
 
 type optionRefInfo struct {
 	Parent ast.Node
-	Option *ast.OptionNode
-	Field  *ast.MessageFieldNode
-
-	FullNodePath  []ast.Node
-	FullProtoPath protopath.Path
+	Option protopath.Path // => *ast.OptionNode
+	Field  protopath.Path // => *ast.MessageFieldNode
 }
 
 // simplifyRepeatedOptions transforms repeated options declared separately
@@ -227,7 +231,7 @@ func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionPa
 		return
 	}
 
-	nodePath, _, ok := findPathIntersectingToken(linkRes, token, request.Range.Start)
+	nodePath, ok := findPathIntersectingToken(linkRes, token, request.Range.Start)
 	if !ok {
 		return
 	}
@@ -236,7 +240,7 @@ func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionPa
 		return
 	}
 
-	results <- actionQueue.enqueue("Simplify repeated options", protocol.RefactorRewrite, func(ca *protocol.CodeAction) error {
+	results <- actionQueue.enqueue("Simplify repeated options", protocol.RefactorRewrite, mapper.URI, fileNode.Version(), func(ca *protocol.CodeAction) error {
 		fileNode := linkRes.AST()
 
 		edits := calcSimplifyRepeatedOptionsEdits(fileNode, container, targetNode, refs)
@@ -249,21 +253,32 @@ func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionPa
 	})
 }
 
-func collectRepeatedOptionRefs(nodePath []ast.Node, linkRes linker.Result) (*ast.FieldReferenceNode, *ast.OptionNode, []optionRefInfo, bool) {
-	fieldRefNode, ok := nodePath[len(nodePath)-1].(*ast.FieldReferenceNode)
-	if !ok {
-		return nil, nil, nil, false
-	}
-	optNameNode, ok := nodePath[len(nodePath)-2].(*ast.OptionNameNode)
+func collectRepeatedOptionRefs(nodePath protopath.Values, linkRes linker.Result) (*ast.FieldReferenceNode, protopath.Path, []optionRefInfo, bool) {
+	out, ok := paths.Suffix4[
+		ast.AnyFileElement,
+		*ast.OptionNode,
+		*ast.OptionNameNode,
+		*ast.FieldReferenceNode,
+	](nodePath)
 	if !ok {
 		return nil, nil, nil, false
 	}
 
-	fieldRefs := optNameNode.FilterFieldReferences()
-	indexIntoName := slices.Index(fieldRefs, fieldRefNode)
+	parentNode := out.T
+	optionNode := out.U
+	optionNameNode := out.V
+	fieldReferenceNode := out.W
+
+	mutableParent := ast.Clone(parentNode)
+
+	fieldRefs := optionNameNode.FilterFieldReferences()
+	indexIntoName := slices.Index(fieldRefs, fieldReferenceNode)
 	var targetExtension protoreflect.ExtensionDescriptor
-	targetField := linkRes.FindFieldDescriptorByFieldReferenceNode(fieldRefNode)
+	targetField := linkRes.FindFieldDescriptorByFieldReferenceNode(fieldReferenceNode)
 	if targetField == nil {
+		return nil, nil, nil, false
+	}
+	if targetField.Cardinality() != protoreflect.Repeated {
 		return nil, nil, nil, false
 	}
 	var targetExtensionNameNode *ast.FieldReferenceNode
@@ -278,34 +293,18 @@ func collectRepeatedOptionRefs(nodePath []ast.Node, linkRes linker.Result) (*ast
 			return nil, nil, nil, false
 		}
 		targetExtension = extDesc
-		targetExtensionNameNode = namePart
+		targetExtensionNameNode = ast.Clone(namePart)
 		break
 	}
 
-	if targetField.Cardinality() != protoreflect.Repeated {
-		return nil, nil, nil, false
-	}
-	var existingContainer *ast.OptionNode
-	var parentToSearch ast.Node
-	for i := len(nodePath) - 2; i >= 0; i-- {
-		if opt, ok := nodePath[i].(*ast.OptionNode); ok {
-			nameParts := opt.Name.FilterFieldReferences()
-			if nameParts[len(nameParts)-1] == nodePath[len(nodePath)-1] {
-				// 'option (parent).frn = ...'
-			} else if len(nameParts) == 1 {
-				// 'option (parent) = ...'
-				existingContainer = opt
-			}
-			parentToSearch = nodePath[i-1]
-			break
-		}
-	}
-	if parentToSearch == nil {
-		return nil, nil, nil, false
+	var existingContainer protopath.Path
+	if len(optionNameNode.Parts) == 1 && optionNode.Val.GetMessageLiteral() != nil {
+		existingContainer = paths.Join(nodePath.Path[:out.UIndex+1], optionNode.ProtoPath().Val().MessageLiteral())
 	}
 
 	if existingContainer == nil {
-		ast.Inspect(parentToSearch, func(node ast.Node) bool {
+		var tracker paths.AncestorTracker
+		ast.Inspect(parentNode, func(node ast.Node) bool {
 			switch node := node.(type) {
 			case *ast.OptionNode:
 				if node.IsIncomplete() {
@@ -321,7 +320,7 @@ func collectRepeatedOptionRefs(nodePath []ast.Node, linkRes linker.Result) (*ast
 						extDesc := linkRes.FindOptionNameFieldDescriptor(namePartDesc)
 						if extDesc == targetExtension {
 							if i == len(nameParts)-1 {
-								existingContainer = node
+								existingContainer = tracker.Path()
 								return false
 							}
 						}
@@ -330,11 +329,11 @@ func collectRepeatedOptionRefs(nodePath []ast.Node, linkRes linker.Result) (*ast
 				return false
 			}
 			return true
-		})
+		}, tracker.AsWalkOptions()...)
 	}
 	refs := []optionRefInfo{}
-	var tracker ast.AncestorTracker
-	ast.Inspect(parentToSearch, func(node ast.Node) bool {
+	var tracker paths.AncestorTracker
+	ast.Inspect(parentNode, func(node ast.Node) bool {
 		switch node := node.(type) {
 		case *ast.OptionNode:
 			if node.IsIncomplete() {
@@ -352,15 +351,14 @@ func collectRepeatedOptionRefs(nodePath []ast.Node, linkRes linker.Result) (*ast
 							fldDesc := linkRes.FindOptionNameFieldDescriptor(namePartDesc)
 							if fldDesc == targetField {
 								// 'option (parent).frn = ...'
-								// optionPath := slices.Clone(tracker.ProtoPath())
-								// fieldPath := append(optionPath, protopath.FieldAccess(node.ProtoReflect().Descriptor().Fields().ByNumber(2)))
-								// refs = append(refs, optionRefInfo{
-								// 	Parent:        parentToSearch,
-								// 	Option:        node,
-								// 	Field:         last,
-								// 	FullNodePath:  slices.Clone(tracker.Path()),
-								// 	FullProtoPath: slices.Clone(tracker.ProtoPath()),
-								// })
+								optionPath := slices.Clone(tracker.Path())
+								fieldPath := paths.Join(optionPath, node.ProtoPath().Name().Parts(i).FieldRef())
+
+								refs = append(refs, optionRefInfo{
+									Parent: mutableParent,
+									Option: optionPath,
+									Field:  fieldPath,
+								})
 								return false
 							}
 						} else if i == len(nameParts)-1 {
@@ -381,20 +379,16 @@ func collectRepeatedOptionRefs(nodePath []ast.Node, linkRes linker.Result) (*ast
 				return true
 			}
 
-			path := slices.Clone(tracker.Path())
-			var containingOption *ast.OptionNode
-			for i := len(path) - 1; i >= 0; i-- {
-				if opt, ok := path[i].(*ast.OptionNode); ok {
-					containingOption = opt
-					break
-				}
+			var containingOption protopath.Path
+			values := tracker.Values()
+			out, ok := paths.Suffix3[*ast.OptionNode, *ast.MessageLiteralNode, *ast.MessageFieldNode](values)
+			if ok {
+				containingOption = values.Path[:out.TIndex+1]
 			}
 			refs = append(refs, optionRefInfo{
-				Parent:        parentToSearch,
-				Option:        containingOption,
-				Field:         node,
-				FullNodePath:  slices.Clone(tracker.Path()),
-				FullProtoPath: slices.Clone(tracker.ProtoPath()),
+				Parent: mutableParent,
+				Option: containingOption,
+				Field:  values.Path,
 			})
 		}
 		return true
@@ -402,7 +396,7 @@ func collectRepeatedOptionRefs(nodePath []ast.Node, linkRes linker.Result) (*ast
 	return targetExtensionNameNode, existingContainer, refs, true
 }
 
-func newFieldVisitor(tracker *ast.AncestorTracker, paths *[][]ast.Node) func(ast.Node) bool {
+func newFieldVisitor(tracker *paths.AncestorTracker, paths *[]protopath.Values) func(ast.Node) bool {
 	return func(node ast.Node) bool {
 		switch node.(type) {
 		case *ast.MessageNode, *ast.GroupNode, *ast.FieldNode, *ast.MapFieldNode:
@@ -439,22 +433,22 @@ func extractFields(ctx context.Context, request *protocol.CodeActionParams, link
 		return
 	}
 
-	paths, ok := findPathsEnclosingRange(linkRes, startToken, endToken, newFieldVisitor)
+	values, ok := findPathsEnclosingRange(linkRes, startToken, endToken, newFieldVisitor)
 	if !ok {
 		return
 	}
 
 	var enclosedFields []*ast.FieldNode
-	var parentNodePath []ast.Node
+	var parentNodePath protopath.Values
 
-	for _, path := range paths {
-		if fld, ok := path[len(path)-1].(*ast.FieldNode); ok {
+	for _, path := range values {
+		if fld := paths.NodeAt[*ast.FieldNode](path.Index(-1)); fld != nil {
 			if fld.Start() < startToken || fld.End() > endToken {
 				continue
 			}
-			if parentNodePath == nil {
-				parentNodePath = path[:len(path)-1]
-			} else if !slices.Equal(parentNodePath, path[:len(path)-1]) {
+			if parentNodePath.Len() == 0 {
+				parentNodePath = paths.Slice(path, 0, parentNodePath.Len()-1)
+			} else if !parentNodePath.Index(-1).Value.Equal(path.Index(-1).Value) {
 				return // fields in the range must share the same parent
 			}
 			enclosedFields = append(enclosedFields, fld)
@@ -467,14 +461,14 @@ func extractFields(ctx context.Context, request *protocol.CodeActionParams, link
 		return
 	}
 
-	desc, _, err := deepPathSearch(parentNodePath, linkRes, linkRes)
+	desc, _, err := deepPathSearch(parentNodePath.Path, linkRes, linkRes)
 	if err != nil {
 		return
 	}
 	switch desc := desc.(type) {
 	case protoreflect.MessageDescriptor:
-		msgNode, ok := parentNodePath[len(parentNodePath)-1].(*ast.MessageNode)
-		if !ok {
+		msgNode := paths.NodeAt[*ast.MessageNode](parentNodePath.Index(-1))
+		if msgNode == nil {
 			return
 		}
 		{
@@ -492,7 +486,7 @@ func extractFields(ctx context.Context, request *protocol.CodeActionParams, link
 			}
 			fieldDescs[i] = desc.Fields().ByNumber(protowire.Number(number))
 		}
-		results <- actionQueue.enqueue("Extract fields into new message", protocol.RefactorExtract, func(ca *protocol.CodeAction) error {
+		results <- actionQueue.enqueue("Extract fields into new message", protocol.RefactorExtract, mapper.URI, fileNode.Version(), func(ca *protocol.CodeAction) error {
 			parentInfo := fileNode.NodeInfo(msgNode)
 			parentRange := positionsToRange(parentInfo.Start(), fileNode.NodeInfo(msgNode.CloseBrace).End())
 			endPos := parentInfo.End()
@@ -635,17 +629,17 @@ func inlineMessageFields(ctx context.Context, request *protocol.CodeActionParams
 	if token == ast.TokenError || comment.IsValid() {
 		return
 	}
-	path, _, ok := findPathIntersectingToken(linkRes, token, request.Range.Start)
+	path, ok := findPathIntersectingToken(linkRes, token, request.Range.Start)
 	if !ok {
 		return
 	}
 
-	if len(path) < 3 {
+	if path.Len() < 3 {
 		// the path must be at least 3 nodes long (file, message, field)
 		return
 	}
 
-	desc, _, err := deepPathSearch(path, linkRes, linkRes)
+	desc, _, err := deepPathSearch(path.Path, linkRes, linkRes)
 	if err != nil {
 		return
 	}
@@ -657,16 +651,16 @@ func inlineMessageFields(ctx context.Context, request *protocol.CodeActionParams
 		return
 	}
 
-	fieldToInline, ok := path[len(path)-1].(*ast.FieldNode)
-	if !ok {
+	fieldToInline := paths.NodeAt[*ast.FieldNode](path.Index(-1))
+	if fieldToInline == nil {
 		return
 	}
-	containingMessage, ok := path[len(path)-2].(*ast.MessageNode)
-	if !ok {
+	containingMessage := paths.NodeAt[*ast.MessageNode](path.Index(-2))
+	if containingMessage == nil {
 		return
 	}
 
-	results <- actionQueue.enqueue("Inline nested message", protocol.RefactorInline, func(ca *protocol.CodeAction) error {
+	results <- actionQueue.enqueue("Inline nested message", protocol.RefactorInline, mapper.URI, fileNode.Version(), func(ca *protocol.CodeAction) error {
 		containingMessageDesc := fieldDesc.ContainingMessage()
 		msgDesc := fieldDesc.Message()
 		if containingMessageDesc == msgDesc {
@@ -781,17 +775,17 @@ func renumberFields(ctx context.Context, request *protocol.CodeActionParams, lin
 	if token == ast.TokenError || comment.IsValid() {
 		return
 	}
-	path, _, ok := findPathIntersectingToken(linkRes, token, request.Range.Start)
+	path, ok := findPathIntersectingToken(linkRes, token, request.Range.Start)
 	if !ok {
 		return
 	}
 
-	desc, _, err := deepPathSearch(path, linkRes, linkRes)
+	desc, _, err := deepPathSearch(path.Path, linkRes, linkRes)
 	if err != nil {
 		return
 	}
-	msgNode, ok := path[len(path)-1].(*ast.MessageNode)
-	if !ok {
+	msgNode := paths.NodeAt[*ast.MessageNode](path.Index(-1))
+	if msgNode == nil {
 		return
 	}
 	if token < msgNode.Name.Start() || token > msgNode.Name.End() {
@@ -814,7 +808,7 @@ func renumberFields(ctx context.Context, request *protocol.CodeActionParams, lin
 		return
 	}
 
-	results <- actionQueue.enqueue("Renumber fields", protocol.RefactorRewrite, func(ca *protocol.CodeAction) error {
+	results <- actionQueue.enqueue("Renumber fields", protocol.RefactorRewrite, mapper.URI, fileNode.Version(), func(ca *protocol.CodeAction) error {
 		parentInfo := fileNode.NodeInfo(msgNode)
 		parentRange := positionsToRange(parentInfo.Start(), fileNode.NodeInfo(msgNode.CloseBrace).End())
 		updatedMsgFields := make([]*ast.MessageElement, len(msgNode.Decls))
@@ -909,7 +903,7 @@ func indentText(text string, indentation int) string {
 
 func calcSimplifyRepeatedOptionsEdits(
 	fileNode *ast.FileNode,
-	existingContainer *ast.OptionNode,
+	existingContainer protopath.Path,
 	extName *ast.FieldReferenceNode,
 	refs []optionRefInfo,
 ) (edits []protocol.TextEdit) {
@@ -919,7 +913,7 @@ func calcSimplifyRepeatedOptionsEdits(
 
 	mutableParent := ast.Clone(refs[0].Parent)
 
-	firstOptNode := refs[0].Option
+	firstOptNode := paths.Dereference(mutableParent, refs[0].Option).(*ast.OptionNode)
 	if firstOptNode.IsIncomplete() {
 		return nil
 	}
@@ -943,7 +937,7 @@ func calcSimplifyRepeatedOptionsEdits(
 	}
 
 	var removeWithinExisting func(*ast.MessageFieldNode)
-	firstFieldNode := refs[0].Field
+	firstFieldNode := paths.Dereference(mutableParent, refs[0].Field).(*ast.MessageFieldNode)
 
 	var containerArrayNode *ast.ArrayLiteralNode
 
@@ -953,14 +947,14 @@ func calcSimplifyRepeatedOptionsEdits(
 		pathsOutsideContainer = refs
 	} else {
 		removeWithinExisting = func(node *ast.MessageFieldNode) {
-			existingMsgLit := existingContainer.Val.GetMessageLiteral()
+			existingMsgLit := paths.Dereference(mutableParent, existingContainer).(*ast.OptionNode).Val.GetMessageLiteral()
 			idx := unwrapIndex(existingMsgLit.Elements, node)
 			if idx != -1 {
 				existingMsgLit.Elements = slices.Delete(existingMsgLit.Elements, idx, idx+1)
 			}
 		}
 		for _, path := range refs {
-			if path.Option == existingContainer {
+			if paths.Dereference(mutableParent, path.Option) == paths.Dereference(mutableParent, existingContainer) {
 				pathsWithinContainer = append(pathsWithinContainer, path)
 			} else {
 				pathsOutsideContainer = append(pathsOutsideContainer, path)
@@ -969,7 +963,7 @@ func calcSimplifyRepeatedOptionsEdits(
 	}
 
 	for _, path := range pathsWithinContainer {
-		msgField := path.Field
+		msgField := paths.Dereference(mutableParent, path.Field).(*ast.MessageFieldNode)
 		if arr := msgField.Val.GetArrayLiteral(); arr != nil {
 			containerArrayNode = arr
 			break
@@ -1002,39 +996,61 @@ func calcSimplifyRepeatedOptionsEdits(
 			Val:       msgLit.AsValueNode(),
 			Semicolon: firstOptNode.Semicolon,
 		}
+	} else {
+		newOptionNode = paths.Dereference(mutableParent, existingContainer).(*ast.OptionNode)
 	}
 
-	for _, path := range pathsWithinContainer {
-		msgField := path.Field
+	for i := len(pathsWithinContainer) - 1; i >= 0; i-- {
+		path := pathsWithinContainer[i]
+		msgField := paths.Dereference(mutableParent, path.Field).(*ast.MessageFieldNode)
 		switch val := msgField.Val.Unwrap().(type) {
 		case *ast.ArrayLiteralNode:
 			if val == containerArrayNode {
 				continue
 			}
 			containerArrayNode.Elements = append(containerArrayNode.Elements, val.Elements...)
+			if len(val.Elements) > 0 {
+				if val.Elements[len(val.Elements)-1].GetComma() == nil {
+					// add a comma to the last element, if it doesn't already have one
+					containerArrayNode.Elements = append(containerArrayNode.Elements, (&ast.RuneNode{Rune: ','}).AsArrayLiteralElement())
+				}
+			}
 		default:
-			containerArrayNode.Elements = append(containerArrayNode.Elements, msgField.Val.AsArrayLiteralElement())
+			containerArrayNode.Elements = append(containerArrayNode.Elements, msgField.Val.AsArrayLiteralElement(), (&ast.RuneNode{Rune: ','}).AsArrayLiteralElement())
 		}
 		removeWithinExisting(msgField)
 	}
-	for i, path := range pathsOutsideContainer {
-		optionNode := path.Option
+
+	for i := len(pathsOutsideContainer) - 1; i >= 0; i-- {
+		path := pathsOutsideContainer[i]
+		optionNode := paths.Dereference(mutableParent, path.Option).(*ast.OptionNode)
 		switch val := optionNode.Val.Unwrap().(type) {
 		case *ast.ArrayLiteralNode:
 			containerArrayNode.Elements = append(containerArrayNode.Elements, val.Elements...)
-		default:
-			containerArrayNode.Elements = append(containerArrayNode.Elements, optionNode.Val.AsArrayLiteralElement())
-			if i < len(pathsOutsideContainer)-1 {
-				containerArrayNode.Elements = append(containerArrayNode.Elements, (&ast.RuneNode{Rune: ','}).AsArrayLiteralElement())
+			if len(val.Elements) > 0 {
+				if val.Elements[len(val.Elements)-1].GetComma() == nil {
+					// add a comma to the last element, if it doesn't already have one
+					containerArrayNode.Elements = append(containerArrayNode.Elements, (&ast.RuneNode{Rune: ','}).AsArrayLiteralElement())
+				}
 			}
+		default:
+			containerArrayNode.Elements = append(containerArrayNode.Elements, optionNode.Val.AsArrayLiteralElement(), (&ast.RuneNode{Rune: ','}).AsArrayLiteralElement())
 		}
 		replaceWithinParent(optionNode)
+	}
+
+	// trim the last comma from the array
+	if len(containerArrayNode.Elements) > 0 {
+		if last := containerArrayNode.Elements[len(containerArrayNode.Elements)-1]; last.GetComma() != nil {
+			containerArrayNode.Elements = containerArrayNode.Elements[:len(containerArrayNode.Elements)-1]
+		}
 	}
 
 	// replace firstOptionNode with newOptionNode
 	replaceWithinParent(firstOptNode, newOptionNode)
 
 	newParentText, err := format.PrintNode(fileNode, mutableParent)
+	fmt.Println(newParentText)
 	if err != nil {
 		panic(err)
 	}

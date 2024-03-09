@@ -3,6 +3,7 @@ package lsp
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 
@@ -34,6 +35,12 @@ func deepPathSearch(path protopath.Path, parseRes parser.Result, linkRes linker.
 		return linkRes, toRange(root.NodeInfo(root)), nil
 	}
 	values := paths.DereferenceAll(root, path)
+
+	// filter non-concrete nodes
+	values = slices.DeleteFunc(values, func(n ast.Node) bool {
+		_, ok := n.(ast.WrapperNode)
+		return ok
+	})
 
 	stack := stack{}
 

@@ -9,7 +9,7 @@ import (
 )
 
 func TestSimplifyRepeatedOptions(t *testing.T) {
-	const basic = `
+	const src = `
 -- options.proto --
 import "google/protobuf/descriptor.proto";
 
@@ -31,35 +31,32 @@ message Foo {
       kvs: [
         {key: "key1", value: "value1"},
         {key: "key2", value: "value2"}
-      ]
+      ],
     }
   ];
 
   option (mapTest2) = {
     kvs: [
       {key: "a", value: "1"}
-    ]
+    ],
     kvs: [
       {key: "b", value: "2"}
-    ]
-    kvs: {key: "c", value: "3"}
+    ],
+    kvs: {key: "c", value: "3"}, // c3
+  };
+  option (mapTest2).kvs = { key: "d" , value:"4" };
+  option (mapTest2).kvs = {
+    key:   "e", // e
+    value: "5", // 5
   };
   option (mapTest2).kvs = {
-    key:   "d"
-    value: "4"
-  };
-  option (mapTest2).kvs = {
-    key:   "e"
-    value: "5"
-  };
-  option (mapTest2).kvs = {
-    key:   "f"
-    value: "6"
+    key:   "f", // f
+    value: "6", // 6
   };
 }
 `
 
-	Run(t, basic, func(t *testing.T, env *integration.Env) {
+	Run(t, src, func(t *testing.T, env *integration.Env) {
 		env.OpenFile("options.proto")
 		var diag protocol.PublishDiagnosticsParams
 		env.OnceMet(
@@ -94,28 +91,25 @@ message Foo {
       kvs: [
         {key: "key1", value: "value1"},
         {key: "key2", value: "value2"}
-      ]
+      ],
     }
   ];
 
   option (mapTest2) = {
     kvs: [
       {key: "a", value: "1"},
-      {key: "c", value: "3"},
       {key: "b", value: "2"},
+      {key: "c", value: "3"}, // c3
+      {key: "d", value: "4"},
       {
-        key:   "f"
-        value: "6"
+        key:   "e", // e
+        value: "5", // 5
       },
       {
-        key:   "e"
-        value: "5"
-      },
-      {
-        key:   "d"
-        value: "4"
+        key:   "f", // f
+        value: "6", // 6
       }
-    ]
+    ],
   };
 }
 `[1:], env.BufferText("options.proto"))

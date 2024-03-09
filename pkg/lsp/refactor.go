@@ -1000,8 +1000,8 @@ func calcSimplifyRepeatedOptionsEdits(
 		newOptionNode = paths.Dereference(mutableParent, existingContainer).(*ast.OptionNode)
 	}
 
-	for i := len(pathsWithinContainer) - 1; i >= 0; i-- {
-		path := pathsWithinContainer[i]
+	toRemove := []*ast.MessageFieldNode{}
+	for _, path := range pathsWithinContainer {
 		msgField := paths.Dereference(mutableParent, path.Field).(*ast.MessageFieldNode)
 		switch val := msgField.Val.Unwrap().(type) {
 		case *ast.ArrayLiteralNode:
@@ -1010,33 +1010,60 @@ func calcSimplifyRepeatedOptionsEdits(
 			}
 			containerArrayNode.Elements = append(containerArrayNode.Elements, val.Elements...)
 			if len(val.Elements) > 0 {
-				if val.Elements[len(val.Elements)-1].GetComma() == nil {
+				end := val.Elements[len(val.Elements)-1]
+				if end.GetComma() == nil {
 					// add a comma to the last element, if it doesn't already have one
-					containerArrayNode.Elements = append(containerArrayNode.Elements, (&ast.RuneNode{Rune: ','}).AsArrayLiteralElement())
+					newComma := (&ast.RuneNode{Rune: ','}).AsArrayLiteralElement()
+					containerArrayNode.Elements = append(containerArrayNode.Elements, newComma)
 				}
 			}
 		default:
-			containerArrayNode.Elements = append(containerArrayNode.Elements, msgField.Val.AsArrayLiteralElement(), (&ast.RuneNode{Rune: ','}).AsArrayLiteralElement())
+			// when converting a field to an array entry, move existing field delimiters
+			// (and their associated comments) into the array, replacing non-comma
+			// runes with commas if necessary
+			var newComma *ast.RuneNode
+			if msgField.Semicolon != nil {
+				msgField.Semicolon.Rune = ','
+				newComma = msgField.Semicolon
+			} else {
+				newComma = (&ast.RuneNode{Rune: ','})
+			}
+			containerArrayNode.Elements = append(containerArrayNode.Elements, msgField.Val.AsArrayLiteralElement(), newComma.AsArrayLiteralElement())
 		}
-		removeWithinExisting(msgField)
+		toRemove = append(toRemove, msgField)
+	}
+	for i := len(toRemove) - 1; i >= 0; i-- {
+		removeWithinExisting(toRemove[i])
 	}
 
-	for i := len(pathsOutsideContainer) - 1; i >= 0; i-- {
-		path := pathsOutsideContainer[i]
+	toReplace := []*ast.OptionNode{}
+	for _, path := range pathsOutsideContainer {
 		optionNode := paths.Dereference(mutableParent, path.Option).(*ast.OptionNode)
 		switch val := optionNode.Val.Unwrap().(type) {
 		case *ast.ArrayLiteralNode:
 			containerArrayNode.Elements = append(containerArrayNode.Elements, val.Elements...)
 			if len(val.Elements) > 0 {
-				if val.Elements[len(val.Elements)-1].GetComma() == nil {
-					// add a comma to the last element, if it doesn't already have one
-					containerArrayNode.Elements = append(containerArrayNode.Elements, (&ast.RuneNode{Rune: ','}).AsArrayLiteralElement())
+				end := val.Elements[len(val.Elements)-1]
+				if end.GetComma() == nil {
+					newComma := (&ast.RuneNode{Rune: ',', Token: end.End()}).AsArrayLiteralElement()
+					containerArrayNode.Elements = append(containerArrayNode.Elements, newComma)
 				}
 			}
 		default:
-			containerArrayNode.Elements = append(containerArrayNode.Elements, optionNode.Val.AsArrayLiteralElement(), (&ast.RuneNode{Rune: ','}).AsArrayLiteralElement())
+			// same as above, except with options this time
+			var newComma *ast.RuneNode
+			if optionNode.Semicolon != nil {
+				optionNode.Semicolon.Rune = ','
+				newComma = optionNode.Semicolon
+			} else {
+				newComma = (&ast.RuneNode{Rune: ','})
+			}
+			containerArrayNode.Elements = append(containerArrayNode.Elements, optionNode.Val.AsArrayLiteralElement(), newComma.AsArrayLiteralElement())
 		}
-		replaceWithinParent(optionNode)
+		toReplace = append(toReplace, optionNode)
+	}
+	for i := len(toReplace) - 1; i >= 0; i-- {
+		replaceWithinParent(toReplace[i])
 	}
 
 	// trim the last comma from the array
@@ -1050,7 +1077,6 @@ func calcSimplifyRepeatedOptionsEdits(
 	replaceWithinParent(firstOptNode, newOptionNode)
 
 	newParentText, err := format.PrintNode(fileNode, mutableParent)
-	fmt.Println(newParentText)
 	if err != nil {
 		panic(err)
 	}

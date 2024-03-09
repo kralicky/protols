@@ -121,6 +121,7 @@ func NodeInfoOverlay(fileNode FileNodeInterface, infos map[ast.Node]ast.NodeInfo
 			if cn == node {
 				return true
 			}
+			// token==0 indicates a node created manually, not from the parser
 			if terminalNode, ok := cn.(ast.TerminalNode); ok && terminalNode.GetToken() == 0 {
 				if _, ok := infos[cn]; !ok {
 					infos[cn] = ast.NodeInfo{}

@@ -925,7 +925,16 @@ GROUPS:
 				// flush the buffer to save the field name
 				field.fieldName, _ = io.ReadAll(colBuf)
 
-				fclone.writeLineEnd(elem.Val)
+				if elem.Semicolon != nil {
+					if elem.Semicolon.Rune != ',' {
+						elem.Semicolon.Rune = ','
+					}
+				} else {
+					elem.Semicolon = &ast.RuneNode{Rune: ',', Token: elem.End()}
+				}
+				fclone.writeNode(elem.Val)
+				fclone.writeLineEnd(elem.Semicolon)
+
 				field.lineEnd, _ = io.ReadAll(colBuf)
 			case *ast.OptionNode:
 				// column format for options that look like:

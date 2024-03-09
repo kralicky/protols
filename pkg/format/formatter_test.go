@@ -93,17 +93,17 @@ option (a).test.s.name = "yolo";
 			want: `
 message Another {
   option (.foo.bar.rept) = {
-    foo:   "abc"
-    s:     <name: "foo", id: 123>
-    array: [1, 2, 3]
-    r:     [<name: "f">, {name: "s"}, {id: 456}]
+    foo:   "abc",
+    s:     <name: "foo", id: 123>,
+    array: [1, 2, 3],
+    r:     [<name: "f">, {name: "s"}, {id: 456}],
   };
   option (foo.bar.rept) = {
-    foo:   "def"
-    s:     {name: "bar", id: 321}
-    array: [3, 2, 1]
-    r:     {name: "g"}
-    r:     {name: "s"}
+    foo:   "def",
+    s:     {name: "bar", id: 321},
+    array: [3, 2, 1],
+    r:     {name: "g"},
+    r:     {name: "s"},
   };
   option (rept)                                                  = {foo: "def"};
   option (eee)                                                   = V1;
@@ -131,9 +131,9 @@ option (.foo.bar.rept) = {r: [<name: "f">, {name: "s"}, {id: 456}]};`[1:],
 				foo: "abc" s < name: "foo", id: 123 >, array: [1, 2 ,3], };`,
 			want: `
 option (.foo.bar.rept) = {
-  foo:   "abc"
-  s:     <name: "foo", id: 123>
-  array: [1, 2, 3]
+  foo:   "abc",
+  s:     <name: "foo", id: 123>,
+  array: [1, 2, 3],
 };`[1:],
 		},
 		7: {
@@ -142,34 +142,34 @@ option (.foo.bar.rept) = {
 					1, 2 ,3], };`,
 			want: `
 option (.foo.bar.rept) = {
-  foo: "abc"
-  s:   <name: "foo", id: 123>
+  foo: "abc",
+  s:   <name: "foo", id: 123>,
   array: [
     1,
     2,
     3
-  ]
+  ],
 };`[1:],
 		},
 		8: {
 			input: `
 option (foo.bar.rept) = {
-  foo: "def"
-  s:   {name: "bar", id: 321}
+  foo: "def" // foo
+  s:   {name: "bar", id: 321}, // s
   array: [      3,
     2,
     1
-  ]
-  r: {name: "g"}
-  r: {name: "s"}
+  ], // array
+  r: {name: "g"},
+  r: {name: "s"},
 };`[1:],
 			want: `
 option (foo.bar.rept) = {
-  foo:   "def"
-  s:     {name: "bar", id: 321}
-  array: [3, 2, 1]
-  r:     {name: "g"}
-  r:     {name: "s"}
+  foo:   "def", // foo
+  s:     {name: "bar", id: 321}, // s
+  array: [3, 2, 1], // array
+  r:     {name: "g"},
+  r:     {name: "s"},
 };`[1:],
 		},
 		9: {

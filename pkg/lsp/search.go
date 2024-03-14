@@ -290,7 +290,23 @@ func deepPathSearch(path protopath.Path, parseRes parser.Result, linkRes linker.
 					want.desc = haveDesc.Fields().ByName(protoreflect.Name(wantNode.Name.Value()))
 				}
 			case ast.AnyIdentValueNode:
-				want.desc = haveDesc
+				if _, ok := have.node.(*ast.ExtendNode); ok {
+					// (proto2 only) looking for the extendee in the "extend <extendee> {" statement
+					// want.desc = haveDesc.Extensions().ByName(wantNode.AsIdentifier())
+					wantIdent := wantNode.AsIdentifier()
+					exts := haveDesc.Extensions()
+					for i := range exts.Len() {
+						if xt, ok := exts.Get(i).(protoreflect.ExtensionTypeDescriptor); ok {
+							t := xt.ContainingMessage()
+							if t.FullName() == protoreflect.FullName(strings.TrimPrefix(string(wantIdent), ".")) {
+								want.desc = t
+								break
+							}
+						}
+					}
+				} else {
+					want.desc = haveDesc
+				}
 			}
 		case protoreflect.ExtensionTypeDescriptor:
 			switch wantNode := want.node.(type) {

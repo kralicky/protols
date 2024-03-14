@@ -636,10 +636,9 @@ func (c *Cache) completePackageNames(
 				Label: string(pkgName),
 				Kind:  protocol.ModuleCompletion,
 				TextEdit: &protocol.Or_CompletionItem_textEdit{
-					Value: protocol.InsertReplaceEdit{
+					Value: protocol.TextEdit{
 						NewText: string(pkgName),
-						Insert:  replaceRange,
-						Replace: replaceRange,
+						Range:   replaceRange,
 					},
 				},
 			}
@@ -922,10 +921,9 @@ func (c *Cache) deepCompleteOptionNames(
 				Detail: fieldTypeDetail(fld),
 				Kind:   protocol.FieldCompletion,
 				TextEdit: &protocol.Or_CompletionItem_textEdit{
-					Value: protocol.InsertReplaceEdit{
+					Value: protocol.TextEdit{
 						NewText: string(fld.Name()),
-						Insert:  replaceRange,
-						Replace: replaceRange,
+						Range:   replaceRange,
 					},
 				},
 			}
@@ -943,25 +941,25 @@ func (c *Cache) deepCompleteOptionNames(
 				continue
 			}
 			item := newExtensionFieldCompletionItem(x, linkRes, partialName, partialNameSuffix, pos)
-			prevEdit := item.TextEdit.Value.(protocol.InsertReplaceEdit)
+			prevEdit := item.TextEdit.Value.(protocol.TextEdit)
 			var open, close string
 			if existingFieldRef != nil {
 				if existingFieldRef.Open != nil {
 					open = "("
 					// adjust the replace range to include the open paren, either on the left or right
 					if fileNode.NodeInfo(existingFieldRef.Open).Start().Col-1 < int(pos.Character) {
-						prevEdit.Replace.Start = adjustColumn(prevEdit.Replace.Start, -1)
+						prevEdit.Range.Start = adjustColumn(prevEdit.Range.Start, -1)
 					} else {
-						prevEdit.Replace.End = adjustColumn(prevEdit.Replace.End, 1)
+						prevEdit.Range.End = adjustColumn(prevEdit.Range.End, 1)
 					}
 				}
 				if existingFieldRef.Close != nil {
 					close = ")"
 					// adjust the replace range to include the close paren, either on the left or right
 					if fileNode.NodeInfo(existingFieldRef.Close).Start().Col-1 < int(pos.Character) {
-						prevEdit.Replace.Start = adjustColumn(prevEdit.Replace.Start, -1)
+						prevEdit.Range.Start = adjustColumn(prevEdit.Range.Start, -1)
 					} else {
-						prevEdit.Replace.End = adjustColumn(prevEdit.Replace.End, 1)
+						prevEdit.Range.End = adjustColumn(prevEdit.Range.End, 1)
 					}
 				}
 			} else {
@@ -970,10 +968,9 @@ func (c *Cache) deepCompleteOptionNames(
 			}
 			item.Label = fmt.Sprintf("(%s)", item.Label)
 			item.TextEdit = &protocol.Or_CompletionItem_textEdit{
-				Value: protocol.InsertReplaceEdit{
+				Value: protocol.TextEdit{
 					NewText: fmt.Sprintf("%s%s%s", open, prevEdit.NewText, close),
-					Insert:  prevEdit.Replace, // this is intentionally not prevEdit.Insert
-					Replace: prevEdit.Replace,
+					Range:   prevEdit.Range,
 				},
 			}
 			maybeResolveImport(&item, x, linkRes)
@@ -997,10 +994,9 @@ func completeKeywords(keywords []string, partialName, partialNameSuffix string, 
 			Label: keyword,
 			Kind:  protocol.KeywordCompletion,
 			TextEdit: &protocol.Or_CompletionItem_textEdit{
-				Value: protocol.InsertReplaceEdit{
+				Value: protocol.TextEdit{
 					NewText: keyword,
-					Insert:  replaceRange,
-					Replace: replaceRange,
+					Range:   replaceRange,
 				},
 			},
 		})

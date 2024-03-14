@@ -194,7 +194,7 @@ func (c *Cache) FindParseResultByURI(uri protocol.DocumentURI) (parser.Result, e
 
 func (c *Cache) findResultByPathLocked(path string) (linker.Result, error) {
 	if c.results == nil {
-		return nil, fmt.Errorf("no results exist")
+		return nil, fmt.Errorf("FindResultByPath: no results exist")
 	}
 	f := c.results.FindFileByPath(path)
 	if f == nil {

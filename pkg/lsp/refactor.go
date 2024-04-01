@@ -192,7 +192,7 @@ type Analyzer func(ctx context.Context, request *protocol.CodeActionParams, link
 type optionRefInfo struct {
 	Parent ast.Node
 	Option protopath.Path // => *ast.OptionNode
-	Field  protopath.Path // => *ast.MessageFieldNode
+	Field  protopath.Path // => *ast.MessageFieldNode or *ast.FieldReferenceNode
 }
 
 // simplifyRepeatedOptions transforms repeated options declared separately
@@ -917,28 +917,27 @@ func calcSimplifyRepeatedOptionsEdits(
 	if firstOptNode.IsIncomplete() {
 		return nil
 	}
+
 	replaceWithinParent := func(existingNode *ast.OptionNode, newNodes ...*ast.OptionNode) {
-		switch parent := mutableParent.(type) {
+		switch mutableParent := mutableParent.(type) {
 		case *ast.MessageNode:
-			idx := unwrapIndex(parent.Decls, existingNode)
+			idx := unwrapIndex(mutableParent.Decls, existingNode)
 			newElems := make([]*ast.MessageElement, len(newNodes))
 			for i, node := range newNodes {
 				newElems[i] = node.AsMessageElement()
 			}
-			parent.Decls = slices.Replace(parent.Decls, idx, idx+1, newElems...)
+			mutableParent.Decls = slices.Replace(mutableParent.Decls, idx, idx+1, newElems...)
 		case *ast.FileNode:
 			newElems := make([]*ast.FileElement, len(newNodes))
 			for i, node := range newNodes {
 				newElems[i] = node.AsFileElement()
 			}
-			idx := unwrapIndex(parent.Decls, existingNode)
-			parent.Decls = slices.Replace(parent.Decls, idx, idx+1, newElems...)
+			idx := unwrapIndex(mutableParent.Decls, existingNode)
+			mutableParent.Decls = slices.Replace(mutableParent.Decls, idx, idx+1, newElems...)
 		}
 	}
 
 	var removeWithinExisting func(*ast.MessageFieldNode)
-	firstFieldNode := paths.Dereference(mutableParent, refs[0].Field).(*ast.MessageFieldNode)
-
 	var containerArrayNode *ast.ArrayLiteralNode
 
 	var pathsWithinContainer []optionRefInfo
@@ -977,8 +976,15 @@ func calcSimplifyRepeatedOptionsEdits(
 			CloseBracket: &ast.RuneNode{Rune: ']'},
 			Semicolon:    &ast.RuneNode{Rune: ';'},
 		}
+		var firstNameNode *ast.FieldReferenceNode
+		switch first := paths.Dereference(mutableParent, refs[0].Field).(type) {
+		case *ast.MessageFieldNode:
+			firstNameNode = first.Name
+		case *ast.FieldReferenceNode:
+			firstNameNode = first
+		}
 		msgField := &ast.MessageFieldNode{
-			Name:      firstFieldNode.Name,
+			Name:      firstNameNode,
 			Sep:       &ast.RuneNode{Rune: ':'},
 			Val:       containerArrayNode.AsValueNode(),
 			Semicolon: &ast.RuneNode{Rune: ';'},

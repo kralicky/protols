@@ -11,7 +11,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/kralicky/codegen v0.0.0-20240307225947-51de80fcb2f3
 	github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f
-	github.com/kralicky/protocompile v0.0.0-20240307230234-dc85191b2548
+	github.com/kralicky/protocompile v0.0.0-20240401205051-3af207f8546c
 	github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff
 	github.com/mattn/go-tty v0.0.5
 	github.com/spf13/cobra v1.8.0
@@ -21,7 +21,7 @@ require (
 	google.golang.org/genproto v0.0.0-20240221002015-b0ce06bbee7c
 	google.golang.org/genproto/googleapis/api v0.0.0-20240221002015-b0ce06bbee7c
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240221002015-b0ce06bbee7c
-	google.golang.org/protobuf v1.33.0
+	google.golang.org/protobuf v1.33.1-0.20240319125436-3039476726e4
 )
 
 require (

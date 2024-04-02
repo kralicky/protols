@@ -1,9 +1,11 @@
 package lsp
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -440,6 +442,8 @@ func init() {
 	celEnv, _ = celEnv.Extend(cel.EnableMacroCallTracking())
 }
 
+var escapeCharRegex = regexp.MustCompile(`\\([0-7]{1,3}|[abfnrtv\\'"]|[xX][0-9a-fA-F]{1,2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})`)
+
 func (s *semanticItems) inspect(node ast.Node, walkOptions ...ast.WalkOption) {
 	tracker := &paths.AncestorTracker{}
 	// check if node is a non-nil interface to a nil pointer
@@ -459,7 +463,11 @@ func (s *semanticItems) inspect(node ast.Node, walkOptions ...ast.WalkOption) {
 				s.mkcomments(node)
 				return true
 			}
-			s.mktokens(node, tracker.Path(), semanticTypeString, 0)
+			if bytes.Contains(node.Raw, []byte{'\\'}) {
+				s.inspectStringLiteralWithEscapeSequences(node, tracker.Path())
+			} else {
+				s.mktokens(node, tracker.Path(), semanticTypeString, 0)
+			}
 		case *ast.UintLiteralNode:
 			s.mktokens(node, tracker.Path(), semanticTypeNumber, 0)
 		case *ast.FloatLiteralNode:
@@ -679,6 +687,90 @@ func (s *semanticItems) inspectCompoundIdent(compoundIdent *ast.CompoundIdentNod
 			s.mktokens(node, paths.Join(path, compoundIdent.ProtoPath().Components(i)), semanticTypeType, modifier)
 		}
 	}
+}
+
+func (s *semanticItems) inspectStringLiteralWithEscapeSequences(node *ast.StringLiteralNode, path protopath.Path) {
+	// for strings containing escape sequences, create multiple tokens
+	// for each part of the string
+	// example: "\0\001\a\b\f\n\r\t\v\\\'\"\xfe" -> ["\0", "\001", "\a", "\b", "\f", "\n", "\r", "\t", "\v", "\\", "\'", "\"", "\xfe"]
+	indexes := escapeCharRegex.FindAllIndex(node.Raw, -1)
+
+	info := s.AST().NodeInfo(node)
+	if !info.IsValid() {
+		return
+	}
+
+	line := uint32(info.Start().Line - 1)
+	start := uint32(info.Start().Col - 1)
+
+	// first token is the opening quote
+	s.items = append(s.items, semanticItem{
+		lang:  tokenLanguageProto,
+		line:  line,
+		start: start,
+		len:   1,
+		typ:   semanticTypeString,
+		node:  node,
+		path:  path,
+	})
+	start++
+
+	i := 0
+	for _, match := range indexes {
+		if i < match[0] {
+			// regular string
+			item := semanticItem{
+				lang:  tokenLanguageProto,
+				line:  line,
+				start: start + uint32(i),
+				len:   uint32(match[0]) - uint32(i),
+				typ:   semanticTypeString,
+				node:  node,
+				path:  path,
+			}
+			s.items = append(s.items, item)
+			i = match[0]
+		}
+		if i == match[0] {
+			// escape sequence
+			item := semanticItem{
+				lang:  tokenLanguageProto,
+				line:  line,
+				start: start + uint32(i),
+				len:   uint32(match[1]) - uint32(match[0]),
+				typ:   semanticTypeRegexp,
+				node:  node,
+				path:  path,
+			}
+			s.items = append(s.items, item)
+			i = match[1]
+		}
+	}
+	if i < len(node.Raw)-1 {
+		// after the last escape sequence but before the closing quote
+		item := semanticItem{
+			lang:  tokenLanguageProto,
+			line:  line,
+			start: start + uint32(i),
+			len:   uint32(len(node.Raw) - i),
+			typ:   semanticTypeString,
+			node:  node,
+			path:  path,
+		}
+		s.items = append(s.items, item)
+		i = len(node.Raw) - 1
+	}
+
+	// last token is the closing quote
+	s.items = append(s.items, semanticItem{
+		lang:  tokenLanguageProto,
+		line:  line,
+		start: start + uint32(i),
+		len:   1,
+		typ:   semanticTypeString,
+		node:  node,
+		path:  path,
+	})
 }
 
 func (s *semanticItems) inspectFieldLiteral(node ast.Node, val *ast.ValueNode, path protopath.Path) {

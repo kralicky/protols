@@ -42,8 +42,8 @@ github.com/kralicky/codegen v0.0.0-20240307225947-51de80fcb2f3 h1:BWm3t2mZaeu4hg
 github.com/kralicky/codegen v0.0.0-20240307225947-51de80fcb2f3/go.mod h1:R99TvehuNoyLOBwWThdNuQXnJT8d4gJcRYfZtB2Mw7s=
 github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f h1:MsNe8A51V+7Fu5OMXSl8SK02erPJ40vFs2zDHn89w1g=
 github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f/go.mod h1:vOkwMjs49XmP/7Xfo9ZL6eg2ei51lmtD/4U/Az5GTq8=
-github.com/kralicky/protocompile v0.0.0-20240401205051-3af207f8546c h1:HrrAwQQDVyDFYbGFKNhOYtUd7HTlu/Y+qVGiVWhEiwg=
-github.com/kralicky/protocompile v0.0.0-20240401205051-3af207f8546c/go.mod h1:UjvEi6Zifxkfhm/hW7RXpluHcBfN+VnePXcUtgHws8U=
+github.com/kralicky/protocompile v0.0.0-20240402185503-7487e2c98aec h1:flnp8h/gqns0/a2MnQohtQiPTMNnXRbBZ0vFKEU92V8=
+github.com/kralicky/protocompile v0.0.0-20240402185503-7487e2c98aec/go.mod h1:UjvEi6Zifxkfhm/hW7RXpluHcBfN+VnePXcUtgHws8U=
 github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff h1:akxm/czMYHdr1xIGm6wmddABmc4M9KDcqksdwpIJx8A=
 github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff/go.mod h1:V8GGYRLr40bvX/W3nZFxG+6S3iDFWn6o5J3NGDClr8U=
 github.com/mattn/go-colorable v0.1.2/go.mod h1:U0ppj6V5qS13XJ6of8GYAs25YV2eR4EVcfRqFIhoBtE=

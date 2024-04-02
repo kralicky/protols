@@ -69,6 +69,9 @@ message Y {
       x: {[bufbuild.protocompile.test2.y]: {x: {}}}
     }
   ];
+	optional bytes escaped_bytes = 3 [default = "\0\001\a\b\f\n\r\t\v\\\'\"\xfe"];
+	optional string utf8_string = 4 [default = "\341\210\264"]; // this is utf-8 for \u1234
+	optional string mixed_string = 5 [default = "foo\xFFbar\u1234baz\t"];
 }
 
 `
@@ -235,6 +238,56 @@ message Y {
 			{Token: "bufbuild.protocompile.test2.y", TokenType: "property"},
 			{Token: "]", TokenType: "operator"},
 			{Token: "x", TokenType: "property"},
+			{Token: "optional", TokenType: "keyword"},
+			{Token: "bytes", TokenType: "type", Mod: "defaultLibrary"},
+			{Token: "escaped_bytes", TokenType: "variable", Mod: "definition"},
+			{Token: "=", TokenType: "operator"},
+			{Token: "3", TokenType: "number"},
+			{Token: "default", TokenType: "keyword"},
+			{Token: "=", TokenType: "operator"},
+			{Token: `"`, TokenType: "string"},
+			{Token: `\0`, TokenType: "regexp"},
+			{Token: `\001`, TokenType: "regexp"},
+			{Token: `\a`, TokenType: "regexp"},
+			{Token: `\b`, TokenType: "regexp"},
+			{Token: `\f`, TokenType: "regexp"},
+			{Token: `\n`, TokenType: "regexp"},
+			{Token: `\r`, TokenType: "regexp"},
+			{Token: `\t`, TokenType: "regexp"},
+			{Token: `\v`, TokenType: "regexp"},
+			{Token: `\\`, TokenType: "regexp"},
+			{Token: `\'`, TokenType: "regexp"},
+			{Token: `\"`, TokenType: "regexp"},
+			{Token: `\xfe`, TokenType: "regexp"},
+			{Token: `"`, TokenType: "string"},
+			{Token: "optional", TokenType: "keyword"},
+			{Token: "string", TokenType: "type", Mod: "defaultLibrary"},
+			{Token: "utf8_string", TokenType: "variable", Mod: "definition"},
+			{Token: "=", TokenType: "operator"},
+			{Token: "4", TokenType: "number"},
+			{Token: "default", TokenType: "keyword"},
+			{Token: "=", TokenType: "operator"},
+			{Token: `"`, TokenType: "string"},
+			{Token: `\341`, TokenType: "regexp"},
+			{Token: `\210`, TokenType: "regexp"},
+			{Token: `\264`, TokenType: "regexp"},
+			{Token: `"`, TokenType: "string"},
+			{Token: "// this is utf-8 for \\u1234", TokenType: "comment"},
+			{Token: "optional", TokenType: "keyword"},
+			{Token: "string", TokenType: "type", Mod: "defaultLibrary"},
+			{Token: "mixed_string", TokenType: "variable", Mod: "definition"},
+			{Token: "=", TokenType: "operator"},
+			{Token: "5", TokenType: "number"},
+			{Token: "default", TokenType: "keyword"},
+			{Token: "=", TokenType: "operator"},
+			{Token: `"`, TokenType: "string"},
+			{Token: "foo", TokenType: "string"},
+			{Token: `\xFF`, TokenType: "regexp"},
+			{Token: "bar", TokenType: "string"},
+			{Token: `\u1234`, TokenType: "regexp"},
+			{Token: "baz", TokenType: "string"},
+			{Token: `\t`, TokenType: "regexp"},
+			{Token: `"`, TokenType: "string"},
 		}
 		if x := cmp.Diff(want, tokens); x != "" {
 			t.Errorf("Semantic tokens do not match (-want +got):\n%s", x)

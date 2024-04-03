@@ -41,8 +41,8 @@ message Test {
       optional int32 fooblez = 20003; //@hover("fooblez", "fooblez", fooblez)
     }
     message _NestedNested { //@hover("_NestedNested", "_NestedNested", _NestedNested)
-      enum EEE {
-        OK = 0;
+      enum EEE { //@hover("EEE", "EEE", EEE)
+        OK = 0; //@hover("OK", "OK", EEE_OK)
         V1 = 1;
         V2 = 2;
         V3 = 3;
@@ -50,7 +50,7 @@ message Test {
         V5 = 5;
         V6 = 6;
       }
-      option (fooblez) = 10101;
+      option (fooblez) = 10101; //@hover("fooblez", "(fooblez)", fooblez)
       extend Test {
         optional string _garblez  = 100;
         optional string _garblez2 = 101;
@@ -449,6 +449,10 @@ enum EEE {
   V5 = 5;
   V6 = 6;
 }
+```
+-- @EEE_OK --
+```protobuf
+OK = 0;
 ```
 -- @label --
 ```protobuf

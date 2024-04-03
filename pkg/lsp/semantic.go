@@ -191,7 +191,9 @@ func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng 
 	return ret, err
 }
 
-var DebugCheckOverlappingTokens = false
+var debugCheckOverlappingTokens = "false"
+
+var DebugCheckOverlappingTokens = (debugCheckOverlappingTokens == "true")
 
 func computeSemanticTokens(cache *Cache, e *semanticItems, walkOptions ...ast.WalkOption) {
 	e.inspect(e.AST(), walkOptions...)
@@ -580,6 +582,11 @@ func (s *semanticItems) inspect(node ast.Node, walkOptions ...ast.WalkOption) {
 								} else {
 									s.mktokens(ident, paths.Join(tracker.Path(), node.ProtoPath().Val().Ident()), semanticTypeVariable, 0)
 								}
+							case protoreflect.FloatKind, protoreflect.DoubleKind:
+								switch strings.ToLower(ident.Val) {
+								case "inf", "nan":
+									s.mktokens(ident, paths.Join(tracker.Path(), node.ProtoPath().Val().Ident()), semanticTypeNumber, 0)
+								}
 							}
 						}
 					}
@@ -746,13 +753,13 @@ func (s *semanticItems) inspectStringLiteralWithEscapeSequences(node *ast.String
 			i = match[1]
 		}
 	}
-	if i < len(node.Raw)-1 {
+	if i < len(node.Raw)-2 {
 		// after the last escape sequence but before the closing quote
 		item := semanticItem{
 			lang:  tokenLanguageProto,
 			line:  line,
 			start: start + uint32(i),
-			len:   uint32(len(node.Raw) - i),
+			len:   uint32(len(node.Raw) - 1 - i),
 			typ:   semanticTypeString,
 			node:  node,
 			path:  path,

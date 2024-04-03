@@ -33,6 +33,7 @@ message Test {
 		option (c) = true;
 		option (d) = -inf;
 	}
+	float test3 = 3 [default = inf];
 }
 
 extend google.protobuf.MessageOptions {
@@ -132,6 +133,13 @@ message Y {
 			{Token: ")", TokenType: "operator"},
 			{Token: "=", TokenType: "operator"},
 			{Token: "-", TokenType: "operator"},
+			{Token: "inf", TokenType: "number"},
+			{Token: "float", TokenType: "type", Mod: "defaultLibrary"},
+			{Token: "test3", TokenType: "variable", Mod: "definition"},
+			{Token: "=", TokenType: "operator"},
+			{Token: "3", TokenType: "number"},
+			{Token: "default", TokenType: "keyword"},
+			{Token: "=", TokenType: "operator"},
 			{Token: "inf", TokenType: "number"},
 			{Token: "extend", TokenType: "keyword"},
 			{Token: "google.protobuf.MessageOptions", TokenType: "type", Mod: "defaultLibrary"},

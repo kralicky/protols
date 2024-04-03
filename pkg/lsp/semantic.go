@@ -778,6 +778,8 @@ func (s *semanticItems) inspectStringLiteralWithEscapeSequences(node *ast.String
 		node:  node,
 		path:  path,
 	})
+
+	s.mkcomments(node)
 }
 
 func (s *semanticItems) inspectFieldLiteral(node ast.Node, val *ast.ValueNode, path protopath.Path) {

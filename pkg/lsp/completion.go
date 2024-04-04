@@ -128,7 +128,8 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	existingOpts := findExistingOptions(scope)
 
 	fileNode := searchTarget.AST()
-	switch node := paths.NodeAt[ast.Node](path.Index(1)).(type) {
+	nodes := paths.ValuesToNodes(path)
+	switch node := nodes[len(nodes)-1].(type) {
 	case *ast.MessageNode:
 		var partialName, partialNameSuffix string
 		if node.Name != nil && tokenAtOffset >= node.Name.Start() && tokenAtOffset <= node.Name.End() {
@@ -172,7 +173,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 				completions = append(completions, fieldCompletion(fld, insertPos, messageLiteralStyle))
 			}
 		case protoreflect.ExtensionTypeDescriptor:
-			if ext := paths.NodeAt[*ast.ExtendNode](path.Index(-2)); ext != nil {
+			if _, ok := nodes[len(nodes)-2].(*ast.ExtendNode); ok {
 				// this is a field of an extend node, not a message literal
 				break
 			}
@@ -260,7 +261,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 	case *ast.FieldReferenceNode:
 		nodeIdx := -1
 		scope := scope
-		switch prev := paths.NodeAt[ast.Node](path.Index(-2)).(type) {
+		switch prev := nodes[len(nodes)-2].(type) {
 		case *ast.OptionNameNode:
 			scope = scope.Options().ProtoReflect().Descriptor()
 			nodeIdx = unwrapIndex(prev.Parts, node)
@@ -281,7 +282,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 			break
 		}
 		existingFields := map[string]struct{}{}
-		if messageLitNode := paths.NodeAt[*ast.MessageLiteralNode](path.Index(-3)); messageLitNode != nil {
+		if messageLitNode, ok := nodes[len(nodes)-3].(*ast.MessageLiteralNode); ok {
 			for _, elem := range messageLitNode.Elements {
 				if elem.IsIncomplete() {
 					continue
@@ -500,7 +501,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 		completions = append(completions,
 			c.completePackageNames(node, searchTarget.AST(), maybeCurrentLinkRes, mapper, posOffset, params.Position)...)
 	case *ast.ErrorNode:
-		switch prev := paths.NodeAt[ast.Node](path.Index(-2)).(type) {
+		switch prev := nodes[len(nodes)-2].(type) {
 		case *ast.FileNode:
 			var partialName, partialNameSuffix string
 			if node.Err != nil {
@@ -563,8 +564,14 @@ func (c *Cache) completeOptionOrExtensionName(
 				return nil
 			}
 		}
-		// nodeIdx > 0
-		prevFieldRef := paths.NodeAt[*ast.OptionNameNode](path.Index(-2)).Parts[nodeIdx-1].GetFieldRef()
+		if nodeIdx < 2 {
+			break
+		}
+		sfx, ok := paths.Suffix2[*ast.OptionNameNode, *ast.FieldReferenceNode](path)
+		if !ok {
+			break
+		}
+		prevFieldRef := sfx.T.Parts[nodeIdx-2].GetFieldRef() // skip the dot
 		// find the descriptor for the previous field reference
 		prevFd := linkRes.FindFieldDescriptorByFieldReferenceNode(prevFieldRef)
 		if prevFd == nil {
@@ -831,17 +838,19 @@ func findCompletionScope(nodePath protopath.Values, linkRes linker.Result) proto
 	var scope protoreflect.Descriptor
 LOOP:
 	for i := len(nodePath.Path) - 1; i >= 0; i-- {
-		switch paths.NodeAt[ast.Node](nodePath.Index(i)).(type) {
-		case *ast.MessageNode, *ast.FieldNode, *ast.EnumNode, *ast.ServiceNode, *ast.MessageFieldNode:
-			desc, _, err := deepPathSearch(nodePath.Path[:i+1], linkRes, linkRes)
-			if err != nil || desc == nil {
-				continue
+		if paths.NodeIsConcrete(nodePath, i) {
+			switch paths.NodeAt[ast.Node](nodePath.Index(i)).(type) {
+			case *ast.MessageNode, *ast.FieldNode, *ast.EnumNode, *ast.ServiceNode, *ast.MessageFieldNode:
+				desc, _, err := deepPathSearch(nodePath.Path[:i+1], linkRes, linkRes)
+				if err != nil || desc == nil {
+					continue
+				}
+				scope = desc
+				break LOOP
+			case *ast.FileNode, *ast.RPCNode:
+				scope = linkRes
+				break LOOP
 			}
-			scope = desc
-			break LOOP
-		case *ast.FileNode, *ast.RPCNode:
-			scope = linkRes
-			break LOOP
 		}
 	}
 	return scope
@@ -1081,10 +1090,9 @@ func completeTypeNamesFromList(candidates []protoreflect.Descriptor, partialName
 			End:   adjustColumn(pos, len(partialNameSuffix)),
 		}
 		item.TextEdit = &protocol.Or_CompletionItem_textEdit{
-			Value: protocol.InsertReplaceEdit{
+			Value: protocol.TextEdit{
 				NewText: item.Label,
-				Insert:  replaceRange,
-				Replace: replaceRange,
+				Range:   replaceRange,
 			},
 		}
 		items = append(items, item)
@@ -1123,10 +1131,9 @@ func completeImports(cache *Cache, partialPath, partialPathSuffix string, existi
 			Label: label,
 			Kind:  protocol.ModuleCompletion,
 			TextEdit: &protocol.Or_CompletionItem_textEdit{
-				Value: protocol.InsertReplaceEdit{
+				Value: protocol.TextEdit{
 					NewText: insertText,
-					Insert:  replaceRange,
-					Replace: replaceRange,
+					Range:   replaceRange,
 				},
 			},
 		})
@@ -1150,10 +1157,9 @@ func completeSyntaxVersions(partialVersion, partialVersionSuffix string, pos pro
 				Label: version,
 				Kind:  protocol.KeywordCompletion,
 				TextEdit: &protocol.Or_CompletionItem_textEdit{
-					Value: protocol.InsertReplaceEdit{
+					Value: protocol.TextEdit{
 						NewText: insertText,
-						Insert:  replaceRange,
-						Replace: replaceRange,
+						Range:   replaceRange,
 					},
 				},
 			})
@@ -1177,10 +1183,9 @@ func completeEnumValues(enum protoreflect.EnumDescriptor, partialName, partialNa
 			Label: string(val.Name()),
 			Kind:  protocol.EnumCompletion,
 			TextEdit: &protocol.Or_CompletionItem_textEdit{
-				Value: protocol.InsertReplaceEdit{
+				Value: protocol.TextEdit{
 					NewText: string(val.Name()),
-					Insert:  replaceRange,
-					Replace: replaceRange,
+					Range:   replaceRange,
 				},
 			},
 		})
@@ -1220,10 +1225,9 @@ func newExtensionFieldCompletionItem(fld protoreflect.ExtensionDescriptor, linkR
 		Kind:   protocol.InterfaceCompletion,
 		Detail: fieldTypeDetail(fld),
 		TextEdit: &protocol.Or_CompletionItem_textEdit{
-			Value: protocol.InsertReplaceEdit{
+			Value: protocol.TextEdit{
 				NewText: insertText,
-				Insert:  replaceRange,
-				Replace: replaceRange,
+				Range:   replaceRange,
 			},
 		},
 	}

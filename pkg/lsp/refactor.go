@@ -254,39 +254,75 @@ func simplifyRepeatedOptions(ctx context.Context, request *protocol.CodeActionPa
 }
 
 func collectRepeatedOptionRefs(nodePath protopath.Values, linkRes linker.Result) (*ast.FieldReferenceNode, protopath.Path, []optionRefInfo, bool) {
+	var parentNode, mutableParent ast.Node
+	var existingContainer protopath.Path // => *ast.OptionNode
+	var targetExtension protoreflect.ExtensionDescriptor
+	var targetField protoreflect.FieldDescriptor
+	var targetExtensionNameNode *ast.FieldReferenceNode
+
 	out, ok := paths.Suffix4[
 		ast.AnyFileElement,
 		*ast.OptionNode,
 		*ast.OptionNameNode,
 		*ast.FieldReferenceNode,
 	](nodePath)
-	if !ok {
-		return nil, nil, nil, false
-	}
+	if ok {
+		parentNode = out.T
 
-	parentNode := out.T
-	optionNode := out.U
-	optionNameNode := out.V
-	fieldReferenceNode := out.W
+		optionNode := out.U
+		optionNameNode := out.V
+		fieldReferenceNode := out.W
 
-	mutableParent := ast.Clone(parentNode)
-
-	fieldRefs := optionNameNode.FilterFieldReferences()
-	indexIntoName := slices.Index(fieldRefs, fieldReferenceNode)
-	var targetExtension protoreflect.ExtensionDescriptor
-	targetField := linkRes.FindFieldDescriptorByFieldReferenceNode(fieldReferenceNode)
-	if targetField == nil {
-		return nil, nil, nil, false
-	}
-	if targetField.Cardinality() != protoreflect.Repeated {
-		return nil, nil, nil, false
-	}
-	var targetExtensionNameNode *ast.FieldReferenceNode
-	for i := indexIntoName; i >= 0; i-- {
-		namePart := fieldRefs[i]
-		if !namePart.IsExtension() {
-			continue
+		fieldRefs := optionNameNode.FilterFieldReferences()
+		indexIntoName := slices.Index(fieldRefs, fieldReferenceNode)
+		targetField = linkRes.FindFieldDescriptorByFieldReferenceNode(fieldReferenceNode)
+		if targetField == nil {
+			return nil, nil, nil, false
 		}
+		if targetField.Cardinality() != protoreflect.Repeated {
+			return nil, nil, nil, false
+		}
+		for i := indexIntoName; i >= 0; i-- {
+			namePart := fieldRefs[i]
+			if !namePart.IsExtension() {
+				continue
+			}
+			namePartDesc := linkRes.OptionNamePartDescriptor(namePart)
+			extDesc := linkRes.FindOptionNameFieldDescriptor(namePartDesc)
+			if extDesc == nil || !extDesc.IsExtension() {
+				return nil, nil, nil, false
+			}
+			targetExtension = extDesc
+			targetExtensionNameNode = ast.Clone(namePart)
+			break
+		}
+
+		if len(optionNameNode.Parts) == 1 && optionNode.Val.GetMessageLiteral() != nil {
+			existingContainer = paths.Slice(nodePath, out.TIndex, out.UIndex+1).Path
+		}
+	} else {
+		out, ok := paths.Suffix5[
+			ast.AnyFileElement,
+			*ast.OptionNode,
+			*ast.MessageLiteralNode,
+			*ast.MessageFieldNode,
+			*ast.FieldReferenceNode,
+		](nodePath)
+		if !ok {
+			return nil, nil, nil, false
+		}
+
+		parentNode = out.T
+		optionNode := out.U
+		targetField = linkRes.FindFieldDescriptorByMessageFieldNode(out.W)
+		if targetField == nil {
+			return nil, nil, nil, false
+		}
+		if targetField.Cardinality() != protoreflect.Repeated {
+			return nil, nil, nil, false
+		}
+
+		namePart := optionNode.Name.Parts[len(optionNode.Name.Parts)-1].GetFieldRef()
 		namePartDesc := linkRes.OptionNamePartDescriptor(namePart)
 		extDesc := linkRes.FindOptionNameFieldDescriptor(namePartDesc)
 		if extDesc == nil || !extDesc.IsExtension() {
@@ -294,13 +330,10 @@ func collectRepeatedOptionRefs(nodePath protopath.Values, linkRes linker.Result)
 		}
 		targetExtension = extDesc
 		targetExtensionNameNode = ast.Clone(namePart)
-		break
+		existingContainer = paths.Slice(nodePath, out.TIndex, out.UIndex+1).Path
 	}
 
-	var existingContainer protopath.Path
-	if len(optionNameNode.Parts) == 1 && optionNode.Val.GetMessageLiteral() != nil {
-		existingContainer = paths.Join(nodePath.Path[:out.UIndex+1], optionNode.ProtoPath().Val().MessageLiteral())
-	}
+	mutableParent = ast.Clone(parentNode)
 
 	if existingContainer == nil {
 		var tracker paths.AncestorTracker

@@ -157,7 +157,7 @@ func (c *Cache) GetCompletions(params *protocol.CompletionParams) (result *proto
 
 			for _, elem := range node.Elements {
 				name := string(elem.Name.Name.AsIdentifier())
-				if fd := desc.Fields().ByName(protoreflect.Name(name)); fd != nil {
+				if fd := desc.Fields().ByName(protoreflect.Name(name)); fd != nil && fd.Cardinality() != protoreflect.Repeated {
 					existingFieldNames = append(existingFieldNames, name)
 				}
 			}

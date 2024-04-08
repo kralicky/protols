@@ -1,0 +1,59 @@
+Find References testing
+
+-- foo.proto --
+syntax = "proto3";
+
+package foo;
+
+import "google/protobuf/descriptor.proto";
+
+message FooMsg { //@loc(defFooMsg, "FooMsg"), refs("FooMsg", defFooMsg, refFooMsgFieldType, refFooMsgExtendType, refFooMsgQualifiedFieldType)
+  FooEnum fooEnum = 1; //@loc(defFooMsgFooEnum, "fooEnum"), loc(refFooEnumFieldType, "FooEnum"), refs("fooEnum", defFooMsgFooEnum, refFooEnumOptFieldRef)
+}
+
+enum FooEnum { //@loc(defFooEnum, "FooEnum"), refs("FooEnum", defFooEnum, refFooEnumFieldType, refFooEnumExtendType1, refFooEnumExtendType2, refFooEnumQualifiedFieldType)
+  FooEnum0 = 0; //@loc(defFooEnum0, "FooEnum0"), refs("FooEnum0", defFooEnum0, refFooEnum0OptVal, refFooEnum0FieldLitVal)
+  FooEnum1 = 1; //@loc(defFooEnum1, "FooEnum1"), refs("FooEnum1", defFooEnum1, refFooEnum1FieldRefVal)
+  FooEnum2 = 2; //@loc(defFooEnum2, "FooEnum2"), refs("FooEnum2", defFooEnum2)
+}
+
+extend google.protobuf.FieldOptions {
+  FooEnum fooEnumFieldOpt = 50000; //@loc(defFooEnumFieldOpt, "fooEnumFieldOpt"), loc(refFooEnumExtendType1, "FooEnum")
+}
+
+extend google.protobuf.MessageOptions {
+  FooEnum fooEnumMsgOpt = 50001; //@loc(defFooEnumMsgOpt, "fooEnumMsgOpt"), loc(refFooEnumExtendType2, "FooEnum"), refs("fooEnumMsgOpt", defFooEnumMsgOpt, refQualifiedFooEnumMsgOpt)
+  FooMsg  fooMsgOpt     = 50002; //@loc(defFooMsgOpt, "fooMsgOpt"), loc(refFooMsgExtendType, "FooMsg")
+}
+
+message X { //@loc(defX, "X"), refs("X", defX, refXNestedType)
+  message Y { //@loc(defY, "Y"), refs("Y", defY, refYNestedType)
+    message Z { //@loc(defZ, "Z"), refs("Z", defZ, refZNestedType)
+      FooMsg msg = 1; //@loc(refFooMsgFieldType, "FooMsg")
+    }
+  }
+}
+
+-- bar.proto --
+syntax = "proto3";
+
+package bar;
+
+import "foo.proto";
+
+message BarMsg { //@loc(defBarMsg, "BarMsg"), refs("BarMsg", defBarMsg, refBarMsgFieldType)
+  option (foo.fooEnumMsgOpt)     = FooEnum0; //@loc(refFooEnum0OptVal, "FooEnum0"), loc(refQualifiedFooEnumMsgOpt, "(foo.fooEnumMsgOpt)")
+  option (foo.fooMsgOpt).fooEnum = FooEnum1; //@loc(refFooEnum1FieldRefVal, "FooEnum1"), loc(refQualifiedFooMsgOpt, "(foo.fooMsgOpt)"), loc(refFooEnumOptFieldRef, "fooEnum")
+
+  foo.FooMsg fooMsg = 1 [ //@loc(refFooMsgQualifiedFieldType, "foo.FooMsg"), loc(defBarMsgFooMsgField, "fooMsg"), refs("fooMsg", defBarMsgFooMsgField)
+    (foo.fooEnumFieldOpt) = FooEnum0 //@loc(refFooEnum0FieldLitVal, "FooEnum0")
+  ];
+
+  optional foo.FooEnum fooEnum = 2; //@loc(refFooEnumQualifiedFieldType, "foo.FooEnum"), loc(defBarMsgFooEnumField, "fooEnum"), refs("fooEnum", defBarMsgFooEnumField)
+
+  optional BarMsg barMsg = 3; //@loc(refBarMsgFieldType, "BarMsg")
+
+  optional foo.X     x   = 4; //@loc(defBarMsgXField, "x"), loc(refXNestedType, "foo.X"), refs("x", defBarMsgXField)
+  optional foo.X.Y   xy  = 5; //@loc(defBarMsgYField, "xy"), loc(refYNestedType, "foo.X.Y"), refs("xy", defBarMsgYField)
+  optional foo.X.Y.Z xyz = 6; //@loc(defBarMsgXYZField, "xyz"), loc(refZNestedType, "foo.X.Y.Z"), refs("xyz", defBarMsgXYZField)
+}

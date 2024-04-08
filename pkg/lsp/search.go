@@ -863,24 +863,24 @@ func findDefinition(desc protoreflect.Descriptor, linkRes linker.Result) (ast.No
 		if !desc.IsExtension() {
 			switch desc := desc.(type) {
 			case protoutil.DescriptorProtoWrapper:
-				node = linkRes.FieldNode(desc.AsProto().(*descriptorpb.FieldDescriptorProto))
+				node = linkRes.FieldNode(desc.AsProto().(*descriptorpb.FieldDescriptorProto)).GetName()
 			default:
 				// these can be internal filedesc.Field descriptors for e.g. builtin options
-				node = linkRes.FieldNode(linkRes.FindDescriptorByName(desc.FullName()).(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.FieldDescriptorProto))
+				node = linkRes.FieldNode(linkRes.FindDescriptorByName(desc.FullName()).(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.FieldDescriptorProto)).GetName()
 			}
 		} else {
 			switch desc := desc.(type) {
 			case protoutil.DescriptorProtoWrapper:
-				node = linkRes.FieldNode(desc.AsProto().(*descriptorpb.FieldDescriptorProto))
+				node = linkRes.FieldNode(desc.AsProto().(*descriptorpb.FieldDescriptorProto)).GetName()
 			case protoreflect.ExtensionTypeDescriptor:
-				node = linkRes.FieldNode(desc.Descriptor().(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.FieldDescriptorProto))
+				node = linkRes.FieldNode(desc.Descriptor().(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.FieldDescriptorProto)).GetName()
 			}
 		}
 	case protoreflect.EnumValueDescriptor:
 		// TODO(editions): builtin enums aren't wrappers here yet
 		node = linkRes.EnumValueNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.EnumValueDescriptorProto)).GetName()
 	case protoreflect.OneofDescriptor:
-		node = linkRes.OneofNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.OneofDescriptorProto))
+		node = linkRes.OneofNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.OneofDescriptorProto)).GetName()
 	case protoreflect.FileDescriptor:
 		node = linkRes.FileNode()
 		slog.Debug("definition is an import: ", "import", linkRes.Path())

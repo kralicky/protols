@@ -202,9 +202,23 @@ message Foo {
   extensions 100 to max [key = "value"];
 }`[1:],
 		},
+		12: {
+			input: `
+message Foo {
+  optional uint64 id = 1 [
+    default = 1
+    // comment 1
+    // comment 2
+  ];
+}`[1:],
+		},
 	}
 
-	for i, c := range cases {
+	for i, c := range cases[12:] {
+		if c.want == "" {
+			c.want = c.input
+		}
+
 		root, err := parser.Parse("", strings.NewReader(c.input), reporter.NewHandler(nil), 0)
 		require.NoError(t, err)
 

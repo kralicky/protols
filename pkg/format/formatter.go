@@ -2764,8 +2764,12 @@ func (f *formatter) writeInlineComments(comments ast.Comments) {
 func (f *formatter) writeTrailingEndComments(comments ast.Comments) {
 	for i := 0; i < comments.Len(); i++ {
 		comment := comments.Index(i)
-		if i > 0 || comment.LeadingWhitespace() != "" {
-			f.Space()
+		if lws := comment.LeadingWhitespace(); len(lws) > 0 {
+			if strings.Contains(lws, "\n") {
+				f.P("")
+			} else if i > 0 {
+				f.Space()
+			}
 		}
 		f.writeComment(comment.RawText())
 	}

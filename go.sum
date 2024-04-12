@@ -44,6 +44,8 @@ github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f h1:MsNe8A51V+7Fu5OMX
 github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f/go.mod h1:vOkwMjs49XmP/7Xfo9ZL6eg2ei51lmtD/4U/Az5GTq8=
 github.com/kralicky/protocompile v0.0.0-20240408184214-14ad4e9347bf h1:pIyALkZgXRwHfvxSBh/MleUipg7ymcRN/0DAtP14gOo=
 github.com/kralicky/protocompile v0.0.0-20240408184214-14ad4e9347bf/go.mod h1:UjvEi6Zifxkfhm/hW7RXpluHcBfN+VnePXcUtgHws8U=
+github.com/kralicky/protocompile v0.0.0-20240412191651-36383ae9f204 h1:rxGxx+nopx2gNNinja8by8LKegBmCHtWnXSYnt+lEJA=
+github.com/kralicky/protocompile v0.0.0-20240412191651-36383ae9f204/go.mod h1:8zYpLPSK3LGoz1PCD4OiSLWdlrkBYNSYSv9+pxc4D9w=
 github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff h1:akxm/czMYHdr1xIGm6wmddABmc4M9KDcqksdwpIJx8A=
 github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff/go.mod h1:V8GGYRLr40bvX/W3nZFxG+6S3iDFWn6o5J3NGDClr8U=
 github.com/mattn/go-colorable v0.1.2/go.mod h1:U0ppj6V5qS13XJ6of8GYAs25YV2eR4EVcfRqFIhoBtE=
@@ -132,6 +134,8 @@ google.golang.org/protobuf v1.26.0/go.mod h1:9q0QmTI4eRPtz6boOQmLYwt+qCgq0jsYwAQ
 google.golang.org/protobuf v1.33.0/go.mod h1:c6P6GXX6sHbq/GpV6MGZEdwhWPcYBgnhAHhKbcUYpos=
 google.golang.org/protobuf v1.33.1-0.20240319125436-3039476726e4 h1:fea3X9JPnW4oM9z1ctAuAN7kAnM/YbdI7QHCZXKLVMk=
 google.golang.org/protobuf v1.33.1-0.20240319125436-3039476726e4/go.mod h1:c6P6GXX6sHbq/GpV6MGZEdwhWPcYBgnhAHhKbcUYpos=
+google.golang.org/protobuf v1.33.1-0.20240408130810-98873a205002 h1:V7Da7qt0MkY3noVANIMVBk28nOnijADeOR3i5Hcvpj4=
+google.golang.org/protobuf v1.33.1-0.20240408130810-98873a205002/go.mod h1:c6P6GXX6sHbq/GpV6MGZEdwhWPcYBgnhAHhKbcUYpos=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c h1:Hei/4ADfdWqJk1ZMxUNpqntNwaWcugrBjAiHlqqRiVk=
 gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c/go.mod h1:JHkPIbrfpd72SG/EVd6muEfDQjcINNoR0C8j2r3qZ4Q=

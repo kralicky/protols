@@ -46,6 +46,8 @@ github.com/kralicky/protocompile v0.0.0-20240408184214-14ad4e9347bf h1:pIyALkZgX
 github.com/kralicky/protocompile v0.0.0-20240408184214-14ad4e9347bf/go.mod h1:UjvEi6Zifxkfhm/hW7RXpluHcBfN+VnePXcUtgHws8U=
 github.com/kralicky/protocompile v0.0.0-20240412191651-36383ae9f204 h1:rxGxx+nopx2gNNinja8by8LKegBmCHtWnXSYnt+lEJA=
 github.com/kralicky/protocompile v0.0.0-20240412191651-36383ae9f204/go.mod h1:8zYpLPSK3LGoz1PCD4OiSLWdlrkBYNSYSv9+pxc4D9w=
+github.com/kralicky/protocompile v0.0.0-20240414195057-6cf7a4f49bc6 h1:reK++696aQ9g6yHAU9QNe1MfaSNK6bGVfEjGHcuvAHI=
+github.com/kralicky/protocompile v0.0.0-20240414195057-6cf7a4f49bc6/go.mod h1:8zYpLPSK3LGoz1PCD4OiSLWdlrkBYNSYSv9+pxc4D9w=
 github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff h1:akxm/czMYHdr1xIGm6wmddABmc4M9KDcqksdwpIJx8A=
 github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff/go.mod h1:V8GGYRLr40bvX/W3nZFxG+6S3iDFWn6o5J3NGDClr8U=
 github.com/mattn/go-colorable v0.1.2/go.mod h1:U0ppj6V5qS13XJ6of8GYAs25YV2eR4EVcfRqFIhoBtE=

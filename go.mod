@@ -11,7 +11,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/kralicky/codegen v0.0.0-20240307225947-51de80fcb2f3
 	github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f
-	github.com/kralicky/protocompile v0.0.0-20240412191651-36383ae9f204
+	github.com/kralicky/protocompile v0.0.0-20240414195057-6cf7a4f49bc6
 	github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff
 	github.com/mattn/go-tty v0.0.5
 	github.com/spf13/cobra v1.8.0

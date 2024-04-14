@@ -1,7 +1,7 @@
 package lsp
 
-import "github.com/kralicky/protocompile/protointernal"
+import "github.com/kralicky/protocompile/editions"
 
 func init() {
-	protointernal.AllowEditions = true
+	editions.AllowEditions = true
 }

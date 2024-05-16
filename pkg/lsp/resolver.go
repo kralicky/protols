@@ -24,6 +24,7 @@ import (
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 type ImportSource int
@@ -216,12 +217,16 @@ func (r *Resolver) CheckIncompleteDescriptors(results linker.Files) []string {
 				if res == nil {
 					continue
 				}
-				newFile, err := protodesc.NewFile(protodesc.ToFileDescriptorProto(res), linker.ResolverFromFile(res))
+				newFile, err := protodesc.FileOptions{
+					AllowUnresolvable: true,
+				}.New(protodesc.ToFileDescriptorProto(res), linker.ResolverFromFile(res))
 				if err != nil {
 					slog.With(
 						"uri", string(uri),
 						"error", err,
 					).Error("failed to generate synthetic file descriptor")
+					// r.syntheticFiles[uri] = fmt.Sprintf("// failed to generate synthetic file descriptor: %s", err.Error())
+					continue
 				}
 				var src bytes.Buffer
 				err = format.PrintAndFormatFileDescriptor(newFile, &src)
@@ -247,24 +252,43 @@ func (r *Resolver) CheckIncompleteDescriptors(results linker.Files) []string {
 // 3. Check if the path is a go module containing proto sources
 // 3.5. Check if the path is a go module path containing generated code, but no proto sources
 // 4. Check if the path is found in the global message cache
+// 5. Try more complex path resolution strategies
+// 6. Try to analyze existing generated code to find the path used to generate it
 func (r *Resolver) FindFileByPath(path protocompile.UnresolvedPath, whence protocompile.ImportContext) (protocompile.SearchResult, error) {
 	r.pathsMu.Lock()
 	defer r.pathsMu.Unlock()
 	res, err := r.findFileByPathLocked(string(path), whence)
 	if err != nil {
 		if whence != nil {
-			path, err2 := r.translatePathLocked(string(path), whence)
+			translated, err2 := r.translatePathLocked(string(path), whence)
 			if err2 == nil {
-				res, err2 = r.findFileByPathLocked(path, whence)
+				slog.With("path", path, "translated", translated).Debug("resolved path by translation from import context")
+				res, err2 = r.findFileByPathLocked(translated, whence)
 				if err2 == nil {
-					res.ResolvedPath = protocompile.ResolvedPath(path)
+					res.ResolvedPath = protocompile.ResolvedPath(translated)
 					return res, nil
 				}
+			} else {
+				rev, err3 := r.tryReverseLookupLocked(string(path), whence)
+				if err3 == nil {
+					slog.With("path", path, "resolved", rev).Debug("resolved path by reverse lookup")
+					res, err3 = r.findFileByPathLocked(rev, whence)
+					if err3 == nil {
+						res.ResolvedPath = protocompile.ResolvedPath(rev)
+						return res, nil
+					}
+				}
 			}
-			return protocompile.SearchResult{}, errors.Join(err, err2)
+
+			err := errors.Join(err, err2)
+			slog.With("path", path, "errs", err).Debug("could not resolve path")
+			return protocompile.SearchResult{}, err
 		}
+
+		slog.With("path", path, "errs", err).Debug("could not resolve path")
 		return protocompile.SearchResult{}, err
 	}
+
 	return res, nil
 }
 
@@ -317,7 +341,6 @@ func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportC
 		}
 	}
 
-	lg.Debug("could not resolve path")
 	return protocompile.SearchResult{}, os.ErrNotExist
 }
 
@@ -359,6 +382,7 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 	}
 	res, err := r.goLanguageDriver.ImportFromGoModule(path)
 	if err != nil {
+		// TODO: if the path is not directly resolvable, refer to the import context?
 		return protocompile.SearchResult{}, err
 	}
 
@@ -533,7 +557,7 @@ func (r *Resolver) PreloadWellKnownPaths() {
 }
 
 func (r *Resolver) FindGeneratedFiles(uri protocol.DocumentURI, fd protoreflect.FileDescriptor) ([]ParsedGoFile, error) {
-	return r.goLanguageDriver.FindGeneratedFiles(uri, fd)
+	return r.goLanguageDriver.FindGeneratedFiles(uri, fd.Options().(*descriptorpb.FileOptions), fd.Path())
 }
 
 func (r *Resolver) findImportPathsByPrefix(prefix string) map[protocol.DocumentURI]string {
@@ -586,6 +610,29 @@ func FastLookupGoModule(f io.Reader) (string, error) {
 		return line[startIdx:endIdx], nil
 	}
 	return "", fmt.Errorf("no go_package option found")
+}
+
+func (r *Resolver) tryReverseLookupLocked(path string, whence protocompile.ImportContext) (string, error) {
+	fd := whence.FileDescriptorProto()
+	uri, ok := r.fileURIsByPath[fd.GetName()]
+	if !ok {
+		return "", fmt.Errorf("source file %q has no URI", fd.GetName())
+	}
+
+	generated, err := r.goLanguageDriver.FindGeneratedFiles(uri, fd.Options, "")
+	if err != nil {
+		return "", err
+	}
+
+	if len(generated) == 0 {
+		return "", fmt.Errorf("no generated files found for %q", fd.GetName())
+	}
+
+	resolved, err := tryResolvePathToGeneratedImport(generated, path, whence)
+	if err != nil {
+		return "", err
+	}
+	return resolved, nil
 }
 
 // Translates paths relative to either the importing file or the workspace root

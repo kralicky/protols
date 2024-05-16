@@ -9,6 +9,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/kralicky/codegen/cli"
 	"github.com/kralicky/codegen/pathbuilder"
 	"github.com/kralicky/protocompile/linker"
 	"github.com/kralicky/protols/pkg/lsp"
@@ -38,6 +39,7 @@ func (s *streamServer) ServeStream(ctx context.Context, conn jsonrpc2.Conn) erro
 					golang.Generator,
 					grpc.Generator,
 					pathbuilder.Generator,
+					cli.Generator,
 				},
 			},
 			"protols/generate",

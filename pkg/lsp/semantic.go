@@ -109,7 +109,9 @@ type semanticItems struct {
 
 func (s *semanticItems) AST() *ast.FileNode {
 	if s.maybeLinkRes != nil {
-		return s.maybeLinkRes.AST()
+		if maybeAst := s.maybeLinkRes.AST(); maybeAst != nil {
+			return maybeAst
+		}
 	}
 	return s.parseRes.AST()
 }

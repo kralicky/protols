@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"path"
+	"slices"
+	"strconv"
 	"strings"
 
+	"github.com/kralicky/protocompile"
 	"github.com/kralicky/protols/pkg/x/protogen/strs"
 	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -154,4 +158,26 @@ func GoIdent(desc protoreflect.Descriptor) string {
 		name := strs.GoCamelCase(strings.TrimPrefix(string(desc.FullName()), string(desc.ParentFile().Package())+"."))
 		return name
 	}
+}
+
+func tryResolvePathToGeneratedImport(files []ParsedGoFile, unresolvedPath string, whence protocompile.ImportContext) (string, error) {
+	// heuristic 1: if there is a unique go import path which suffix-matches `path.Dir(path)`, use it
+	pathSuffix := path.Dir(unresolvedPath)
+	var candidates []string
+	for _, f := range files {
+		for _, imp := range f.Imports {
+			importPath, err := strconv.Unquote(imp.Path.Value)
+			if err != nil {
+				continue
+			}
+			if strings.HasSuffix(importPath, pathSuffix) && !slices.Contains(candidates, importPath) {
+				candidates = append(candidates, importPath)
+			}
+		}
+	}
+	if len(candidates) == 1 {
+		return path.Join(candidates[0], path.Base(unresolvedPath)), nil
+	}
+
+	return "", fmt.Errorf("could not determine previously-generated import path for %s", unresolvedPath)
 }

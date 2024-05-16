@@ -150,7 +150,7 @@ func (c *Cache) compileLocked(protos ...string) {
 	}
 	c.partialResultsMu.Unlock()
 
-	syntheticFiles := c.resolver.CheckIncompleteDescriptors(c.results)
+	syntheticFiles := c.resolver.CheckIncompleteDescriptors(res.Files)
 	if len(syntheticFiles) == 0 {
 		return
 	}

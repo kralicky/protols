@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	_ "github.com/kralicky/codegen/cli"
 	_ "github.com/kralicky/codegen/pathbuilder"
 	"github.com/kralicky/protols/pkg/sources"
 	"github.com/kralicky/protols/sdk/codegen/generators/golang"

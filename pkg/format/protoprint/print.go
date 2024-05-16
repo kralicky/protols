@@ -1326,7 +1326,8 @@ func (p *Printer) printReservedRanges(ranges []reservedRange, maxVal int32, addr
 		el := addrs[i]
 		si := sourceInfo.Get(append(parentPath, el.elementType, int32(el.elementIndex)))
 		p.printElement(false, si, w, inline(indent), func(w *writer) {
-			if rr.start == rr.end-1 {
+			if rr.start == rr.end-1 || // [a, b)
+				rr.start == rr.end { // this form can show up sometimes, but is not a valid range
 				_, _ = fmt.Fprintf(w, "%d ", rr.start)
 			} else if rr.end-1 == maxVal {
 				_, _ = fmt.Fprintf(w, "%d to max ", rr.start)
@@ -2294,7 +2295,7 @@ func (a elementAddrs) at(addr elementAddr) interface{} {
 			rng := dsc.ReservedRanges().Get(addr.elementIndex)
 			return reservedRange{start: int32(rng[0]), end: int32(rng[1])}
 		case internal.Message_reservedNameTag:
-			return dsc.ReservedNames().Get(addr.elementIndex)
+			return string(dsc.ReservedNames().Get(addr.elementIndex))
 		}
 	case protoreflect.FieldDescriptor:
 		if addr.elementType == internal.Field_optionsTag {
@@ -2317,7 +2318,7 @@ func (a elementAddrs) at(addr elementAddr) interface{} {
 			rng := dsc.ReservedRanges().Get(addr.elementIndex)
 			return reservedRange{start: int32(rng[0]), end: int32(rng[1])}
 		case internal.Enum_reservedNameTag:
-			return dsc.ReservedNames().Get(addr.elementIndex)
+			return string(dsc.ReservedNames().Get(addr.elementIndex))
 		}
 	case protoreflect.EnumValueDescriptor:
 		if addr.elementType == internal.EnumVal_optionsTag {

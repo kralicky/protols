@@ -256,6 +256,10 @@ func resolveFieldDependencies(gen *plugin, field *protogen.Field) error {
 		}
 		field.Enum = enum
 	case protoreflect.MessageKind, protoreflect.GroupKind:
+		msg := desc.Message()
+		if msg == nil {
+			return fmt.Errorf("field %v: no descriptor for type (??)", desc.FullName())
+		}
 		name := desc.Message().FullName()
 		message, ok := gen.messagesByName[name]
 		if !ok {

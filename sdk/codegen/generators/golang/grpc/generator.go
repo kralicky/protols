@@ -21,7 +21,7 @@ func SetRequireUnimplemented(req bool) {
 }
 
 func init() {
-	t := true
+	t := false
 	requireUnimplemented = &t
 }
 

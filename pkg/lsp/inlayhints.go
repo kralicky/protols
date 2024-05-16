@@ -34,6 +34,9 @@ func (c *Cache) computeMessageLiteralHints(doc protocol.TextDocumentIdentifier, 
 		return nil
 	}
 	a := res.AST()
+	if a == nil {
+		return nil
+	}
 	startOff, endOff, _ := mapper.RangeOffsets(rng)
 	startToken := a.TokenAtOffset(startOff)
 	endToken := a.TokenAtOffset(endOff)

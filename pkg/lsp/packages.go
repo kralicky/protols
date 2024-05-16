@@ -81,6 +81,9 @@ func (c *Cache) FindPackageNameRefs(name protoreflect.FullName, prefixMatch bool
 		}
 		res := f.(linker.Result)
 		resFileNode := res.AST()
+		if resFileNode == nil {
+			return true
+		}
 		for _, decl := range resFileNode.Decls {
 			pkgNode := decl.GetPackage()
 			if pkgNode == nil {

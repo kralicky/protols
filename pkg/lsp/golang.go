@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -23,7 +24,6 @@ import (
 	"github.com/kralicky/tools-lite/pkg/imports"
 	"golang.org/x/mod/module"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
@@ -87,9 +87,9 @@ func (f ParsedGoFile) Position(pos token.Pos) protocol.Position {
 	}
 }
 
-func (s *GoLanguageDriver) FindGeneratedFiles(uri protocol.DocumentURI, fd protoreflect.FileDescriptor) ([]ParsedGoFile, error) {
-	pkgPath := fd.Options().(*descriptorpb.FileOptions).GetGoPackage()
-	if pkgPath == "" {
+func (s *GoLanguageDriver) FindGeneratedFiles(uri protocol.DocumentURI, fileOpts *descriptorpb.FileOptions, matchSourcePath string) ([]ParsedGoFile, error) {
+	pkgPath := fileOpts.GetGoPackage()
+	if pkgPath == "" && uri.IsFile() {
 		var err error
 		pkgPath, err = s.ImplicitGoPackagePath(uri.Path())
 		if err != nil {
@@ -100,7 +100,7 @@ func (s *GoLanguageDriver) FindGeneratedFiles(uri protocol.DocumentURI, fd proto
 	if strings.Contains(pkgPath, ";") {
 		// path/to/package;alias
 		pkgPath, pkgNameAlias, _ = strings.Cut(pkgPath, ";")
-	} else if !strings.Contains(pkgPath, "/") && !strings.Contains(pkgPath, ".") {
+	} else if uri.IsFile() && !strings.Contains(pkgPath, "/") && !strings.Contains(pkgPath, ".") {
 		// alias only
 		implicitPath, err := s.ImplicitGoPackagePath(uri.Path())
 		if err != nil {
@@ -126,8 +126,27 @@ func (s *GoLanguageDriver) FindGeneratedFiles(uri protocol.DocumentURI, fd proto
 		}
 		for filename, f := range pkg.Files {
 			preamble, ok := ParseGeneratedPreamble(f)
-			if !ok || preamble.Source != fd.Path() {
-				continue
+			if !ok {
+				if matchSourcePath != "" {
+					if matchSourcePath != preamble.Source {
+						continue
+					}
+				} else {
+					var uriPath string
+					if uri.IsFile() {
+						uriPath = uri.Path()
+					} else {
+						if u, err := url.Parse(string(uri)); err == nil {
+							uriPath = u.Path
+						} else {
+							continue
+						}
+					}
+					// if matchSourcePath is empty, check the base filename
+					if filepath.Base(filename) != filepath.Base(uriPath) {
+						continue
+					}
+				}
 			}
 			res = append(res, ParsedGoFile{
 				File:     f,

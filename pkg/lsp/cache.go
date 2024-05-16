@@ -273,7 +273,9 @@ func (c *Cache) FindTypeDescriptorAtLocation(params protocol.TextDocumentPositio
 		return nil, protocol.Range{}, err
 	}
 	root := enc.AST()
-
+	if root == nil {
+		return nil, protocol.Range{}, nil
+	}
 	token, comment := root.ItemAtOffset(offset)
 	if comment.IsValid() {
 		return nil, protocol.Range{}, nil

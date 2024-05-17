@@ -3,9 +3,11 @@ package lsp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	gsync "github.com/kralicky/gpkg/sync"
@@ -30,6 +32,7 @@ type Cache struct {
 	diagHandler *DiagnosticHandler
 	resultsMu   sync.RWMutex
 	results     linker.Files
+	settings    atomic.Pointer[Settings]
 
 	// partialResultsMu has an invariant that resultsMu is write-locked; it expects
 	// to be required only during compilation. This means that if resultsMu is
@@ -86,6 +89,8 @@ func NewCache(workspace protocol.WorkspaceFolder, opts ...CacheOption) *Cache {
 		partiallyLinkedResults: make(map[protocompile.ResolvedPath]linker.Result),
 		documentVersions:       newDocumentVersionQueue(),
 	}
+	cache.DidChangeConfiguration(context.TODO(), Settings{}) // load default settings
+
 	compiler.Hooks = protocompile.CompilerHooks{
 		PreInvalidate:  cache.preInvalidateHook,
 		PostInvalidate: cache.postInvalidateHook,
@@ -315,6 +320,12 @@ func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) (p
 		URI:   uri,
 		Range: toRange(ref.NodeInfo),
 	}, nil
+}
+
+func (c *Cache) DidChangeConfiguration(ctx context.Context, settings Settings) error {
+	slog.Info("Configuration updated", "settings", settings)
+	c.settings.Store(&settings)
+	return nil
 }
 
 type WorkspaceDescriptors interface {

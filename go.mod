@@ -14,6 +14,7 @@ require (
 	github.com/kralicky/protocompile v0.0.0-20240515213713-67f2e10cff9b
 	github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff
 	github.com/mattn/go-tty v0.0.5
+	github.com/mitchellh/mapstructure v1.5.0
 	github.com/spf13/cobra v1.8.0
 	github.com/stretchr/testify v1.9.0
 	golang.org/x/mod v0.17.0

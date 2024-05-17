@@ -16,6 +16,7 @@ import (
 	"github.com/kralicky/tools-lite/gopls/pkg/progress"
 	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
 	"github.com/kralicky/tools-lite/pkg/jsonrpc2"
+	"github.com/mitchellh/mapstructure"
 )
 
 type Server struct {
@@ -269,6 +270,16 @@ func (s *Server) Completion(ctx context.Context, params *protocol.CompletionPara
 // Initialized implements protocol.Server.
 func (s *Server) Initialized(ctx context.Context, params *protocol.InitializedParams) (err error) {
 	slog.Debug("Initialized")
+	if err := s.client.RegisterCapability(ctx, &protocol.RegistrationParams{
+		Registrations: []protocol.Registration{
+			{
+				ID:     "workspace/didChangeConfiguration",
+				Method: "workspace/didChangeConfiguration",
+			},
+		},
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -860,6 +871,45 @@ func (s *Server) ResolveCodeAction(ctx context.Context, codeAction *protocol.Cod
 	return codeAction, nil
 }
 
+// DidChangeConfiguration implements protocol.Server.
+func (s *Server) DidChangeConfiguration(ctx context.Context, params *protocol.DidChangeConfigurationParams) error {
+	s.cachesMu.RLock()
+	defer s.cachesMu.RUnlock()
+
+	for _, c := range s.caches {
+		resp, err := s.client.Configuration(ctx, &protocol.ParamConfiguration{
+			Items: []protocol.ConfigurationItem{
+				{
+					ScopeURI: &c.workspace.URI,
+					Section:  "protols",
+				},
+			},
+		})
+		if err != nil {
+			slog.Error("failed to fetch configuration for workspace", "workspace", c.workspace.Name, "error", err)
+			continue
+		}
+		if len(resp) != 1 {
+			slog.Error("unexpected number of configuration items received", "workspace", c.workspace.Name, "items", resp)
+			continue
+		}
+		var settings Settings
+		decoder, _ := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+			ErrorUnused:      false,
+			ErrorUnset:       false,
+			ZeroFields:       false,
+			WeaklyTypedInput: true,
+			Result:           &settings,
+		})
+		if err := decoder.Decode(resp[0]); err != nil {
+			slog.Error("failed to decode configuration", "workspace", c.workspace.Name, "error", err)
+			continue
+		}
+		c.DidChangeConfiguration(ctx, settings)
+	}
+	return nil
+}
+
 // =====================
 // Unimplemented Methods
 // =====================
@@ -1041,11 +1091,6 @@ func (s *Server) Implementation(ctx context.Context, params *protocol.Implementa
 // IncomingCalls implements protocol.Server.
 func (*Server) IncomingCalls(context.Context, *protocol.CallHierarchyIncomingCallsParams) ([]protocol.CallHierarchyIncomingCall, error) {
 	return nil, notImplemented("IncomingCalls")
-}
-
-// DidChangeConfiguration implements protocol.Server.
-func (*Server) DidChangeConfiguration(context.Context, *protocol.DidChangeConfigurationParams) error {
-	return notImplemented("DidChangeConfiguration")
 }
 
 // DidChangeNotebookDocument implements protocol.Server.

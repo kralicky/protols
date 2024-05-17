@@ -123,6 +123,23 @@
 					"scope": "window",
 					"type": "string",
 					"description": "Path to an alternate protols binary to use."
+				},
+				"protols.inlayHints": {
+					"scope": "window",
+					"type": "object",
+					"description": "Configure visibility of inlay hints.",
+					"properties": {
+						"imports": {
+							"type": "boolean",
+							"default": true,
+							"description": "Show inlay hints for imports."
+						},
+						"extensionTypes": {
+							"type": "boolean",
+							"default": true,
+							"description": "Show inlay hints for extension types."
+						}
+					}
 				}
 			}
 		},

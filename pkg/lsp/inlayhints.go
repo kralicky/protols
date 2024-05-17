@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/kralicky/protocompile/ast"
 	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
@@ -18,8 +19,13 @@ func (c *Cache) ComputeInlayHints(doc protocol.TextDocumentIdentifier, rng proto
 	}
 
 	hints := []protocol.InlayHint{}
-	hints = append(hints, c.computeMessageLiteralHints(doc, rng)...)
-	hints = append(hints, c.computeImportHints(doc, rng)...)
+	settings := c.settings.Load()
+	if settings.InlayHints.GetExtensionTypes() {
+		hints = append(hints, c.computeMessageLiteralHints(doc, rng)...)
+	}
+	if settings.InlayHints.GetImports() {
+		hints = append(hints, c.computeImportHints(doc, rng)...)
+	}
 	return hints, nil
 }
 
@@ -133,14 +139,31 @@ func (c *Cache) computeImportHints(doc protocol.TextDocumentIdentifier, rng prot
 		resolvedPath := dependencyPaths[i]
 		nameInfo := resAst.NodeInfo(imp.Name)
 		if resolvedPath != importPath {
-			hints = append(hints, protocol.InlayHint{
-				Kind:         protocol.Type,
-				PaddingLeft:  true,
-				PaddingRight: false,
-				Position: protocol.Position{
+			var position protocol.Position
+			var labelValue string
+			var paddingLeft bool
+			if strings.HasSuffix(resolvedPath, importPath) {
+				// if possible, insert the inlay hint within the string as a prefix
+				position = protocol.Position{
+					Line:      uint32(nameInfo.Start().Line) - 1,
+					Character: uint32(nameInfo.Start().Col),
+				}
+				labelValue = strings.TrimSuffix(resolvedPath, importPath)
+			} else {
+				// otherwise, just show it at the end of the line
+				position = protocol.Position{
 					Line:      uint32(nameInfo.Start().Line) - 1,
 					Character: uint32(nameInfo.End().Col) + 2,
-				},
+				}
+				labelValue = resolvedPath
+				paddingLeft = true
+			}
+
+			hints = append(hints, protocol.InlayHint{
+				Kind:         protocol.Type,
+				PaddingLeft:  paddingLeft,
+				PaddingRight: false,
+				Position:     position,
 				TextEdits: []protocol.TextEdit{
 					{
 						Range:   adjustColumns(toRange(nameInfo), +1, -1),
@@ -152,7 +175,7 @@ func (c *Cache) computeImportHints(doc protocol.TextDocumentIdentifier, rng prot
 						Tooltip: &protocol.OrPTooltipPLabel{
 							Value: fmt.Sprintf("Import resolves to %s", resolvedPath),
 						},
-						Value: resolvedPath,
+						Value: labelValue,
 					},
 				},
 			})

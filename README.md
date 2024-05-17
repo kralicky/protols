@@ -56,6 +56,7 @@ Features in progress:
   - [x] Go module path lookup with inline sources
   - [x] Go module path lookup with missing proto sources synthesized from generated code
   - [x] Context-sensitive imports and pattern detection
+  - [x] Import path lookup from existing generated Go code
   - [x] Fully interactive sources generated from well-known (or any other) descriptors
 - [x] Legacy compatibility
   - [x] gogoproto sources (k8s, etc.)

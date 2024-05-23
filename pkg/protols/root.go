@@ -4,14 +4,16 @@ import (
 	"os"
 
 	"github.com/kralicky/protols/pkg/protols/commands"
+	"github.com/kralicky/protols/pkg/version"
 	"github.com/spf13/cobra"
 )
 
 // rootCmd represents the base command when called without any subcommands
 func BuildRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "protols",
-		Short: "Protobuf Language Server",
+		Use:     "protols",
+		Short:   "Protobuf Language Server",
+		Version: version.FriendlyVersion(),
 	}
 
 	rootCmd.AddCommand(commands.BuildFmtCmd())

@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/kralicky/protols/pkg/lsprpc"
+	"github.com/kralicky/protols/pkg/version"
 	"github.com/kralicky/tools-lite/pkg/event"
 	"github.com/kralicky/tools-lite/pkg/event/core"
 	"github.com/kralicky/tools-lite/pkg/event/keys"
@@ -24,6 +25,7 @@ func BuildServeCmd() *cobra.Command {
 		Use:   "serve",
 		Short: "Start the language server",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.Printf("Starting protols %s\n", version.FriendlyVersion())
 			slog.SetDefault(slog.New(slog.NewTextHandler(cmd.OutOrStderr(), &slog.HandlerOptions{
 				AddSource: true,
 				Level:     slog.LevelDebug,

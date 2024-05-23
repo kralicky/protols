@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+    paths-ignore:
+    - 'docs/**'
+    - '*.md'
+    - '.gitignore'
+  push:
+    branches:
+    - main
+    paths-ignore:
+    - 'docs/**'
+    - '*.md'
+    - '.gitignore'
+
+permissions:
+  contents: read
+
+jobs:
+  test-protols:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: 1.22
+    - name: Test
+      run: go test -v -timeout 30s -coverprofile=cover.out -covermode=atomic -race ./...
+    - name: Upload coverage
+      uses: codecov/codecov-action@v4.4.1
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        file: ./cover.out
+        flags: unittests
+        verbose: true
+

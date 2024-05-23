@@ -1,0 +1,42 @@
+# This is an example .goreleaser.yml file with some sensible defaults.
+# Make sure to check the documentation at https://goreleaser.com
+before:
+  hooks:
+    # You may remove this if you don't use go modules.
+    - go mod tidy
+builds:
+    - id: protols
+      main: ./cmd/protols
+      goos:
+        - linux
+      goarch:
+        - amd64
+      binary: protols
+      ldflags:
+        - -extldflags "-static"
+        - -s
+        - -w
+        - -X github.com/kralicky/protols/pkg/version.Version={{.Version}} 
+        - -X github.com/kralicky/protols/pkg/version.Commit={{.Commit}}
+      flags:
+        - -trimpath
+      env:
+        - CGO_ENABLED=0
+
+archives:
+    - id: protols
+      builds:
+        - protols
+      name_template: '{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}{{ if .Mips }}_{{ .Mips }}{{ end }}'
+checksum:
+  name_template: 'checksums.txt'
+release:
+  prerelease : auto
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'

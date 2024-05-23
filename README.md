@@ -1,5 +1,9 @@
 # Protobuf Language Server
 
+![Release](https://img.shields.io/github/v/release/kralicky/protols)
+[![CI](https://github.com/kralicky/protols/actions/workflows/ci.yaml/badge.svg)](https://github.com/kralicky/protols/actions/workflows/test.yaml)
+[![License](https://img.shields.io/github/license/kralicky/protols)](./LICENSE)
+
 # Coming Soon™
 
 A language server implementation for Protocol Buffers. Still in development.

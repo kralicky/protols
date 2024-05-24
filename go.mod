@@ -9,7 +9,7 @@ require (
 	github.com/google/cel-go v0.20.1
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
-	github.com/kralicky/codegen v0.0.0-20240515213036-3353856e7beb
+	github.com/kralicky/codegen v0.0.0-20240522012557-5193d3fdbeca
 	github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f
 	github.com/kralicky/protocompile v0.0.0-20240515213713-67f2e10cff9b
 	github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff
@@ -19,14 +19,14 @@ require (
 	github.com/stretchr/testify v1.9.0
 	golang.org/x/mod v0.17.0
 	golang.org/x/sync v0.7.0
-	google.golang.org/genproto v0.0.0-20240227224415-6ceb2ff114de
-	google.golang.org/genproto/googleapis/api v0.0.0-20240513163218-0867130af1f8
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20240509183442-62759503f434
+	google.golang.org/genproto v0.0.0-20240521202816-d264139d666e
+	google.golang.org/genproto/googleapis/api v0.0.0-20240521202816-d264139d666e
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20240521202816-d264139d666e
 	google.golang.org/protobuf v1.34.1
 )
 
 require (
-	cloud.google.com/go/dlp v1.11.2 // indirect
+	cloud.google.com/go/dlp v1.13.0 // indirect
 	github.com/AlekSi/pointer v1.0.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -45,11 +45,11 @@ require (
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/stoewer/go-strcase v1.3.0 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
-	golang.org/x/net v0.22.0 // indirect
+	golang.org/x/net v0.25.0 // indirect
 	golang.org/x/sys v0.20.0 // indirect
 	golang.org/x/term v0.20.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
-	google.golang.org/grpc v1.63.2 // indirect
+	golang.org/x/text v0.15.0 // indirect
+	google.golang.org/grpc v1.64.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )

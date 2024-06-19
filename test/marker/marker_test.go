@@ -16,6 +16,7 @@ import (
 	"go/types"
 	"io/fs"
 	"log"
+	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
@@ -90,6 +91,10 @@ func Test(t *testing.T) {
 			t.Skip("golang/go#64473: skipping with -short: this test is too slow on darwin and solaris builders")
 		}
 	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		AddSource: true,
+		Level:     slog.LevelDebug,
+	})))
 	// The marker tests must be able to run go/packages.Load.
 	testenv.NeedsGoPackages(t)
 

@@ -42,8 +42,8 @@ package bar;
 import "foo.proto";
 
 message BarMsg { //@loc(defBarMsg, "BarMsg"), refs("BarMsg", defBarMsg, refBarMsgFieldType)
-  option (foo.fooEnumMsgOpt)     = FooEnum0; //@loc(refFooEnum0OptVal, "FooEnum0"), loc(refQualifiedFooEnumMsgOpt, "(foo.fooEnumMsgOpt)")
-  option (foo.fooMsgOpt).fooEnum = FooEnum1; //@loc(refFooEnum1FieldRefVal, "FooEnum1"), loc(refQualifiedFooMsgOpt, "(foo.fooMsgOpt)"), loc(refFooEnumOptFieldRef, "fooEnum")
+  option (foo.fooEnumMsgOpt)     = FooEnum0; //@loc(refFooEnum0OptVal, "FooEnum0"), loc(refQualifiedFooEnumMsgOpt, "foo.fooEnumMsgOpt")
+  option (foo.fooMsgOpt).fooEnum = FooEnum1; //@loc(refFooEnum1FieldRefVal, "FooEnum1"), loc(refQualifiedFooMsgOpt, "foo.fooMsgOpt"), loc(refFooEnumOptFieldRef, "fooEnum")
 
   foo.FooMsg fooMsg = 1 [ //@loc(refFooMsgQualifiedFieldType, "foo.FooMsg"), loc(defBarMsgFooMsgField, "fooMsg"), refs("fooMsg", defBarMsgFooMsgField)
     (foo.fooEnumFieldOpt) = FooEnum0 //@loc(refFooEnum0FieldLitVal, "FooEnum0")

@@ -62,6 +62,9 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modific
 	c.resolver.UpdateURIPathMappings(modifications)
 
 	for _, m := range modifications {
+		if m.Action == file.Open && m.LanguageID != "protobuf" {
+			continue
+		}
 		path, err := c.resolver.URIToPath(m.URI)
 		if err != nil {
 			slog.With(

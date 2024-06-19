@@ -11,7 +11,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/kralicky/codegen v0.0.0-20240522012557-5193d3fdbeca
 	github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f
-	github.com/kralicky/protocompile v0.0.0-20240515213713-67f2e10cff9b
+	github.com/kralicky/protocompile v0.0.0-20240619180838-57d9401fcbbc
 	github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff
 	github.com/mattn/go-tty v0.0.5
 	github.com/mitchellh/mapstructure v1.5.0
@@ -33,12 +33,12 @@ require (
 	github.com/iancoleman/strcase v0.3.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
+	github.com/kralicky/go-adaptive-radix-tree v0.0.0-20240619012453-a8f80032ba31 // indirect
 	github.com/mattn/go-colorable v0.1.4 // indirect
 	github.com/mattn/go-isatty v0.0.10 // indirect
 	github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b // indirect
 	github.com/olebedev/when v1.0.0 // indirect
 	github.com/pkg/errors v0.8.1 // indirect
-	github.com/plar/go-adaptive-radix-tree v1.0.5 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_model v0.6.0 // indirect
 	github.com/prometheus/common v0.53.0 // indirect

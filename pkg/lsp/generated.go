@@ -161,7 +161,7 @@ func GoIdent(desc protoreflect.Descriptor) string {
 }
 
 func tryResolvePathToGeneratedImport(files []ParsedGoFile, unresolvedPath string, whence protocompile.ImportContext) (string, error) {
-	// heuristic 1: if there is a unique go import path which suffix-matches `path.Dir(path)`, use it
+	// if there is a unique go import path which suffix-matches `path.Dir(path)`, use it
 	pathSuffix := path.Dir(unresolvedPath)
 	var candidates []string
 	for _, f := range files {
@@ -178,6 +178,16 @@ func tryResolvePathToGeneratedImport(files []ParsedGoFile, unresolvedPath string
 	if len(candidates) == 1 {
 		return path.Join(candidates[0], path.Base(unresolvedPath)), nil
 	}
+
+	// I wrote the comment below late at night a while ago but can't remember
+	// what exactly the situation was or why i came to that conclusion, because
+	// this does not seem like an issue. keeping it here for posterity though
+
+	// handle files that import other files in the same package - the go code generator
+	// would not generate import statements for these files, since they are in the same package.
+	// example cloud.google.com/go/monitoring/apiv3/v2/monitoringpb/metric.proto imports
+	// common.proto but it's in the same package, so the generated go code does not import it.
+	// however, we need it to resolve some type references.
 
 	return "", fmt.Errorf("could not determine previously-generated import path for %s", unresolvedPath)
 }

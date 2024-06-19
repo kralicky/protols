@@ -70,7 +70,10 @@ func (s *GoLanguageDriver) RefreshModules() {
 }
 
 func (s *GoLanguageDriver) HasGoModule() bool {
-	return s.localModDir != "" && s.localModName != ""
+	if s == nil {
+		return false
+	}
+	return s.localModDir != "" && s.localModName != "" && s.moduleResolver != nil
 }
 
 type ParsedGoFile struct {

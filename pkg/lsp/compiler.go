@@ -150,9 +150,12 @@ func (c *Cache) compileLocked(protos ...string) {
 	}
 	c.partialResultsMu.Unlock()
 
-	syntheticFiles := c.resolver.CheckIncompleteDescriptors(res.Files)
+	syntheticFiles := c.resolver.CheckIncompleteDescriptors(c.results)
 	if len(syntheticFiles) == 0 {
 		return
+	}
+	if err != nil {
+		slog.Debug("error checking incomplete descriptors", "err", err)
 	}
 	slog.Debug("building new synthetic sources", "sources", len(syntheticFiles))
 	c.compileLocked(syntheticFiles...)

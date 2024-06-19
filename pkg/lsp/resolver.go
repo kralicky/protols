@@ -21,6 +21,7 @@ import (
 	"github.com/kralicky/tools-lite/gopls/pkg/cache"
 	"github.com/kralicky/tools-lite/gopls/pkg/file"
 	"github.com/kralicky/tools-lite/gopls/pkg/protocol"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
@@ -217,9 +218,27 @@ func (r *Resolver) CheckIncompleteDescriptors(results linker.Files) []string {
 				if res == nil {
 					continue
 				}
+				resolver := linker.ResolverFromFile(res)
+				fdp := res.(linker.Result).FileDescriptorProto()
+				data, err := proto.Marshal(fdp)
+				if err != nil {
+					slog.With(
+						"uri", string(uri),
+						"error", err,
+					).Error("failed to generate synthetic file descriptor")
+					continue
+				}
+				if err := (proto.UnmarshalOptions{Resolver: resolver}).Unmarshal(data, fdp); err != nil {
+					slog.With(
+						"uri", string(uri),
+						"error", err,
+					).Error("failed to generate synthetic file descriptor")
+					continue
+				}
+
 				newFile, err := protodesc.FileOptions{
 					AllowUnresolvable: true,
-				}.New(protodesc.ToFileDescriptorProto(res), linker.ResolverFromFile(res))
+				}.New(fdp, resolver)
 				if err != nil {
 					slog.With(
 						"uri", string(uri),
@@ -320,7 +339,7 @@ func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportC
 	if result, err := r.checkGoModule(path, whence); err == nil {
 		lg.Debug("resolved to go module")
 		return result, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
+	} else if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, ErrNoModule) {
 		lg.Debug("failed to check go module")
 		return protocompile.SearchResult{}, err
 	}
@@ -375,6 +394,9 @@ func (r *Resolver) checkFS(path string, whence protocompile.ImportContext) (prot
 }
 
 func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext) (protocompile.SearchResult, error) {
+	if !r.goLanguageDriver.HasGoModule() {
+		return protocompile.SearchResult{}, ErrNoModule
+	}
 	if strings.HasPrefix(path, "github.com/gogo/googleapis/") {
 		// these are vendored in the gogo/protobuf repo, so we need to special case them
 		// to avoid conflicting symbols
@@ -613,6 +635,10 @@ func FastLookupGoModule(f io.Reader) (string, error) {
 }
 
 func (r *Resolver) tryReverseLookupLocked(path string, whence protocompile.ImportContext) (string, error) {
+	if !r.goLanguageDriver.HasGoModule() {
+		return "", ErrNoModule
+	}
+
 	fd := whence.FileDescriptorProto()
 	uri, ok := r.fileURIsByPath[fd.GetName()]
 	if !ok {

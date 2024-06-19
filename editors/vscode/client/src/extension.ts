@@ -1,14 +1,19 @@
 import * as vscode from "vscode"
 import { LanguageClient } from "vscode-languageclient/node"
 import { ASTViewer, fromProtoAstUri } from "./astviewer"
-import { buildLanguageClient } from "./client"
+import { ProtolsLanguageClient, buildLanguageClient } from "./client"
 import { initCommands } from "./commands"
 import { Location } from "vscode-languageserver-types"
 
 let client: LanguageClient
 
 export async function activate(context: vscode.ExtensionContext) {
-  const client = await buildLanguageClient(context)
+  let client: ProtolsLanguageClient
+  try {
+    client = await buildLanguageClient(context)
+  } catch {
+    return
+  }
   vscode.workspace.registerTextDocumentContentProvider("proto", client)
   // Start the client. This will also launch the server
   client.start()

@@ -1,60 +1,57 @@
-# Protobuf Language Server
+# <img srg="https://raw.githubusercontent.com/kralicky/protols/main/editors/vscode/logo.png" width="64" height="64" align="left"/> Protobuf Language Server
 
 ![Release](https://img.shields.io/github/v/release/kralicky/protols)
 [![CI](https://github.com/kralicky/protols/actions/workflows/ci.yaml/badge.svg)](https://github.com/kralicky/protols/actions/workflows/test.yaml)
 [![License](https://img.shields.io/github/license/kralicky/protols)](./LICENSE)
 
-# Coming Soon™
+A language server implementation for Protocol Buffers. Under active development; some features are still a work in progress.
 
-A language server implementation for Protocol Buffers. Still in development.
+### LSP features:
 
-Features in progress:
-
-- [ ] LSP features:
-  - [x] Document Formatting
-  - [x] Full semantic token support
-    - [ ] (partial) Embedded CEL expression semantic tokens
-  - [x] Document and workspace diagnostics
-  - [x] Import links
-  - [x] Find references/definition
-    - [x] Types and enums
-    - [x] Imports
-    - [x] Options, extensions, and field references
-    - [x] Inlay Hints
-    - [x] Package names and prefixes
-  - [x] Hover
-    - [x] Types and enums
-    - [x] Options, extensions, and field references
-    - [x] Inlay Hints
-    - [x] Package names and prefixes
-    - [ ] CEL tokens
-  - [ ] Code Actions & Refactors
-    - [x] Identify and remove unused imports
-    - [x] Add missing import for unresolved symbol
-    - [x] Auto-fix imports on save
-    - [x] Simplify repeated option declarations
-    - [x] Simplify repeated message literal fields
-    - [ ] Simplify map literal fields
-    - [x] Extract fields to new message
-    - [x] Inline fields from message
-    - [x] Renumber message fields
-  - [x] Code Lens
-    - [x] Generate file/package/workspace
-  - [x] Inlay hints
-    - [x] Extension types
-    - [x] Resolved import paths
-  - [x] Rename symbols
-  - [x] Multi-workspace support
-  - [x] Document symbols
-  - [x] Workspace symbol query with fuzzy matching
-  - [ ] Completion:
-    - [x] Message and enum types
-    - [x] Extendee types
-    - [x] Context-sensitive keywords
-    - [x] Import paths
-    - [x] Package names
-    - [x] Message and field literals
-    - [ ] Field literal values
+- [x] Document Formatting
+- [x] Full semantic token support
+  - [ ] (partial) Embedded CEL expression semantic tokens
+- [x] Document and workspace diagnostics
+- [x] Import links
+- [x] Find references/definition
+  - [x] Types and enums
+  - [x] Imports
+  - [x] Options, extensions, and field references
+  - [x] Inlay Hints
+  - [x] Package names and prefixes
+- [x] Hover
+  - [x] Types and enums
+  - [x] Options, extensions, and field references
+  - [x] Inlay Hints
+  - [x] Package names and prefixes
+  - [ ] CEL tokens
+- [ ] Code Actions & Refactors
+  - [x] Identify and remove unused imports
+  - [x] Add missing import for unresolved symbol
+  - [x] Auto-fix imports on save
+  - [x] Simplify repeated option declarations
+  - [x] Simplify repeated message literal fields
+  - [ ] Simplify map literal fields
+  - [x] Extract fields to new message
+  - [x] Inline fields from message
+  - [x] Renumber message fields
+- [x] Code Lens
+  - [x] Generate file/package/workspace
+- [x] Inlay hints
+  - [x] Extension types
+  - [x] Resolved import paths
+- [x] Rename symbols
+- [x] Multi-workspace support
+- [x] Document symbols
+- [x] Workspace symbol query with fuzzy matching
+- [ ] Completion:
+  - [x] Message and enum types
+  - [x] Extendee types
+  - [x] Context-sensitive keywords
+  - [x] Import paths
+  - [x] Package names
+  - [x] Message and field literals
+  - [ ] Field literal values
 - [x] Import resolution
   - [x] Local/relative paths
   - [x] Go module path lookup with inline sources

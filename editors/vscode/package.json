@@ -1,9 +1,11 @@
 {
 	"name": "protols-vscode",
+	"preview": true,
+	"displayName": "Protobuf Language Server",
 	"description": "Protobuf Language Server extension for Visual Studio Code",
 	"author": "Joe Kralicky",
 	"license": "Apache-2.0",
-	"version": "0.1.0",
+	"version": "0.5.0",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/kralicky/protols"

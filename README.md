@@ -1,4 +1,4 @@
-# <img srg="https://raw.githubusercontent.com/kralicky/protols/main/editors/vscode/logo.png" width="64" height="64" align="left"/> Protobuf Language Server
+<img src="https://raw.githubusercontent.com/kralicky/protols/main/editors/vscode/logo.png" width="96" align="left"/> <h1 align="left"><p>Protobuf Language Server</p></h1>
 
 ![Release](https://img.shields.io/github/v/release/kralicky/protols)
 [![CI](https://github.com/kralicky/protols/actions/workflows/ci.yaml/badge.svg)](https://github.com/kralicky/protols/actions/workflows/test.yaml)

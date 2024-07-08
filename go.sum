@@ -10,8 +10,8 @@ github.com/Netflix/go-expect v0.0.0-20220104043353-73e0943537d2 h1:+vx7roKuyA63n
 github.com/Netflix/go-expect v0.0.0-20220104043353-73e0943537d2/go.mod h1:HBCaDeC1lPdgDeDbhX8XFpy1jqjK0IBG8W5K+xYqA0w=
 github.com/antlr4-go/antlr/v4 v4.13.0 h1:lxCg3LAv+EUK6t1i0y1V6/SLeUi0eKEKdhQAlS8TVTI=
 github.com/antlr4-go/antlr/v4 v4.13.0/go.mod h1:pfChB/xh/Unjila75QW7+VU4TSnWnnk9UTnmpPaOR2g=
-github.com/bufbuild/protovalidate-go v0.6.2 h1:U/V3CGF0kPlR12v41rjO4DrYZtLcS4ZONLmWN+rJVCQ=
-github.com/bufbuild/protovalidate-go v0.6.2/go.mod h1:4BR3rKEJiUiTy+sqsusFn2ladOf0kYmA2Reo6BHSBgQ=
+github.com/bufbuild/protovalidate-go v0.6.3 h1:wxQyzW035zM16Binbaz/nWAzS12dRIXhZdSUWRY7Fv0=
+github.com/bufbuild/protovalidate-go v0.6.3/go.mod h1:J4PtwP9Z2YAGgB0+o+tTWEDtLtXvz/gfhFZD8pbzM/U=
 github.com/cpuguy83/go-md2man/v2 v2.0.4/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=
 github.com/creack/pty v1.1.17 h1:QeVUsEDNrLBW4tMgZHvxy18sKtr6VI492kBhUfhDJNI=
 github.com/creack/pty v1.1.17/go.mod h1:MOBLtS5ELjhRRrroQr9kyvTxUAFNvYEK993ew/Vr4O4=

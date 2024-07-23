@@ -13,7 +13,7 @@ require (
 	github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f
 	github.com/kralicky/protocompile v0.0.0-20240619225839-bdb3c73b0a9f
 	github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff
-	github.com/mattn/go-tty v0.0.5
+	github.com/mattn/go-tty v0.0.7
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/spf13/cobra v1.8.1
 	github.com/stretchr/testify v1.9.0
@@ -34,8 +34,8 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
 	github.com/kralicky/go-adaptive-radix-tree v0.0.0-20240619012453-a8f80032ba31 // indirect
-	github.com/mattn/go-colorable v0.1.4 // indirect
-	github.com/mattn/go-isatty v0.0.10 // indirect
+	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b // indirect
 	github.com/olebedev/when v1.0.0 // indirect
 	github.com/pkg/errors v0.8.1 // indirect
@@ -46,7 +46,7 @@ require (
 	github.com/stoewer/go-strcase v1.3.0 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
 	golang.org/x/net v0.25.0 // indirect
-	golang.org/x/sys v0.20.0 // indirect
+	golang.org/x/sys v0.22.0 // indirect
 	golang.org/x/term v0.20.0 // indirect
 	golang.org/x/text v0.15.0 // indirect
 	google.golang.org/grpc v1.64.0 // indirect

@@ -183,6 +183,9 @@ func semanticTokensRange(cache *Cache, doc protocol.TextDocumentIdentifier, rng 
 		maybeLinkRes: maybeLinkRes,
 	}
 	a := enc.AST()
+	if a == nil {
+		return nil, fmt.Errorf("no AST for %s", doc.URI)
+	}
 	startOff, endOff, _ := mapper.RangeOffsets(rng)
 	startToken := a.TokenAtOffset(startOff)
 	endToken := a.TokenAtOffset(endOff)

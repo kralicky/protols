@@ -124,7 +124,7 @@ func (c *Cache) Rename(params *protocol.RenameParams) (*protocol.WorkspaceEdit, 
 
 	editsByDocument := map[protocol.DocumentURI][]protocol.TextEdit{}
 	for _, ref := range append(refs, definition) {
-		node := ref.Node
+		node := ast.Unwrap(ref.Node)
 		// only edit the short name, not the qualified name (if it is qualified)
 		// we can do this adjustment using only the range
 		var editRange ast.SourceSpan
@@ -170,6 +170,8 @@ func (c *Cache) Rename(params *protocol.RenameParams) (*protocol.WorkspaceEdit, 
 			editRange = ref.NodeInfo.Internal().ParentFile().NodeInfo(node.Name)
 		case *ast.RPCNode:
 			editRange = ref.NodeInfo.Internal().ParentFile().NodeInfo(node.Name)
+		case *ast.RPCTypeNode:
+			editRange = ref.NodeInfo.Internal().ParentFile().NodeInfo(node.MessageType)
 		default:
 			return nil, fmt.Errorf("cannot rename %T", node)
 		}

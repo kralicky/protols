@@ -1,0 +1,17 @@
+syntax = "proto3";
+package grpc;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/kralicky/protols/sdk/codegen/generators/golang/grpc";
+
+extend google.protobuf.FileOptions {
+  GeneratorOptions generator = 25400;
+}
+
+message GeneratorOptions {
+  // Equivalent to the 'require_unimplemented_servers' flag. Defaults to false.
+  optional bool require_unimplemented = 1;
+  // Equivalent to the 'use_generic_streams_experimental' flag. Defaults to true.
+  optional bool use_generic_streams = 2;
+}

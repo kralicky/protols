@@ -799,6 +799,8 @@ func visitEnclosingRange(tracker *paths.AncestorTracker, paths *[]protopath.Valu
 func DefaultEnclosingRangeVisitor(tracker *paths.AncestorTracker, paths *[]protopath.Values) func(ast.Node) bool {
 	return func(node ast.Node) bool {
 		switch node.(type) {
+		case *ast.FileNode:
+			return true
 		case *ast.ImportNode,
 			*ast.SyntaxNode,
 			*ast.MessageNode,

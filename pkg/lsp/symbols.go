@@ -28,6 +28,10 @@ func (c *Cache) documentSymbolsForFileLocked(uri protocol.DocumentURI) ([]protoc
 	var symbols []protocol.DocumentSymbol
 
 	fn := f.AST()
+	if fn == nil {
+		return nil, nil
+	}
+
 	for _, decl := range fn.Decls {
 		switch node := decl.Unwrap().(type) {
 		case *ast.MessageNode:

@@ -434,6 +434,8 @@ func newFieldVisitor(tracker *paths.AncestorTracker, paths *[]protopath.Values) 
 		switch node.(type) {
 		case *ast.MessageNode, *ast.GroupNode, *ast.FieldNode, *ast.MapFieldNode:
 			return visitEnclosingRange(tracker, paths)
+		case *ast.FileNode:
+			return true
 		}
 		return false
 	}
@@ -480,7 +482,7 @@ func extractFields(ctx context.Context, request *protocol.CodeActionParams, link
 				continue
 			}
 			if parentNodePath.Len() == 0 {
-				parentNodePath = paths.Slice(path, 0, parentNodePath.Len()-1)
+				parentNodePath = paths.Slice(path, 0, path.Len()-1)
 			} else if !parentNodePath.Index(-1).Value.Equal(path.Index(-1).Value) {
 				return // fields in the range must share the same parent
 			}

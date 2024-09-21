@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/url"
 	"os"
 	"path"
@@ -245,6 +246,25 @@ func (s *GoLanguageDriver) SynthesizeFromGoSource(importName string, res GoModul
 	}, goparser.ParseComments)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", os.ErrNotExist, err)
+	}
+	if len(packages) > 1 {
+		maps.DeleteFunc(packages, func(k string, v *goast.Package) bool {
+			filesIgnored := 0
+			for _, f := range v.Files {
+				if len(f.Comments) == 0 {
+					continue
+				}
+				// only check the first comment group
+				for _, comment := range f.Comments[0].List {
+					if strings.HasPrefix(comment.Text, "//go:build ignore") ||
+						strings.HasPrefix(comment.Text, "// +build ignore") {
+						filesIgnored++
+						break
+					}
+				}
+			}
+			return filesIgnored == len(v.Files)
+		})
 	}
 	if len(packages) != 1 {
 		return nil, fmt.Errorf("wrong number of packages found: %d", len(packages))

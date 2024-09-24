@@ -1,5 +1,5 @@
-buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.34.2-20240717164558-a6c49f84cc0f.2 h1:SZRVx928rbYZ6hEKUIN+vtGDkl7uotABRWGY4OAg5gM=
-buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.34.2-20240717164558-a6c49f84cc0f.2/go.mod h1:ylS4c28ACSI59oJrOdW4pHS4n0Hw4TgSPHn8rpHl4Yw=
+buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.34.2-20240920164238-5a7b106cbb87.2 h1:hl0FrmGlNpQZIGvU1/jDz0lsPDd0BhCE0QDRwPfLZcA=
+buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.34.2-20240920164238-5a7b106cbb87.2/go.mod h1:ylS4c28ACSI59oJrOdW4pHS4n0Hw4TgSPHn8rpHl4Yw=
 cloud.google.com/go/dlp v1.17.0 h1:BrKrhNjAi5u8EgIadv1mcjEX4bB7FPPcRvr0Cf9bdN4=
 cloud.google.com/go/dlp v1.17.0/go.mod h1:9LuCkaCRZxWZ6HyqkmV3/PW0gKIVKoUVNjf0yMKVqMs=
 github.com/AlecAivazis/survey/v2 v2.3.7 h1:6I/u8FvytdGsgonrYsVn2t8t4QiRnh6QSTqkkhIiSjQ=
@@ -10,8 +10,8 @@ github.com/Netflix/go-expect v0.0.0-20220104043353-73e0943537d2 h1:+vx7roKuyA63n
 github.com/Netflix/go-expect v0.0.0-20220104043353-73e0943537d2/go.mod h1:HBCaDeC1lPdgDeDbhX8XFpy1jqjK0IBG8W5K+xYqA0w=
 github.com/antlr4-go/antlr/v4 v4.13.1 h1:SqQKkuVZ+zWkMMNkjy5FZe5mr5WURWnlpmOuzYWrPrQ=
 github.com/antlr4-go/antlr/v4 v4.13.1/go.mod h1:GKmUxMtwp6ZgGwZSva4eWPC5mS6vUAmOABFgjdkM7Nw=
-github.com/bufbuild/protovalidate-go v0.6.5 h1:WucDKXIbK22WjkO8A8J6Yyxxy0jl91Oe9LSMduq3YEE=
-github.com/bufbuild/protovalidate-go v0.6.5/go.mod h1:LHDiGCWSM3GagZEnyEZ1sPtFwi6Ja4tVTi/DCc+iDFI=
+github.com/bufbuild/protovalidate-go v0.7.0 h1:MYU9GSZM7TSsWNywvyXoEc8y3kc1MNqD3k5mddIBEL4=
+github.com/bufbuild/protovalidate-go v0.7.0/go.mod h1:PHV5pFuWlRzdDW02/cmVyNzdiQ+RNNwo7idGxdzS7o4=
 github.com/bufbuild/protoyaml-go v0.1.11 h1:Iyixd6Y5dx6ws6Uh8APgC1lMyvXt710NayoY8cY0Vj8=
 github.com/bufbuild/protoyaml-go v0.1.11/go.mod h1:KCBItkvZOK/zwGueLdH1Wx1RLyFn5rCH7YjQrdty2Wc=
 github.com/cpuguy83/go-md2man/v2 v2.0.4/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=

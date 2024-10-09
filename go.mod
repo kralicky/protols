@@ -3,7 +3,7 @@ module github.com/kralicky/protols
 go 1.23.0
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.34.2-20240717164558-a6c49f84cc0f.2
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.35.1-20240920164238-5a7b106cbb87.1
 	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/bufbuild/protovalidate-go v0.6.5
 	github.com/google/cel-go v0.21.0
@@ -23,7 +23,7 @@ require (
 	google.golang.org/genproto v0.0.0-20240814211410-ddb44dafa142
 	google.golang.org/genproto/googleapis/api v0.0.0-20240814211410-ddb44dafa142
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240814211410-ddb44dafa142
-	google.golang.org/protobuf v1.34.2
+	google.golang.org/protobuf v1.35.1
 )
 
 require (

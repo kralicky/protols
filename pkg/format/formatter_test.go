@@ -212,19 +212,44 @@ message Foo {
   ];
 }`[1:],
 		},
+		13: {
+			input: `
+message Foo {
+reserved 50; // comment
+repeated string field1 = 52;
+optional string field2 = 84 [    (opt) = {foo: true, bar: ENUM_VALUE}
+];
+optional string                 field3              = 101;
+optional string                 field4 = 102 [(opt).test = true];
+optional bool                   field5   = 106;
+optional Aaaaaaaaaaaaaaaaaaaaaa field6                      = 116;}
+`[1:],
+			want: `
+message Foo {
+  reserved 50; // comment
+  repeated string                 field1 = 52;
+  optional string                 field2 = 84  [(opt) = {foo: true, bar: ENUM_VALUE}];
+  optional string                 field3 = 101;
+  optional string                 field4 = 102 [(opt).test = true];
+  optional bool                   field5 = 106;
+  optional Aaaaaaaaaaaaaaaaaaaaaa field6 = 116;
+}`[1:],
+		},
 	}
 
-	for i, c := range cases[12:] {
-		if c.want == "" {
-			c.want = c.input
-		}
+	for i, c := range cases {
+		t.Run("", func(t *testing.T) {
+			if c.want == "" {
+				c.want = c.input
+			}
 
-		root, err := parser.Parse("", strings.NewReader(c.input), reporter.NewHandler(nil), 0)
-		require.NoError(t, err)
+			root, err := parser.Parse("", strings.NewReader(c.input), reporter.NewHandler(nil), 0)
+			require.NoError(t, err)
 
-		got, err := format.PrintNode(root, root)
-		require.NoError(t, err)
+			got, err := format.PrintNode(root, root)
+			require.NoError(t, err)
 
-		require.Equal(t, c.want, got, "case %d", i)
+			require.Equal(t, c.want, got, "case %d", i)
+		})
 	}
 }

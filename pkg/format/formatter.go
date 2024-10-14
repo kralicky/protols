@@ -760,6 +760,10 @@ func columnFormatElements[T ast.Node, C elementsContainer[T]](f *formatter, ctr 
 						default:
 							shouldStartNewGroup = false
 						}
+					case *ast.FieldNode:
+						if prevNode.Options != nil && !f.compactOptionsShouldBeExpanded(prevNode.Options) {
+							shouldStartNewGroup = false
+						}
 					}
 				}
 

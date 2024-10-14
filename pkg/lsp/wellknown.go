@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
-	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate/priv"
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	_ "google.golang.org/genproto/googleapis/api/configchange"
 	_ "google.golang.org/genproto/googleapis/api/distribution"

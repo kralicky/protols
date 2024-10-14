@@ -105,15 +105,15 @@ message Another {
     r:     {name: "g"},
     r:     {name: "s"},
   };
-  option (rept)                                                  = {foo: "def"};
-  option (eee)                                                   = V1;
-  option (a)                                                     = {fff: OK};
-  option (a).test                                                = {m: {key: "foo", value: 100}, m: {key: "bar", value: 200}};
-  option (a).test.foo                                            = "m&m";
-  option (a).test.s.name                                         = "yolo";
-  option (a).test.s.id                                           = 98765;
-  option (a).test.array                                          = 1;
-  option (a).test.array                                          = 2;
+  option (rept)          = {foo: "def"};
+  option (eee)           = V1;
+  option (a)             = {fff: OK};
+  option (a).test        = {m: {key: "foo", value: 100}, m: {key: "bar", value: 200}};
+  option (a).test.foo    = "m&m";
+  option (a).test.s.name = "yolo";
+  option (a).test.s.id   = 98765;
+  option (a).test.array  = 1;
+  option (a).test.array  = 2;
   option (a).test.(.foo.bar.Test.Nested._NestedNested._garblez2) = "whoah!";
 }`[1:],
 		},
@@ -235,6 +235,54 @@ message Foo {
   optional Aaaaaaaaaaaaaaaaaaaaaa field6 = 116;
 }`[1:],
 		},
+		14: {
+			input: `
+message Foo {
+  optional string aaaa = 1;
+  optional string aaaaa = 2;
+  optional string aaaaaa = 3;
+  optional string aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa = 4;
+  optional string bbbbbbbb = 1;
+  optional string bbbbb = 2;
+  optional string bbbbbbb = 3;
+}`[1:],
+			want: `
+message Foo {
+  optional string aaaa   = 1;
+  optional string aaaaa  = 2;
+  optional string aaaaaa = 3;
+  optional string aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa = 4;
+  optional string bbbbbbbb = 1;
+  optional string bbbbb    = 2;
+  optional string bbbbbbb  = 3;
+}`[1:],
+		},
+		15: {
+			input: `
+message Foo {
+  optional string aaaa = 1;
+  optional string aaaaa = 2;
+  optional string aaaaaa = 3;
+  optional aaaaa.bbbbbbbbb.cccccccc.ddddddd.
+    eeeeeeeeeeeeeeeee.fffffffffffffffffffffffffffffffff very_long_type = 4;
+  optional aaaaa.bbbbbbbbb.cccccccc.ddddddd.eeeeeeeeee.
+    fffffffffffff long_type = 5;
+  optional string bbbbbbbb = 1;
+  optional string bbbbb = 2;
+  optional string bbbbbbb = 3;
+}`[1:],
+			want: `
+message Foo {
+  optional string aaaa   = 1;
+  optional string aaaaa  = 2;
+  optional string aaaaaa = 3;
+  optional aaaaa.bbbbbbbbb.cccccccc.ddddddd.eeeeeeeeeeeeeeeee.fffffffffffffffffffffffffffffffff very_long_type = 4;
+  optional aaaaa.bbbbbbbbb.cccccccc.ddddddd.eeeeeeeeee.fffffffffffff                            long_type      = 5;
+  optional string bbbbbbbb = 1;
+  optional string bbbbb    = 2;
+  optional string bbbbbbb  = 3;
+}`[1:],
+		},
 	}
 
 	for i, c := range cases {
@@ -243,13 +291,18 @@ message Foo {
 				c.want = c.input
 			}
 
-			root, err := parser.Parse("", strings.NewReader(c.input), reporter.NewHandler(nil), 0)
-			require.NoError(t, err)
+			input := c.input
+			for iteration := range 2 {
+				root, err := parser.Parse("", strings.NewReader(input), reporter.NewHandler(nil), 0)
+				require.NoError(t, err)
 
-			got, err := format.PrintNode(root, root)
-			require.NoError(t, err)
+				got, err := format.PrintNode(root, root)
+				require.NoError(t, err)
 
-			require.Equal(t, c.want, got, "case %d", i)
+				require.Equal(t, c.want, got, "case %d (iteration %d)", i, iteration+1)
+
+				input = got
+			}
 		})
 	}
 }

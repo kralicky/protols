@@ -3,7 +3,7 @@ module github.com/kralicky/protols
 go 1.23.0
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.35.1-20240920164238-5a7b106cbb87.1
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.35.2-20241127180247-a33202765966.1
 	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/bufbuild/protovalidate-go v0.7.2
 	github.com/google/cel-go v0.21.0

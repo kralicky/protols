@@ -17,7 +17,7 @@ require (
 	github.com/mattn/go-tty v0.0.7
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/spf13/cobra v1.8.1
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.10.0
 	golang.org/x/mod v0.21.0
 	golang.org/x/sync v0.8.0
 	google.golang.org/genproto v0.0.0-20241007155032-5fefd90f89a9

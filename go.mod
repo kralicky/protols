@@ -5,8 +5,8 @@ go 1.23.0
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.35.2-20241127180247-a33202765966.1
 	github.com/AlecAivazis/survey/v2 v2.3.7
-	github.com/bufbuild/protovalidate-go v0.7.2
-	github.com/google/cel-go v0.21.0
+	github.com/bufbuild/protovalidate-go v0.8.0
+	github.com/google/cel-go v0.22.1
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
 	github.com/kralicky/codegen v0.0.0-20240818203230-c3317b3cf0bc
@@ -17,7 +17,7 @@ require (
 	github.com/mattn/go-tty v0.0.7
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/spf13/cobra v1.8.1
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.10.0
 	golang.org/x/mod v0.21.0
 	golang.org/x/sync v0.8.0
 	google.golang.org/genproto v0.0.0-20241007155032-5fefd90f89a9
@@ -27,6 +27,7 @@ require (
 )
 
 require (
+	cel.dev/expr v0.18.0 // indirect
 	cloud.google.com/go/dlp v1.19.0 // indirect
 	github.com/AlekSi/pointer v1.2.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect

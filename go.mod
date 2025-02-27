@@ -6,7 +6,7 @@ require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.35.2-20241127180247-a33202765966.1
 	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/bufbuild/protovalidate-go v0.7.2
-	github.com/google/cel-go v0.21.0
+	github.com/google/cel-go v0.24.1
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
 	github.com/kralicky/codegen v0.0.0-20240818203230-c3317b3cf0bc
@@ -27,6 +27,7 @@ require (
 )
 
 require (
+	cel.dev/expr v0.19.1 // indirect
 	cloud.google.com/go/dlp v1.19.0 // indirect
 	github.com/AlekSi/pointer v1.2.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect

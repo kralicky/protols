@@ -880,7 +880,12 @@ func findDefinition(desc protoreflect.Descriptor, linkRes linker.Result) (ast.No
 		}
 	case protoreflect.EnumValueDescriptor:
 		// TODO(editions): builtin enums aren't wrappers here yet
-		node = linkRes.EnumValueNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.EnumValueDescriptorProto)).GetName()
+		switch desc := desc.(type) {
+		case protoutil.DescriptorProtoWrapper:
+			node = linkRes.EnumValueNode(desc.AsProto().(*descriptorpb.EnumValueDescriptorProto)).GetName()
+		default:
+			node = linkRes.EnumValueNode(linkRes.FindDescriptorByName(desc.FullName()).(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.EnumValueDescriptorProto)).GetName()
+		}
 	case protoreflect.OneofDescriptor:
 		node = linkRes.OneofNode(desc.(protoutil.DescriptorProtoWrapper).AsProto().(*descriptorpb.OneofDescriptorProto)).GetName()
 	case protoreflect.FileDescriptor:

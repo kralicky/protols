@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/kralicky/protocompile/parser"
@@ -61,7 +62,7 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modific
 	}
 	c.resolver.UpdateURIPathMappings(modifications)
 
-	for _, m := range modifications {
+	for i, m := range modifications {
 		if m.Action == file.Open && m.LanguageID != "protobuf" {
 			continue
 		}
@@ -71,6 +72,7 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modific
 				"error", err,
 				"uri", m.URI.Path(),
 			).Error("failed to resolve uri to path")
+			modifications = slices.Delete(modifications, i, i+1)
 			continue
 		}
 		switch m.Action {

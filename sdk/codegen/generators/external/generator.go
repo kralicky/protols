@@ -97,11 +97,11 @@ func (g *extGenerator) Generate(gen *protogen.Plugin) error {
 	if g.CodeGeneratorResponseHook != nil {
 		g.CodeGeneratorResponseHook(response)
 	}
-	for i, f := range response.File {
+	for _, f := range response.File {
 		if f.GetName() == "" {
 			continue
 		}
-		gen.NewGeneratedFile(f.GetName(), gen.Files[i].GoImportPath).Write([]byte(f.GetContent()))
+		gen.NewGeneratedFile(f.GetName(), protogen.GoImportPath(path.Dir(f.GetName()))).Write([]byte(f.GetContent()))
 	}
 
 	return nil

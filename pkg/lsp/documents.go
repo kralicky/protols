@@ -62,6 +62,7 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modific
 	}
 	c.resolver.UpdateURIPathMappings(modifications)
 
+	toDelete := []int{}
 	for i, m := range modifications {
 		if m.Action == file.Open && m.LanguageID != "protobuf" {
 			continue
@@ -72,7 +73,7 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modific
 				"error", err,
 				"uri", m.URI.Path(),
 			).Error("failed to resolve uri to path")
-			modifications = slices.Delete(modifications, i, i+1)
+			toDelete = append(toDelete, i)
 			continue
 		}
 		switch m.Action {
@@ -85,6 +86,9 @@ func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modific
 		case file.Change, file.Create, file.Delete:
 			toRecompile = append(toRecompile, path)
 		}
+	}
+	for _, idx := range toDelete {
+		modifications = slices.Delete(modifications, idx, idx+1)
 	}
 	if err := c.compiler.fs.UpdateOverlays(ctx, modifications); err != nil {
 		panic(fmt.Errorf("internal protocol error: %w", err))

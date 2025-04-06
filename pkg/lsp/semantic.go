@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/bufbuild/protovalidate-go/celext"
+	celext "github.com/bufbuild/protovalidate-go/cel"
 	"github.com/google/cel-go/cel"
 	celcommon "github.com/google/cel-go/common"
 	celast "github.com/google/cel-go/common/ast"
@@ -445,7 +445,7 @@ func (s *semanticItems) multilineComment(comment ast.Comment, cstart, cend ast.S
 var celEnv *cel.Env
 
 func init() {
-	celEnv, _ = celext.DefaultEnv(false)
+	celEnv, _ = cel.NewEnv(cel.Lib(celext.NewLibrary()))
 	celEnv, _ = celEnv.Extend(cel.EnableMacroCallTracking())
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/kralicky/protols/sdk/codegen/generators/golang/grpc"
 	"github.com/kralicky/protols/sdk/driver"
 	"google.golang.org/protobuf/compiler/protogen"
+	"google.golang.org/protobuf/types/gofeaturespb"
 	"google.golang.org/protobuf/types/pluginpb"
 )
 
@@ -132,11 +133,12 @@ func GenerateCode(generators []Generator, searchDirs []string, opts ...GenerateC
 		}
 	}
 
-	codeGeneratorRequest := &pluginpb.CodeGeneratorRequest{
+	plugin, err := (protogen.Options{
+		DefaultAPILevel: gofeaturespb.GoFeatures_API_OPEN,
+	}).New(&pluginpb.CodeGeneratorRequest{
 		FileToGenerate: toGenerate,
 		ProtoFile:      results.AllDescriptorProtos,
-	}
-	plugin, err := (protogen.Options{}).New(codeGeneratorRequest)
+	})
 	if err != nil {
 		return nil, err
 	}

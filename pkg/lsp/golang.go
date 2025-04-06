@@ -293,7 +293,7 @@ PACKAGES:
 			// found a possible match, check if there's a symbol with the right name
 			symbolName := fmt.Sprintf("file_%s_rawDesc", strings.ReplaceAll(strings.ReplaceAll(preamble.Source, "/", "_"), ".", "_"))
 			object := f.Scope.Lookup(symbolName)
-			if object != nil && object.Kind == goast.Var {
+			if object != nil && (object.Kind == goast.Var || object.Kind == goast.Con) {
 				// found it!
 				rawDescByteArray = object
 				break PACKAGES
@@ -303,38 +303,64 @@ PACKAGES:
 	if rawDescByteArray == nil {
 		return nil, fmt.Errorf("%w: %s", os.ErrNotExist, "could not find file descriptor in package")
 	}
-	// we have the raw descriptor byte array, which is just a bunch of hex numbers in a slice
-	// which we can decode from the ast.
-	// The ast for the byte array will look like:
-	// *ast.Object {
-	//   Kind: var
-	//   Name: "file_<filename>_rawDesc"
-	//   Decl: *ast.ValueSpec {
-	//     Values: []ast.Expr (len = 1) {
-	//       0: *ast.CompositeLit {
-	//         Elts: []ast.Expr (len = {len}) {
-	//           0: *ast.BasicLit {
-	//             Value: "0x0a"
-	//           }
-	//           1: *ast.BasicLit {
-	//             Value: "0x2c"
-	//           }
-	//           ...
-	elements := rawDescByteArray.Decl.(*goast.ValueSpec).Values[0].(*goast.CompositeLit).Elts
-	buf := bytes.NewBuffer(make([]byte, 0, 4096))
-	for _, b := range elements {
-		str := b.(*goast.BasicLit).Value
-		i, err := strconv.ParseUint(str, 0, 8)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %s", os.ErrNotExist, err)
+
+	// there are two possible formats for the raw descriptor:
+	// 1: byte array (old style)
+	// 2: strings (new style)
+	var rawFileDesc []byte
+	switch decl := rawDescByteArray.Decl.(*goast.ValueSpec).Values[0].(type) {
+	case *goast.CompositeLit:
+		// we have the raw descriptor byte array, which is just a bunch of hex numbers in a slice
+		// which we can decode from the ast.
+		// The ast for the byte array will look like:
+		// *ast.Object {
+		//   Kind: var
+		//   Name: "file_<filename>_rawDesc"
+		//   Decl: *ast.ValueSpec {
+		//     Values: []ast.Expr (len = 1) {
+		//       0: *ast.CompositeLit {
+		//         Elts: []ast.Expr (len = {len}) {
+		//           0: *ast.BasicLit {
+		//             Value: "0x0a"
+		//           }
+		//           1: *ast.BasicLit {
+		//             Value: "0x2c"
+		//           }
+		//           ...
+		elements := rawDescByteArray.Decl.(*goast.ValueSpec).Values[0].(*goast.CompositeLit).Elts
+		buf := bytes.NewBuffer(make([]byte, 0, 4096))
+		for _, b := range elements {
+			str := b.(*goast.BasicLit).Value
+			i, err := strconv.ParseUint(str, 0, 8)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %s", os.ErrNotExist, err)
+			}
+			buf.WriteByte(byte(i))
 		}
-		buf.WriteByte(byte(i))
+		rawFileDesc = buf.Bytes()
+	case *goast.BinaryExpr:
+		// the new format is a sequence of string literals added together
+		buf := bytes.NewBuffer(make([]byte, 0, 4096))
+		goast.Inspect(decl, func(node goast.Node) bool {
+			switch node := node.(type) {
+			case *goast.BasicLit:
+				if node.Kind == token.STRING {
+					s, err := strconv.Unquote(node.Value)
+					if err != nil {
+						return false
+					}
+					buf.WriteString(s)
+				}
+			}
+			return true
+		})
+		rawFileDesc = buf.Bytes()
 	}
 
 	// now we have a byte array containing the raw file descriptor, which we can unmarshal
 	// into a FileDescriptorProto.
 	// the buffer may or may not be gzipped, so we need to check that first.
-	fd, err := DecodeRawFileDescriptor(buf.Bytes())
+	fd, err := DecodeRawFileDescriptor(rawFileDesc)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", os.ErrNotExist, err)
 	}

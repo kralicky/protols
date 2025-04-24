@@ -5,7 +5,7 @@
 	"description": "Protobuf Language Server extension for Visual Studio Code",
 	"author": "Joe Kralicky",
 	"license": "Apache-2.0",
-	"version": "0.7.0",
+	"version": "0.7.1",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/kralicky/protols"

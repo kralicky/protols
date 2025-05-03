@@ -54,8 +54,8 @@ github.com/kralicky/go-adaptive-radix-tree v0.0.0-20240624235931-330eb762e74c h1
 github.com/kralicky/go-adaptive-radix-tree v0.0.0-20240624235931-330eb762e74c/go.mod h1:oJwexVSshEat0E3evyKOH6QzN8GFWrhLvEoh8GiJzss=
 github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f h1:MsNe8A51V+7Fu5OMXSl8SK02erPJ40vFs2zDHn89w1g=
 github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f/go.mod h1:vOkwMjs49XmP/7Xfo9ZL6eg2ei51lmtD/4U/Az5GTq8=
-github.com/kralicky/protocompile v0.0.0-20240803192845-d63fb51209b3 h1:wCDUvsVb3BjsIAO0f3bZsrLuLno0cdfDumnouC+/iRg=
-github.com/kralicky/protocompile v0.0.0-20240803192845-d63fb51209b3/go.mod h1:aE9D9loDNucSzYmT854laAVbgGQwGOckiSXYuwAJJSI=
+github.com/kralicky/protocompile v0.0.0-20250503185048-c5883200d3ba h1:H9UAaqZl+7h1C/5MOaIHPL39sU8sO5b1UXg5FKfPmB8=
+github.com/kralicky/protocompile v0.0.0-20250503185048-c5883200d3ba/go.mod h1:aE9D9loDNucSzYmT854laAVbgGQwGOckiSXYuwAJJSI=
 github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff h1:akxm/czMYHdr1xIGm6wmddABmc4M9KDcqksdwpIJx8A=
 github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff/go.mod h1:V8GGYRLr40bvX/W3nZFxG+6S3iDFWn6o5J3NGDClr8U=
 github.com/magefile/mage v1.15.0 h1:BvGheCMAsG3bWUDbZ8AyXXpCNwU9u5CB6sM+HNb9HYg=

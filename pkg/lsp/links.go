@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/kralicky/protocompile"
 	"github.com/kralicky/protocompile/ast"
@@ -62,7 +63,20 @@ func (c *Cache) ComputeDocumentLinks(doc protocol.TextDocumentIdentifier) ([]pro
 					Range:  toRange(nameInfo),
 					Target: (*string)(&targetUri),
 				})
+			} else {
+				slog.With(
+					"unresolved_path", path,
+					"resolved_path", sr.ResolvedPath,
+					"import_name", imp.Name,
+					"error", err,
+				).Debug("could not find link target from resolved path")
 			}
+		} else {
+			slog.With(
+				"unresolved_path", path,
+				"import_name", imp.Name,
+				"error", err,
+			).Debug("could not find import by path")
 		}
 	}
 

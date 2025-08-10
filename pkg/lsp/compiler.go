@@ -29,7 +29,7 @@ func (c *Cache) preInvalidateHook(path protocompile.ResolvedPath, reason string)
 
 func (c *Cache) postInvalidateHook(path protocompile.ResolvedPath, prevResult linker.File, willRecompile bool) {
 	startTime, _ := c.inflightTasksInvalidate.LoadAndDelete(path)
-	slog.Debug("file invalidated", "path", path, "took", time.Since(startTime))
+	slog.Debug("file invalidated", "path", path, "time", time.Since(startTime))
 	if !willRecompile {
 		slog.Debug("file deleted, clearing linker result", "path", path)
 		for i, f := range c.results {

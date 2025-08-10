@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kralicky/protocompile"
 	"github.com/kralicky/protocompile/linker"
@@ -274,14 +275,19 @@ func (r *Resolver) CheckIncompleteDescriptors(results linker.Files) []string {
 // 5. Try more complex path resolution strategies
 // 6. Try to analyze existing generated code to find the path used to generate it
 func (r *Resolver) FindFileByPath(path protocompile.UnresolvedPath, whence protocompile.ImportContext) (protocompile.SearchResult, error) {
+	start := time.Now()
 	r.pathsMu.Lock()
 	defer r.pathsMu.Unlock()
+	lockedTime := time.Since(start)
+	if lockedTime >= 10*time.Millisecond {
+		slog.Debug(fmt.Sprintf("warn: FindFileByPath blocked for %s", lockedTime))
+	}
 	res, err := r.findFileByPathLocked(string(path), whence)
 	if err != nil {
 		if whence != nil {
 			translated, err2 := r.translatePathLocked(string(path), whence)
 			if err2 == nil {
-				slog.With("path", path, "translated", translated).Debug("resolved path by translation from import context")
+				slog.With("time", time.Since(start)).With("path", path, "translated", translated).Debug("resolved path by translation from import context")
 				res, err2 = r.findFileByPathLocked(translated, whence)
 				if err2 == nil {
 					res.ResolvedPath = protocompile.ResolvedPath(translated)
@@ -290,7 +296,7 @@ func (r *Resolver) FindFileByPath(path protocompile.UnresolvedPath, whence proto
 			} else {
 				rev, err3 := r.tryReverseLookupLocked(string(path), whence)
 				if err3 == nil {
-					slog.With("path", path, "resolved", rev).Debug("resolved path by reverse lookup")
+					slog.With("time", time.Since(start)).With("path", path, "resolved", rev).Debug("resolved path by reverse lookup")
 					res, err3 = r.findFileByPathLocked(rev, whence)
 					if err3 == nil {
 						res.ResolvedPath = protocompile.ResolvedPath(rev)
@@ -300,11 +306,11 @@ func (r *Resolver) FindFileByPath(path protocompile.UnresolvedPath, whence proto
 			}
 
 			err := errors.Join(err, err2)
-			slog.With("path", path, "errs", err).Debug("could not resolve path")
+			slog.With("time", time.Since(start)).With("path", path, "errs", err).Debug("could not resolve path")
 			return protocompile.SearchResult{}, err
 		}
 
-		slog.With("path", path, "errs", err).Debug("could not resolve path")
+		slog.With("time", time.Since(start)).With("path", path, "errs", err).Debug("could not resolve path")
 		return protocompile.SearchResult{}, err
 	}
 
@@ -312,6 +318,7 @@ func (r *Resolver) FindFileByPath(path protocompile.UnresolvedPath, whence proto
 }
 
 func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportContext) (protocompile.SearchResult, error) {
+	start := time.Now()
 	var isSynthetic bool
 	if uri, ok := r.fileURIsByPath[path]; ok {
 		if strings.HasPrefix(string(uri), "proto://") {
@@ -320,7 +327,7 @@ func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportC
 	}
 	lg := slog.With("path", path)
 	if result, err := r.checkWellKnownImportPath(path); err == nil {
-		lg.Debug("resolved to well-known import path")
+		lg.With("time", time.Since(start)).Debug("resolved to well-known import path")
 		return result, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		lg.Error("failed to check well-known import path")
@@ -328,7 +335,7 @@ func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportC
 	}
 	if !isSynthetic {
 		if result, err := r.checkFS(path, whence); err == nil {
-			lg.Debug("resolved to cached file")
+			lg.With("time", time.Since(start)).Debug("resolved to cached file")
 			return result, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
 			slog.With("path", path, "error", err).Debug("failed to check cached file")
@@ -337,7 +344,7 @@ func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportC
 	}
 
 	if result, err := r.checkGoModule(path, whence); err == nil {
-		lg.Debug("resolved to go module")
+		lg.With("time", time.Since(start)).Debug("resolved to go module")
 		return result, nil
 	} else if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, ErrNoModule) {
 		lg.Debug("failed to check go module")
@@ -345,7 +352,7 @@ func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportC
 	}
 	if IsWellKnownPath(path) {
 		if result, err := r.checkGlobalCache(path); err == nil {
-			lg.Debug("resolved to type in global descriptor cache")
+			lg.With("time", time.Since(start)).Debug("resolved to type in global descriptor cache")
 			return result, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
 			lg.Debug("failed to check global descriptor cache")
@@ -355,7 +362,7 @@ func (r *Resolver) findFileByPathLocked(path string, whence protocompile.ImportC
 
 	if filepath.Base(path) == "gogo.proto" {
 		if result, err := r.checkGoModule("github.com/gogo/protobuf/gogoproto/gogo.proto", whence); err == nil {
-			lg.Debug("resolved to special case (go module: gogo.proto)")
+			lg.With("time", time.Since(start)).Debug("resolved to special case (go module: gogo.proto)")
 			return result, nil
 		}
 	}
@@ -428,14 +435,38 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 		}, nil
 	}
 
-	if src, ok := r.syntheticFiles[r.fileURIsByPath[path]]; ok {
+	var fileURI protocol.DocumentURI
+	var usingAltPath bool
+	if res.KnownAltPath != "" {
+		fileURI = r.fileURIsByPath[res.KnownAltPath]
+		usingAltPath = true
+	} else {
+		fileURI = r.fileURIsByPath[path]
+	}
+	if src, ok := r.syntheticFiles[fileURI]; ok {
+		slog.With(
+			"alt_path", usingAltPath,
+			"uri", fileURI,
+		).Debug("using cached synthetic file")
+		var resolved string
+		if res.KnownAltPath == "" {
+			resolved = path
+		} else {
+			resolved = res.KnownAltPath
+		}
 		return protocompile.SearchResult{
 			Version:      1,
-			ResolvedPath: protocompile.ResolvedPath(path),
+			ResolvedPath: protocompile.ResolvedPath(resolved),
 			Source:       strings.NewReader(src),
 		}, nil
+	} else {
+		slog.With(
+			"alt_path", usingAltPath,
+			"uri", fileURI,
+		).Debug("building new synthetic file")
 	}
 
+	start := time.Now()
 	if synthesized, err := r.goLanguageDriver.SynthesizeFromGoSource(path, res); err == nil {
 		var original, resolved string
 		if res.KnownAltPath == "" {
@@ -451,6 +482,14 @@ func (r *Resolver) checkGoModule(path string, whence protocompile.ImportContext)
 			Fragment: r.folder.Name,
 		}
 		uri := protocol.DocumentURI(syntheticURI.String())
+		slog.With("time", time.Since(start)).
+			With(
+				"path", path,
+				"synthetic_uri", uri,
+				"resolved_path", resolved,
+				"original_name", original,
+			).
+			Debug("synthesized proto from go source")
 		r.filePathsByURI[uri] = resolved
 		r.fileURIsByPath[resolved] = uri
 		r.importSourcesByURI[uri] = SourceSynthetic

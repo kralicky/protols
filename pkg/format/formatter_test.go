@@ -65,10 +65,10 @@ message Test {
   repeated Simple    r     = 4;
   map<string, int32> m     = 5;
 
-  optional bytes                         b      = 6 [default = "\0\1\2\3\4\5\6\7fubar!"];
-  repeated float                         floats = 7;
-  repeated bool                          bools  = 8;
-  repeated Test.Nested._NestedNested.EEE enums  = 9;
+  optional bytes b      = 6 [default = "\0\1\2\3\4\5\6\7fubar!"];
+  repeated float floats = 7;
+  repeated bool  bools  = 8;
+  repeated Test.Nested._NestedNested.EEE enums = 9;
 }`[1:],
 		},
 		3: {

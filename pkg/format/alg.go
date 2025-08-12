@@ -5,6 +5,7 @@
 package format
 
 import (
+	"bytes"
 	"iter"
 	"math"
 )
@@ -20,16 +21,22 @@ func splitSegmentedFields(fields []segmentedField) iter.Seq[[]segmentedField] {
 		const smallSize = 40
 		var count, lower, size int
 		var lnsum float64
-		for i := 0; i < len(fields); i++ {
+		for i := range fields {
 			f := fields[i]
 			prevSize := size
-			size = len(f.typeName) + len(f.fieldName)
+			if len(f.fieldName) <= 3 || bytes.Equal(f.typeName, []byte("option")) {
+				size = len(f.typeName) + len(f.fieldName)
+			} else {
+				size = len(f.typeName) + len(f.fieldName)*2/3
+			}
 			if size > 0 && prevSize > 0 && count > 0 && (prevSize > smallSize || size > smallSize) {
 				mean := math.Exp(lnsum / float64(count))
 				ratio := float64(size) / mean
 				if r*ratio <= 1 || r <= ratio {
 					// split the group
-					yield(fields[lower:i])
+					if !yield(fields[lower:i]) {
+						return
+					}
 					lower = i
 					count = 0
 					lnsum = 0
@@ -40,6 +47,8 @@ func splitSegmentedFields(fields []segmentedField) iter.Seq[[]segmentedField] {
 				lnsum += math.Log(float64(size))
 			}
 		}
-		yield(fields[lower:])
+		if !yield(fields[lower:]) {
+			return
+		}
 	}
 }

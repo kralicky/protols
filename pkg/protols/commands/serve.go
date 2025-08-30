@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"os"
 	"sync"
 
 	"github.com/kralicky/protols/pkg/lsprpc"
@@ -14,12 +15,13 @@ import (
 	"github.com/kralicky/tools-lite/pkg/event/core"
 	"github.com/kralicky/tools-lite/pkg/event/keys"
 	"github.com/kralicky/tools-lite/pkg/event/label"
+	"github.com/kralicky/tools-lite/pkg/fakenet"
 	"github.com/kralicky/tools-lite/pkg/jsonrpc2"
 	"github.com/spf13/cobra"
 )
 
-// ServeCmd represents the serve command
 func BuildServeCmd() *cobra.Command {
+	var stdio bool
 	var pipe string
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -54,9 +56,15 @@ func BuildServeCmd() *cobra.Command {
 				return ctx
 			})
 
-			cc, err := net.Dial("unix", pipe)
-			if err != nil {
-				return err
+			var cc net.Conn
+			if stdio {
+				cc = fakenet.NewConn("stdio", os.Stdin, os.Stdout)
+			} else {
+				var err error
+				cc, err = net.Dial("unix", pipe)
+				if err != nil {
+					return err
+				}
 			}
 			stream := jsonrpc2.NewHeaderStream(cc)
 			conn := jsonrpc2.NewConn(stream)
@@ -65,8 +73,10 @@ func BuildServeCmd() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().BoolVar(&stdio, "stdio", false, "communicate over stdin/stdout")
 	cmd.Flags().StringVar(&pipe, "pipe", "", "socket name to listen on")
-	cmd.MarkFlagRequired("pipe")
+	cmd.MarkFlagsOneRequired("stdio", "pipe")
+	cmd.MarkFlagsMutuallyExclusive("stdio", "pipe")
 
 	return cmd
 }

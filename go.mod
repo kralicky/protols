@@ -12,7 +12,7 @@ require (
 	github.com/kralicky/codegen v0.0.0-20250406210128-b7b0f3748143
 	github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f
 	github.com/kralicky/protocompile v0.0.0-20250503185048-c5883200d3ba
-	github.com/kralicky/tools-lite v0.0.0-20240313161632-60bfa88304ff
+	github.com/kralicky/tools-lite v0.0.0-20250830174308-7904b3106b98
 	github.com/magefile/mage v1.15.0
 	github.com/mattn/go-tty v0.0.7
 	github.com/mitchellh/mapstructure v1.5.0

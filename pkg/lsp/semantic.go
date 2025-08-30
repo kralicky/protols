@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unsafe"
 
-	celext "github.com/bufbuild/protovalidate-go/cel"
+	celext "buf.build/go/protovalidate/cel"
 	"github.com/google/cel-go/cel"
 	celcommon "github.com/google/cel-go/common"
 	celast "github.com/google/cel-go/common/ast"

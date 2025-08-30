@@ -95,7 +95,7 @@ func (x_ generator) generateUnimplementedServerType(_ *protogen.Plugin, _ *proto
 			nilArg = "nil,"
 		}
 		g.P("func (Unimplemented", serverType, ") ", x_.serverSignature(g, method), "{")
-		g.P("return ", nilArg, statusPackage.Ident("Errorf"), "(", codesPackage.Ident("Unimplemented"), `, "method `, method.GoName, ` not implemented")`)
+		g.P("return ", nilArg, statusPackage.Ident("Error"), "(", codesPackage.Ident("Unimplemented"), `, "method `, method.GoName, ` not implemented")`)
 		g.P("}")
 	}
 	if x_.requireUnimplemented {

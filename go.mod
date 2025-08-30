@@ -11,7 +11,7 @@ require (
 	github.com/google/cel-go v0.26.1
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
-	github.com/kralicky/codegen v0.0.0-20250830181601-f89cc6dc9499
+	github.com/kralicky/codegen v0.0.0-20250830182818-d9092c47df0e
 	github.com/kralicky/gpkg v0.0.0-20240119195700-64f32830b14f
 	github.com/kralicky/protocompile v0.0.0-20250503185048-c5883200d3ba
 	github.com/kralicky/tools-lite v0.0.0-20250830174308-7904b3106b98
@@ -32,7 +32,6 @@ require (
 	buf.build/go/protoyaml v0.6.0 // indirect
 	cel.dev/expr v0.24.0 // indirect
 	cloud.google.com/go/dlp v1.24.0 // indirect
-	github.com/AlekSi/pointer v1.2.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/iancoleman/strcase v0.3.0 // indirect
@@ -42,11 +41,7 @@ require (
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mgutz/ansi v0.0.0-20200706080929-d51e80ef957d // indirect
-	github.com/olebedev/when v1.1.0 // indirect
-	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
-	github.com/prometheus/common v0.65.0 // indirect
 	github.com/spf13/pflag v1.0.7 // indirect
 	github.com/stoewer/go-strcase v1.3.0 // indirect
 	golang.org/x/exp v0.0.0-20250819193227-8b4c13bb791b // indirect

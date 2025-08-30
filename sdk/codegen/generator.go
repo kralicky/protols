@@ -57,7 +57,8 @@ const (
 )
 
 type GenerateCodeOptions struct {
-	strategy GenerateStrategy
+	strategy             GenerateStrategy
+	fixInvalidGoPackages bool
 }
 
 type GenerateCodeOption func(*GenerateCodeOptions)
@@ -71,6 +72,12 @@ func (o *GenerateCodeOptions) apply(opts ...GenerateCodeOption) {
 func WithGenerateStrategy(strategy GenerateStrategy) GenerateCodeOption {
 	return func(o *GenerateCodeOptions) {
 		o.strategy = strategy
+	}
+}
+
+func WithFixInvalidGoPackages(fixPackagePaths bool) GenerateCodeOption {
+	return func(o *GenerateCodeOptions) {
+		o.fixInvalidGoPackages = fixPackagePaths
 	}
 }
 
@@ -96,9 +103,7 @@ func GenerateCode(generators []Generator, searchDirs []string, opts ...GenerateC
 	if err != nil {
 		return nil, err
 	}
-	for _, msg := range results.Messages {
-		fmt.Fprintln(os.Stderr, msg)
-	}
+
 	if results.Error {
 		return nil, fmt.Errorf("errors occurred during compilation")
 	}
@@ -130,6 +135,15 @@ func GenerateCode(generators []Generator, searchDirs []string, opts ...GenerateC
 				continue
 			}
 			toGenerate = append(toGenerate, desc.Path())
+		}
+	}
+
+	if options.fixInvalidGoPackages {
+		for _, file := range results.AllDescriptorProtos {
+			goPackage := file.GetOptions().GetGoPackage()
+			if goPackage != "" && !strings.Contains(goPackage, ".") && !strings.Contains(goPackage, "/") {
+				*file.Options.GoPackage = path.Dir(file.GetName())
+			}
 		}
 	}
 

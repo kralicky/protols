@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"sync"
 
+	"github.com/kralicky/protols/pkg/lsp"
 	"github.com/kralicky/protols/pkg/lsprpc"
 	"github.com/kralicky/protols/pkg/version"
 	"github.com/kralicky/tools-lite/pkg/event"
@@ -23,15 +25,24 @@ import (
 func BuildServeCmd() *cobra.Command {
 	var stdio bool
 	var pipe string
+	var defaultLogLevel string
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the language server",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cmd.Printf("Starting protols %s\n", version.FriendlyVersion())
 			slog.SetDefault(slog.New(slog.NewTextHandler(cmd.OutOrStderr(), &slog.HandlerOptions{
 				AddSource: true,
-				Level:     slog.LevelDebug,
+				Level:     lsp.GlobalAtomicLeveler,
 			})))
+			slog.With("version", version.FriendlyVersion()).Info("Starting protols")
+			if defaultLogLevel != "" {
+				level, ok := lsp.ParseLogLevel(defaultLogLevel)
+				if ok {
+					lsp.GlobalAtomicLeveler.SetLevel(level)
+				} else {
+					return fmt.Errorf("invalid log level '%s' (expecting 'debug', 'info', 'warning', or 'error')", defaultLogLevel)
+				}
+			}
 			var eventMu sync.Mutex
 			event.SetExporter(func(ctx context.Context, e core.Event, lm label.Map) context.Context {
 				eventMu.Lock()
@@ -73,6 +84,7 @@ func BuildServeCmd() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().StringVar(&defaultLogLevel, "default-log-level", "", "default log level (if not controlled by lsp client)")
 	cmd.Flags().BoolVar(&stdio, "stdio", false, "communicate over stdin/stdout")
 	cmd.Flags().StringVar(&pipe, "pipe", "", "socket name to listen on")
 	cmd.MarkFlagsOneRequired("stdio", "pipe")

@@ -3,7 +3,6 @@ package lsp
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"runtime"
 	"strings"
 	"sync"
@@ -323,7 +322,6 @@ func (c *Cache) FindDefinitionForTypeDescriptor(desc protoreflect.Descriptor) (p
 }
 
 func (c *Cache) DidChangeConfiguration(ctx context.Context, settings Settings) error {
-	slog.Info("Configuration updated", "settings", settings)
 	c.settings.Store(&settings)
 	return nil
 }

@@ -270,15 +270,19 @@ func (s *Server) Completion(ctx context.Context, params *protocol.CompletionPara
 // Initialized implements protocol.Server.
 func (s *Server) Initialized(ctx context.Context, params *protocol.InitializedParams) (err error) {
 	slog.Debug("Initialized")
-	if err := s.client.RegisterCapability(ctx, &protocol.RegistrationParams{
-		Registrations: []protocol.Registration{
-			{
-				ID:     "workspace/didChangeConfiguration",
-				Method: "workspace/didChangeConfiguration",
+	if s.clientCapabilities.Workspace.DidChangeConfiguration.DynamicRegistration {
+		if err := s.client.RegisterCapability(ctx, &protocol.RegistrationParams{
+			Registrations: []protocol.Registration{
+				{
+					ID:     "workspace/didChangeConfiguration",
+					Method: "workspace/didChangeConfiguration",
+				},
 			},
-		},
-	}); err != nil {
-		return err
+		}); err != nil {
+			return err
+		}
+	} else {
+		slog.Debug("client does not support dynamic registration for workspace/didChangeConfiguration")
 	}
 	return nil
 }
@@ -876,6 +880,7 @@ func (s *Server) DidChangeConfiguration(ctx context.Context, params *protocol.Di
 	s.cachesMu.RLock()
 	defer s.cachesMu.RUnlock()
 
+	first := true
 	for _, c := range s.caches {
 		resp, err := s.client.Configuration(ctx, &protocol.ParamConfiguration{
 			Items: []protocol.ConfigurationItem{
@@ -905,8 +910,25 @@ func (s *Server) DidChangeConfiguration(ctx context.Context, params *protocol.Di
 			slog.Error("failed to decode configuration", "workspace", c.workspace.Name, "error", err)
 			continue
 		}
+		slog.With("cache", c.workspace.Name).
+			With("settings", settings).
+			Info("Configuration updated")
+
+		if first && settings.LogLevel != "" {
+			first = false
+			// for now, first cache (with a log level set) controls the log level
+			level, ok := ParseLogLevel(settings.LogLevel)
+			if !ok {
+				slog.With("level", settings.LogLevel).Error("invalid log level (expecting 'debug', 'info', 'warning', or 'error')")
+			} else {
+				slog.With("level", level.String()).Info("log level updated")
+				GlobalAtomicLeveler.SetLevel(level)
+			}
+		}
+
 		c.DidChangeConfiguration(ctx, settings)
 	}
+
 	return nil
 }
 

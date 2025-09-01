@@ -50,7 +50,6 @@ func contentChangeEventsToDiffEdits(mapper *protocol.Mapper, changes []protocol.
 }
 
 func (c *Cache) DidModifyFiles(ctx context.Context, modifications []file.Modification) {
-	slog.Debug("DidModifyFiles", "modifications", modifications)
 	var toRecompile []string
 	for _, m := range modifications {
 		if m.Action == file.Delete {

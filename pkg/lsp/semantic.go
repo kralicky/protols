@@ -908,7 +908,7 @@ func (s *semanticItems) inspectCelExpr(messageLit *ast.MessageLiteralNode) ([]*a
 				slog.Warn("error parsing CEL expression",
 					"location", s.AST().NodeInfo(stringNodes[0]).String(),
 				)
-				fmt.Println(issues.Err())
+				// fmt.Println(issues.Err())
 				// TODO
 				// diagnostics = append(diagnostics, ProtoDiagnostic{
 				// 	Pos:      s.AST().NodeInfo(stringNodes[0]),

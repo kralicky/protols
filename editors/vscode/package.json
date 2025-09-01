@@ -111,6 +111,18 @@
 			"type": "object",
 			"title": "Protobuf Language Server",
 			"properties": {
+				"protols.logLevel": {
+					"scope": "window",
+					"type": "string",
+					"enum": [
+						"debug",
+						"info",
+						"warning",
+						"error"
+					],
+					"default": "info",
+					"description": "Log level"
+				},
 				"protobuf.trace.server": {
 					"scope": "window",
 					"type": "string",

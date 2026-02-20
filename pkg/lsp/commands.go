@@ -185,8 +185,10 @@ func (s *Server) ExecuteCommand(ctx context.Context, params *protocol.ExecuteCom
 		return c.FindGeneratedDefinition(ctx, req.TextDocumentPositionParams)
 	default:
 		var jsonData map[string]interface{}
-		if err := json.Unmarshal(params.Arguments[0], &jsonData); err != nil {
-			return nil, err
+		if len(params.Arguments) > 0 {
+			if err := json.Unmarshal(params.Arguments[0], &jsonData); err != nil {
+				return nil, err
+			}
 		}
 		// check for fields "uri" or "uris" to inject a cache into the request
 		uc := UnknownCommand{
